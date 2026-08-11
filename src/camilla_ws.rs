@@ -203,7 +203,9 @@ where
             "address resolution returned no results: {addr_str}"
         ))),
         Ok(Ok(addrs)) => Ok(addrs),
-        Ok(Err(err)) => Err(WsError::Transport(format!("address resolution failed: {err}"))),
+        Ok(Err(err)) => Err(WsError::Transport(format!(
+            "address resolution failed: {err}"
+        ))),
         Err(mpsc::RecvTimeoutError::Timeout) => Err(WsError::Transport(format!(
             "address resolution timed out after {}s: {addr_str}",
             timeout.as_secs()
