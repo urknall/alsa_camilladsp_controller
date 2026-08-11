@@ -821,7 +821,10 @@ echo "CamillaDSP configuration validation OK."
 
     trap cleanup_ws_test EXIT HUP INT TERM
 
-    cp "${STAGE_STATEFILE}" "${TEST_STATEFILE}"
+    if ! cp "${STAGE_STATEFILE}" "${TEST_STATEFILE}"; then
+        echo "ERROR: Failed to stage temporary CamillaDSP statefile for WebSocket smoke test."
+        exit 1
+    fi
 
     "${BUILD_DIR}/usr/local/camilladsp" \
         --wait \
