@@ -109,6 +109,17 @@ fn run_main() -> AppResult<()> {
             Ok(())
         }
 
+        Mode::WsGetConfigPath => {
+            let mut client = CamillaWs::connect(&args.host, args.port)?;
+            let value = client.query("GetConfigFilePath", None)?;
+            let path = value
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .ok_or_else(|| app_error("CamillaDSP returned no config file path"))?;
+            client.close();
+            println!("{path}");
+            Ok(())
+        }
+
         Mode::Run => {
             let (controller, initial) = Controller::new(&args)?;
             controller.run(initial)

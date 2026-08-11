@@ -48,6 +48,8 @@ pub enum Mode {
     GetStateFragment,
     /// Write a piCoreDSP bypass CamillaDSP config with the given playback device.
     MakeBypass,
+    /// Query `GetConfigFilePath` over WebSocket and print the result.
+    WsGetConfigPath,
 }
 
 impl Mode {
@@ -62,6 +64,7 @@ impl Mode {
             Self::GetConfigPath => "--get-config-path",
             Self::GetStateFragment => "--get-state-fragment",
             Self::MakeBypass => "--make-bypass",
+            Self::WsGetConfigPath => "--ws-get-config-path",
         }
     }
 }
@@ -100,7 +103,8 @@ Usage:\n\
   picoredsp-controller --get-playback-device CONFIG\n\
   picoredsp-controller --get-config-path STATEFILE\n\
   picoredsp-controller --get-state-fragment STATEFILE\n\
-  picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\n\
+  picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\
+  picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
@@ -120,6 +124,7 @@ Options:\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
       --output FILE             Output file for --make-bypass (default: stdout)\n\
+      --ws-get-config-path      Query GetConfigFilePath from CamillaDSP via WebSocket\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version"
     );
@@ -222,6 +227,15 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                     )));
                 }
                 args.mode = Mode::MakeBypass;
+            }
+            "--ws-get-config-path" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --ws-get-config-path",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::WsGetConfigPath;
             }
             "--playback-device" => {
                 args.playback_device = Some(next_value("--playback-device")?);
