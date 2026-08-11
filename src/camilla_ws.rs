@@ -244,7 +244,10 @@ pub fn parse_ws_reply(command: &str, reply: JsonValue) -> Result<Option<JsonValu
 
     match result {
         JsonValue::String(value) if value == "Ok" => Ok(entry.get("value").cloned()),
-        JsonValue::String(value) => Err(WsError::Command(CommandReason::Other, value.clone())),
+        JsonValue::String(value) => Err(WsError::Command(
+            CommandReason::from_variant(value),
+            value.clone(),
+        )),
         JsonValue::Object(values) => {
             let (kind, msg) = values
                 .iter()
@@ -407,6 +410,34 @@ mod tests {
         assert!(matches!(
             parse_ws_reply("SetConfig", err),
             Err(WsError::Command(CommandReason::Other, _))
+        ));
+    }
+
+    #[test]
+    fn ws_reply_rate_limit_is_classified() {
+        let reply = serde_json::json!({
+            "SetConfig": {
+                "result": "RateLimitExceededError"
+            }
+        });
+
+        assert!(matches!(
+            parse_ws_reply("SetConfig", reply),
+            Err(WsError::Command(CommandReason::RateLimit, _))
+        ));
+    }
+
+    #[test]
+    fn ws_reply_shutdown_is_classified() {
+        let reply = serde_json::json!({
+            "SetConfig": {
+                "result": "ShutdownInProgressError"
+            }
+        });
+
+        assert!(matches!(
+            parse_ws_reply("SetConfig", reply),
+            Err(WsError::Command(CommandReason::Shutdown, _))
         ));
     }
 }
