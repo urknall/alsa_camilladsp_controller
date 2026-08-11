@@ -104,4 +104,4 @@ picoredsp-controller --adapt-check \
 - [HEnquist/camilladsp](https://github.com/HEnquist/camilladsp)
 - [HEnquist/camilladsp-controller](https://github.com/HEnquist/camilladsp-controller)
 - [HEnquist/camillagui-backend](https://github.com/HEnquist/camillagui-backend)
-- [JWahle/piCoreCDSP](https://github.com/JWahle/piCoreCDSP) (original Python-based installer)
+- [JWahle/piCoreCDSP](https://github.com/JWahle/piCoreCDSP) — original ALSA cdsp-plugin based implementation

@@ -650,22 +650,46 @@ description: |
 EOF
 
 # The statefile contains FINAL runtime paths even though it is staged here.
+# On reinstall, preserve any existing volume/mute values so a user's current
+# speaker levels are not silently reset to 0 dB.
+_stage_mute_block="- false
+- false
+- false
+- false
+- false"
+_stage_volume_block="- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0"
+
+if [ "${INSTALL_MODE}" = "reinstall" ] && [ -f "${STATEFILE}" ]; then
+    _extracted_mute=$(awk '
+        /^mute:/   { section="mute";   next }
+        /^volume:/ { section="volume"; next }
+        /^[a-z_]/  { section="" }
+        section == "mute" && /^- / { print; next }
+    ' "${STATEFILE}" | head -5)
+    _extracted_volume=$(awk '
+        /^mute:/   { section="mute";   next }
+        /^volume:/ { section="volume"; next }
+        /^[a-z_]/  { section="" }
+        section == "volume" && /^- / { print; next }
+    ' "${STATEFILE}" | head -5)
+    if [ -n "${_extracted_mute}" ] && [ -n "${_extracted_volume}" ]; then
+        _stage_mute_block="${_extracted_mute}"
+        _stage_volume_block="${_extracted_volume}"
+    fi
+fi
+
 cat > "${STAGE_STATEFILE}" <<EOF
 config_path: ${BYPASS_CONFIG}
 
 mute:
-- false
-- false
-- false
-- false
-- false
+${_stage_mute_block}
 
 volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
+${_stage_volume_block}
 EOF
 
 ln -sfn "${STAGE_BYPASS_CONFIG}" "${STAGE_ACTIVE_CONFIG_LINK}"
@@ -769,7 +793,11 @@ mkdir -p "${BUILD_DIR}/usr/local/bin"
 if $keepDownloads; then
     mkdir -p "${CACHE_DIR}"
     CACHED_CONTROLLER="${CACHE_DIR}/picoredsp-controller-${controller_arch}-${CONTROLLER_RELEASE_TAG}"
-    if [ ! -f "${CACHED_CONTROLLER}" ]; then
+    # Never use a stale cache for a mutable rolling tag — always re-download.
+    if [ "${CONTROLLER_RELEASE_TAG}" = "installer-latest" ]; then
+        echo "Rolling tag ${CONTROLLER_RELEASE_TAG}: skipping cache, re-downloading."
+        wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
+    elif [ ! -f "${CACHED_CONTROLLER}" ]; then
         wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
     else
         echo "Using cached ${CACHED_CONTROLLER}"
@@ -1162,8 +1190,21 @@ sudo cp -f "${STAGE_BYPASS_CONFIG}" "${BYPASS_CONFIG}"
 sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
 sudo cp -f "${STAGE_STATEFILE}" "${STATEFILE}"
 sudo cp -f "${STAGE_PLAYBACK_DEVICE_FILE}" "${PLAYBACK_DEVICE_FILE}"
+
+# Set the active config symlink.  On a first install always point to Bypass.
+# On reinstall, preserve the user's current selection when the target is a
+# valid YAML file inside CONFIG_DIR; fall back to Bypass otherwise.
+# Read the existing symlink target BEFORE removing it.
+_new_active_target="${BYPASS_CONFIG}"
+if [ "${INSTALL_MODE}" = "reinstall" ]; then
+    _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
+    if [ -f "${_old_active}" ] && \
+       echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
+        _new_active_target="${_old_active}"
+    fi
+fi
 sudo rm -f "${ACTIVE_CONFIG_LINK}"
-sudo ln -s "${BYPASS_CONFIG}" "${ACTIVE_CONFIG_LINK}"
+sudo ln -s "${_new_active_target}" "${ACTIVE_CONFIG_LINK}"
 
 # Install extension before routing live audio to it. Remove a stale dependency
 # file from an older Python-based piCoreDSP install, if one remains.

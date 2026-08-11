@@ -2,7 +2,7 @@ use crate::error::{app_error, AppResult};
 use crate::wave::WaveFormat;
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 // ─── YAML helpers ──────────────────────────────────────────────────────────
 
@@ -26,6 +26,92 @@ pub fn yaml_u32(value: &YamlValue) -> Option<u32> {
     value.as_u64().and_then(|v| u32::try_from(v).ok())
 }
 
+// ─── Path helpers ──────────────────────────────────────────────────────────
+
+/// Resolve `..` and `.` components without requiring the path to exist.
+///
+/// Used to absolutize FIR coefficient filenames when `canonicalize()` would
+/// fail because a test fixture or missing coefficient file is not on disk.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if matches!(result.components().next_back(), Some(Component::Normal(_))) {
+                    result.pop();
+                }
+            }
+            Component::CurDir => {}
+            c => result.push(c),
+        }
+    }
+    result
+}
+
+/// Walk the `filters` section of a CamillaDSP config and convert any relative
+/// `filename` fields inside `Conv` filters (type `Raw` or `Wav`) to absolute
+/// paths anchored at `config_dir`.
+///
+/// This mirrors CamillaGUI's `make_config_filter_paths_absolute()`, which it
+/// applies before every `SetConfig` call.  Without this conversion, relative
+/// paths in a config that is sent over the WebSocket are resolved against
+/// CamillaDSP's process working directory rather than the config file's
+/// directory, which causes coefficient loads to fail.
+fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
+    let Some(filters) = root.get_mut("filters") else {
+        return;
+    };
+    let Some(filters_map) = filters.as_mapping_mut() else {
+        return;
+    };
+
+    for (_name, filter) in filters_map.iter_mut() {
+        let Some(filter_map) = filter.as_mapping_mut() else {
+            continue;
+        };
+
+        // Only process Conv filters.
+        let is_conv = filter_map
+            .get(&yaml_key("type"))
+            .and_then(YamlValue::as_str)
+            .map(|t| t == "Conv")
+            .unwrap_or(false);
+        if !is_conv {
+            continue;
+        }
+
+        let Some(params) = filter_map.get_mut(&yaml_key("parameters")) else {
+            continue;
+        };
+        let Some(params_map) = params.as_mapping_mut() else {
+            continue;
+        };
+
+        // Only Raw/Wav types have a file-based coefficient.
+        match params_map
+            .get(&yaml_key("type"))
+            .and_then(YamlValue::as_str)
+        {
+            Some("Raw") | Some("Wav") => {}
+            _ => continue,
+        }
+
+        if let Some(filename_val) = params_map.get_mut(&yaml_key("filename")) {
+            if let Some(name_str) = filename_val.as_str() {
+                let p = Path::new(name_str);
+                if p.is_relative() {
+                    let abs = config_dir.join(p);
+                    let resolved = abs
+                        .canonicalize()
+                        .unwrap_or_else(|_| normalize_path(&abs));
+                    *filename_val =
+                        YamlValue::String(resolved.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+}
+
 // ─── Config adaptation ─────────────────────────────────────────────────────
 
 /// Adapt a CamillaDSP YAML config for the current wave format and return the
@@ -37,6 +123,12 @@ pub fn yaml_u32(value: &YamlValue) -> Option<u32> {
 /// adaptation without a controller restart. This is the key piCoreDSP
 /// extension over upstream `AdaptConfig`, which caches the file at startup.
 ///
+/// Before serializing the adapted config, all relative FIR coefficient
+/// filenames are converted to absolute paths (mirroring CamillaGUI's own
+/// `make_config_filter_paths_absolute` step).  Without this, SetConfig over
+/// WebSocket cannot resolve relative paths because CamillaDSP loses the
+/// config-file path context.
+///
 /// Adaptation rules mirror Python `AdaptConfig._change_*` exactly:
 ///
 /// * **samplerate** — updated in `devices.samplerate` unless a resampler is
@@ -46,6 +138,14 @@ pub fn yaml_u32(value: &YamlValue) -> Option<u32> {
 ///   already exists with a non-null value (automatic format is left automatic).
 /// * **channels** — validated only; changing channel count is not supported.
 pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
+    // Canonicalize to resolve symlinks and get the true config file directory.
+    // This is required for correct relative-path resolution in filters.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let config_dir = canonical
+        .parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf();
+
     let raw = fs::read_to_string(path)
         .map_err(|err| app_error(format!("unable to read config {}: {err}", path.display())))?;
     let mut root: YamlValue = serde_yaml_ng::from_str(&raw)?;
@@ -122,6 +222,10 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
             )));
         }
     }
+
+    // Convert relative FIR coefficient filenames to absolute paths, mirroring
+    // CamillaGUI's behavior before SetConfig calls.
+    make_filter_paths_absolute(&mut root, &config_dir);
 
     Ok(serde_yaml_ng::to_string(&root)?)
 }
@@ -300,6 +404,54 @@ mod tests {
             channels: Some(6),
         };
         assert!(adapt_config(&config, &wave).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn relative_fir_filename_is_made_absolute() {
+        // Reproduces the CamillaDSP relative-path bug:
+        // configs/MyDSP.yml references ../coeffs/test.wav.
+        // When adapt_config() sends the result via SetConfig the path must be
+        // absolute so CamillaDSP can find it without config-file path context.
+        let dir = test_dir("fir-abs");
+        let config_dir = dir.join("configs");
+        let coeff_dir = dir.join("coeffs");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&coeff_dir).unwrap();
+
+        let coeff_file = coeff_dir.join("test.wav");
+        fs::write(&coeff_file, b"dummy").unwrap();
+
+        let config_content = format!(
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             capture:\n    type: Alsa\n    channels: 2\n    \
+             device: \"hw:Loopback,0,0\"\n  \
+             playback:\n    type: Alsa\n    channels: 2\n    \
+             device: \"null\"\n\
+             filters:\n  LeftFIR:\n    type: Conv\n    parameters:\n      \
+             type: Wav\n      filename: \"../coeffs/test.wav\"\n\
+             mixers: {{}}\npipeline: []\nprocessors: {{}}\n"
+        );
+        let config_path = config_dir.join("MyDSP.yml");
+        fs::write(&config_path, config_content).unwrap();
+
+        let wave = WaveFormat {
+            sample_rate: Some(48000),
+            sample_format: None,
+            channels: Some(2),
+        };
+        let adapted = adapt_config(&config_path, &wave).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
+
+        let filename = parsed["filters"]["LeftFIR"]["parameters"]["filename"]
+            .as_str()
+            .unwrap();
+        assert!(
+            std::path::Path::new(filename).is_absolute(),
+            "adapted filename should be absolute, got: {filename}"
+        );
+        // The resolved absolute path should match our coefficient file.
+        assert_eq!(filename, coeff_file.to_str().unwrap());
         fs::remove_dir_all(dir).unwrap();
     }
 
