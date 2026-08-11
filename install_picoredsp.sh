@@ -824,7 +824,8 @@ chmod 755 "${RUST_RUNTIME_BIN}"
 # Verify SHA256 checksum against the published .sha256 file before executing
 # the binary or passing it through --help or --probe.
 _sha256_tmp="/tmp/picoredsp-controller-${controller_arch}.sha256.$$"
-wget -O "${_sha256_tmp}" "${CONTROLLER_RELEASE_URL}.sha256"
+wget -O "${_sha256_tmp}" "${CONTROLLER_RELEASE_URL}.sha256" \
+    || { echo "ERROR: Failed to download SHA256 checksum for picoredsp-controller-${controller_arch}."; exit 1; }
 _expected_hash=$(awk '{print $1; exit}' "${_sha256_tmp}")
 _actual_hash=$(sha256sum "${RUST_RUNTIME_BIN}" | awk '{print $1}')
 rm -f "${_sha256_tmp}"
