@@ -44,6 +44,8 @@ pub enum Mode {
     GetPlaybackDevice,
     /// Read `config_path` from a CamillaDSP statefile and print it.
     GetConfigPath,
+    /// Read validated `mute`/`volume` blocks from a CamillaDSP statefile and print them.
+    GetStateFragment,
     /// Write a piCoreDSP bypass CamillaDSP config with the given playback device.
     MakeBypass,
 }
@@ -58,6 +60,7 @@ impl Mode {
             Self::AdaptCheck => "--adapt-check",
             Self::GetPlaybackDevice => "--get-playback-device",
             Self::GetConfigPath => "--get-config-path",
+            Self::GetStateFragment => "--get-state-fragment",
             Self::MakeBypass => "--make-bypass",
         }
     }
@@ -96,6 +99,7 @@ Usage:\n\
   picoredsp-controller --adapt-check --adapt PATH [--rate R --format F --channels N]\n\
   picoredsp-controller --get-playback-device CONFIG\n\
   picoredsp-controller --get-config-path STATEFILE\n\
+  picoredsp-controller --get-state-fragment STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
@@ -112,6 +116,7 @@ Options:\n\
       --adapt-check             Adapt YAML once, write result to stdout, exit\n\
       --get-playback-device PATH  Print devices.playback.device from a YAML config\n\
       --get-config-path STATEFILE Print config_path from a CamillaDSP statefile\n\
+      --get-state-fragment STATEFILE  Print validated mute/volume YAML from a CamillaDSP statefile\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
       --output FILE             Output file for --make-bypass (default: stdout)\n\
@@ -199,6 +204,16 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 args.mode = Mode::GetConfigPath;
                 args.config_path = Some(PathBuf::from(next_value("--get-config-path")?));
             }
+            "--get-state-fragment" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --get-state-fragment",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::GetStateFragment;
+                args.config_path = Some(PathBuf::from(next_value("--get-state-fragment")?));
+            }
             "--make-bypass" => {
                 if args.mode != Mode::Run {
                     return Err(app_error(format!(
@@ -267,7 +282,10 @@ pub fn parse_args() -> AppResult<Option<Args>> {
     if args.output.is_some() && args.mode != Mode::MakeBypass {
         return Err(app_error("--output is only valid with --make-bypass"));
     }
-    if matches!(args.mode, Mode::GetPlaybackDevice | Mode::GetConfigPath) {
+    if matches!(
+        args.mode,
+        Mode::GetPlaybackDevice | Mode::GetConfigPath | Mode::GetStateFragment
+    ) {
         if args.adapt.is_some() {
             return Err(app_error(format!(
                 "--adapt is not valid with {}",

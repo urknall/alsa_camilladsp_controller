@@ -4,6 +4,8 @@ use serde_yaml_ng::{Mapping, Value as YamlValue};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+const CAMILLA_STATE_CHANNELS: usize = 5;
+
 // ─── YAML helpers ──────────────────────────────────────────────────────────
 
 pub fn yaml_key(name: &str) -> YamlValue {
@@ -115,6 +117,7 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
 /// Flow YAML like `playback: {type: Alsa, device: "hw:USB,0"}` is parsed
 /// correctly, and device names containing special characters are returned
 /// verbatim without shell-quoting side-effects.
+///
 /// Read `config_path` from a CamillaDSP statefile (YAML).
 ///
 /// CamillaDSP writes a statefile containing the active config path, volume,
@@ -134,6 +137,76 @@ pub fn get_config_path(path: &Path) -> AppResult<String> {
         .and_then(YamlValue::as_str)
         .map(str::to_owned)
         .ok_or_else(|| app_error("statefile has no 'config_path' value"))
+}
+
+fn get_state_sequence<'a>(root: &'a YamlValue, key: &str) -> AppResult<&'a [YamlValue]> {
+    let seq = root
+        .get(key)
+        .and_then(YamlValue::as_sequence)
+        .ok_or_else(|| app_error(format!("statefile has no '{key}' sequence")))?;
+    if seq.len() != CAMILLA_STATE_CHANNELS {
+        return Err(app_error(format!(
+            "statefile '{key}' must contain exactly {CAMILLA_STATE_CHANNELS} values"
+        )));
+    }
+    Ok(seq)
+}
+
+fn validated_mute_block(root: &YamlValue) -> AppResult<YamlValue> {
+    let mute = get_state_sequence(root, "mute")?
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            value.as_bool().map(YamlValue::Bool).ok_or_else(|| {
+                app_error(format!("statefile 'mute[{}]' must be a boolean", idx + 1))
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(YamlValue::Sequence(mute))
+}
+
+fn validated_volume_block(root: &YamlValue) -> AppResult<YamlValue> {
+    let volume = get_state_sequence(root, "volume")?
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            let number = value
+                .as_f64()
+                .or_else(|| value.as_i64().map(|v| v as f64))
+                .or_else(|| value.as_u64().map(|v| v as f64))
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| {
+                    app_error(format!(
+                        "statefile 'volume[{}]' must be a finite number",
+                        idx + 1
+                    ))
+                })?;
+            Ok(YamlValue::from(number))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(YamlValue::Sequence(volume))
+}
+
+/// Read a CamillaDSP statefile and return a normalized YAML fragment
+/// containing validated `mute` and `volume` blocks.
+///
+/// This replaces the installer's last AWK-based YAML parsing. Both arrays must
+/// exist, contain exactly five entries, and have the expected scalar types.
+pub fn get_state_fragment(path: &Path) -> AppResult<String> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        app_error(format!(
+            "unable to read statefile {}: {err}",
+            path.display()
+        ))
+    })?;
+    let root: YamlValue = serde_yaml_ng::from_str(&raw)
+        .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
+
+    let mut fragment = Mapping::new();
+    fragment.insert(yaml_key("mute"), validated_mute_block(&root)?);
+    fragment.insert(yaml_key("volume"), validated_volume_block(&root)?);
+    let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fragment))?;
+    Ok(yaml.strip_prefix("---\n").unwrap_or(&yaml).to_owned())
 }
 
 pub fn get_playback_device(path: &Path) -> AppResult<String> {
@@ -674,6 +747,58 @@ mod tests {
         let sf = dir.join("state.yml");
         fs::write(&sf, "volume:\n- -10.0\n").unwrap();
         assert!(get_config_path(&sf).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_state_fragment_returns_validated_blocks() {
+        let dir = test_dir("statefile-fragment");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/Bypass.yml\n\
+             mute:\n\
+             - false\n\
+             - true\n\
+             - false\n\
+             - true\n\
+             - false\n\
+             volume:\n\
+             - -20.0\n\
+             - -10\n\
+             - 0.0\n\
+             - 1.5\n\
+             - 3\n",
+        )
+        .unwrap();
+
+        let fragment = get_state_fragment(&sf).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&fragment).unwrap();
+        let mute = parsed["mute"].as_sequence().unwrap();
+        let volume = parsed["volume"].as_sequence().unwrap();
+
+        assert_eq!(mute.len(), CAMILLA_STATE_CHANNELS);
+        assert_eq!(volume.len(), CAMILLA_STATE_CHANNELS);
+        assert_eq!(mute[1].as_bool(), Some(true));
+        assert_eq!(volume[0].as_f64(), Some(-20.0));
+        assert_eq!(volume[4].as_f64(), Some(3.0));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_state_fragment_rejects_wrong_array_length() {
+        let dir = test_dir("statefile-short-array");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "mute:\n- false\n- false\nvolume:\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+
+        let err = get_state_fragment(&sf).unwrap_err().to_string();
+        assert!(err.contains("exactly 5 values"));
+
         fs::remove_dir_all(dir).unwrap();
     }
 }
