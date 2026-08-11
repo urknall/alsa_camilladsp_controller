@@ -62,7 +62,7 @@ OUTPUT_PCM_NAME="picoredsp"
 CDSP_VERSION="v4.1.3"
 CAMILLA_GUI_VERSION="v4.1.0"
 
-CONTROLLER_VERSION="v0.1.0"
+CONTROLLER_RELEASE_TAG="installer-latest"
 CONTROLLER_REPO="urknall/alsa_camilladsp_controller"
 
 ###############################################################################
@@ -760,15 +760,15 @@ case "${architecture}" in
     armv7)   controller_arch="armv7"   ;;
 esac
 
-CONTROLLER_RELEASE_URL="https://github.com/${CONTROLLER_REPO}/releases/download/${CONTROLLER_VERSION}/picoredsp-controller-${controller_arch}"
+CONTROLLER_RELEASE_URL="https://github.com/${CONTROLLER_REPO}/releases/download/${CONTROLLER_RELEASE_TAG}/picoredsp-controller-${controller_arch}"
 
-echo "Downloading picoredsp-controller ${CONTROLLER_VERSION} for ${controller_arch}..."
+echo "Downloading picoredsp-controller ${CONTROLLER_RELEASE_TAG} for ${controller_arch}..."
 
 mkdir -p "${BUILD_DIR}/usr/local/bin"
 
 if $keepDownloads; then
     mkdir -p "${CACHE_DIR}"
-    CACHED_CONTROLLER="${CACHE_DIR}/picoredsp-controller-${controller_arch}-${CONTROLLER_VERSION}"
+    CACHED_CONTROLLER="${CACHE_DIR}/picoredsp-controller-${controller_arch}-${CONTROLLER_RELEASE_TAG}"
     if [ ! -f "${CACHED_CONTROLLER}" ]; then
         wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
     else
@@ -826,7 +826,7 @@ fi
 
 rm -f "${RUST_ADAPTED_TEST}"
 
-echo "picoredsp-controller ${CONTROLLER_VERSION} download and ALSA probe OK."
+echo "picoredsp-controller ${CONTROLLER_RELEASE_TAG} download and ALSA probe OK."
 
 ###############################################################################
 # Download CamillaDSP

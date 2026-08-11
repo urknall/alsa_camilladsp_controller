@@ -127,8 +127,43 @@ jobs:
           path: picoredsp-controller-${{ matrix.binary_suffix }}
           if-no-files-found: error
 
-  # ─── Create a GitHub release on version tags ──────────────────────────────
-  release:
+  # ─── Publish a rolling release for the installer on main ──────────────────
+  release_main:
+    name: Publish installer release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v7
+        with:
+          name: picoredsp-controller-aarch64
+
+      - name: Download armv7 binary
+        uses: actions/download-artifact@v7
+        with:
+          name: picoredsp-controller-armv7
+
+      - name: Create or update rolling installer release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: installer-latest
+          target_commitish: ${{ github.sha }}
+          name: Installer latest
+          body: |
+            Rolling release for installer downloads from the latest successful main branch build.
+          prerelease: true
+          files: |
+            picoredsp-controller-aarch64
+            picoredsp-controller-armv7
+          overwrite_files: true
+          fail_on_unmatched_files: true
+
+  # ─── Create immutable GitHub releases on version tags ─────────────────────
+  release_tag:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build
@@ -148,7 +183,7 @@ jobs:
           name: picoredsp-controller-armv7
 
       - name: Create release and attach binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             picoredsp-controller-aarch64
