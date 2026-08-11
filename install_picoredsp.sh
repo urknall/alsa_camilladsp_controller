@@ -807,6 +807,8 @@ echo "CamillaDSP configuration validation OK."
 (
     TEST_PORT=12345
     TEST_LOG="/tmp/picoredsp-camilladsp-ws-test.$$.log"
+    TEST_STDERR_LOG="${TEST_LOG}.stderr"
+    TEST_STATEFILE="/tmp/picoredsp-camilladsp-ws-test.$$.state.yml"
     TEST_PID=""
 
     cleanup_ws_test() {
@@ -814,23 +816,36 @@ echo "CamillaDSP configuration validation OK."
             kill "${TEST_PID}" >/dev/null 2>&1 || true
             wait "${TEST_PID}" >/dev/null 2>&1 || true
         fi
-        rm -f "${TEST_LOG}" >/dev/null 2>&1 || true
+        rm -f "${TEST_LOG}" "${TEST_STDERR_LOG}" "${TEST_STATEFILE}" >/dev/null 2>&1 || true
     }
 
     trap cleanup_ws_test EXIT HUP INT TERM
 
+    if ! cp "${STAGE_STATEFILE}" "${TEST_STATEFILE}"; then
+        echo "ERROR: Failed to stage temporary CamillaDSP statefile for WebSocket smoke test."
+        exit 1
+    fi
+
     "${BUILD_DIR}/usr/local/camilladsp" \
         --wait \
         --no_config \
+        --statefile "${TEST_STATEFILE}" \
         --port "${TEST_PORT}" \
         --address 127.0.0.1 \
         --logfile "${TEST_LOG}" \
-        >/dev/null 2>&1 &
+        >"${TEST_STDERR_LOG}" 2>&1 &
     TEST_PID=$!
 
     i=0
     while [ "${i}" -lt 20 ]
     do
+        if ! kill -0 "${TEST_PID}" 2>/dev/null; then
+            echo "ERROR: Temporary CamillaDSP exited before WebSocket became available."
+            cat "${TEST_STDERR_LOG}" 2>/dev/null || true
+            cat "${TEST_LOG}" 2>/dev/null || true
+            exit 1
+        fi
+
         if "${RUST_RUNTIME_BIN}" \
             --ws-check \
             --host 127.0.0.1 \
@@ -845,6 +860,7 @@ echo "CamillaDSP configuration validation OK."
 
     if [ "${i}" -ge 20 ]; then
         echo "ERROR: Rust controller could not establish a CamillaDSP WebSocket session."
+        cat "${TEST_STDERR_LOG}" 2>/dev/null || true
         cat "${TEST_LOG}" 2>/dev/null || true
         exit 1
     fi
