@@ -1,0 +1,139 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ─── Unit tests run on the host (x86-64) ─────────────────────────────────
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
+
+      - name: Run unit tests
+        run: cargo test
+
+  # ─── Cross-compile release binaries ──────────────────────────────────────
+  build:
+    name: Build (${{ matrix.binary_suffix }})
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 64-bit ARM — Raspberry Pi 3/4/5 running 64-bit piCorePlayer
+          - target: aarch64-unknown-linux-gnu
+            binary_suffix: aarch64
+            cross_gcc: gcc-aarch64-linux-gnu
+            libasound_arch: arm64
+            pkg_config_path: /usr/lib/aarch64-linux-gnu/pkgconfig
+
+          # 32-bit ARMv7 — Raspberry Pi 2/3 running 32-bit piCorePlayer
+          - target: armv7-unknown-linux-gnueabihf
+            binary_suffix: armv7
+            cross_gcc: gcc-arm-linux-gnueabihf
+            libasound_arch: armhf
+            pkg_config_path: /usr/lib/arm-linux-gnueabihf/pkgconfig
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) with cross-compilation target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Enable multiarch and install cross toolchain + ALSA headers
+        run: |
+          sudo dpkg --add-architecture ${{ matrix.libasound_arch }}
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            ${{ matrix.cross_gcc }} \
+            libasound2-dev:${{ matrix.libasound_arch }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Build release binary
+        env:
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: ${{ matrix.pkg_config_path }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage binary with architecture suffix
+        run: |
+          cp target/${{ matrix.target }}/release/picoredsp-controller \
+             picoredsp-controller-${{ matrix.binary_suffix }}
+
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picoredsp-controller-${{ matrix.binary_suffix }}
+          path: picoredsp-controller-${{ matrix.binary_suffix }}
+          if-no-files-found: error
+
+  # ─── Create a GitHub release on version tags ──────────────────────────────
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: picoredsp-controller-aarch64
+
+      - name: Download armv7 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: picoredsp-controller-armv7
+
+      - name: Create release and attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            picoredsp-controller-aarch64
+            picoredsp-controller-armv7
+          generate_release_notes: true
+          fail_on_unmatched_files: true
