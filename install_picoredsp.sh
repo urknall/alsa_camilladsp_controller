@@ -821,21 +821,7 @@ echo "CamillaDSP configuration validation OK."
 
     trap cleanup_ws_test EXIT HUP INT TERM
 
-    cat > "${TEST_STATEFILE}" <<'EOF'
-config_path: null
-mute:
-- false
-- false
-- false
-- false
-- false
-volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-EOF
+    cp "${STAGE_STATEFILE}" "${TEST_STATEFILE}"
 
     "${BUILD_DIR}/usr/local/camilladsp" \
         --wait \
