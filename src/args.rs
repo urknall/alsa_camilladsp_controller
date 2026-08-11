@@ -19,6 +19,12 @@ pub struct Args {
     pub initial_channels: Option<u32>,
     pub log_level: LogLevel,
     pub mode: Mode,
+    /// CamillaDSP YAML config path supplied to `--get-playback-device`.
+    pub config_path: Option<PathBuf>,
+    /// Playback device string supplied to `--make-bypass`.
+    pub playback_device: Option<String>,
+    /// Output file path for `--make-bypass` (stdout when absent).
+    pub output: Option<PathBuf>,
 }
 
 /// Operating mode selected by the user.
@@ -34,6 +40,10 @@ pub enum Mode {
     WsValidate,
     /// Adapt YAML once, write result to stdout, exit.
     AdaptCheck,
+    /// Read `devices.playback.device` from a CamillaDSP YAML config and print it.
+    GetPlaybackDevice,
+    /// Write a piCoreDSP bypass CamillaDSP config with the given playback device.
+    MakeBypass,
 }
 
 impl Mode {
@@ -44,6 +54,8 @@ impl Mode {
             Self::WsCheck => "--ws-check",
             Self::WsValidate => "--ws-validate",
             Self::AdaptCheck => "--adapt-check",
+            Self::GetPlaybackDevice => "--get-playback-device",
+            Self::MakeBypass => "--make-bypass",
         }
     }
 }
@@ -60,6 +72,9 @@ impl Default for Args {
             initial_channels: None,
             log_level: LogLevel::Info,
             mode: Mode::Run,
+            config_path: None,
+            playback_device: None,
+            output: None,
         }
     }
 }
@@ -75,22 +90,28 @@ Usage:\n\
   picoredsp-controller --probe [--device DEVICE]\n\
   picoredsp-controller --ws-check [--host HOST] [--port PORT]\n\
   picoredsp-controller --ws-validate --adapt PATH [--host HOST] [--port PORT]\n\
-  picoredsp-controller --adapt-check --adapt PATH [--rate R --format F --channels N]\n\n\
+  picoredsp-controller --adapt-check --adapt PATH [--rate R --format F --channels N]\n\
+  picoredsp-controller --get-playback-device CONFIG\n\
+  picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\n\
 Options:\n\
-  -a, --adapt PATH       Active config path/symlink to adapt\n\
-  -d, --device DEVICE    ALSA control device (default: hw:Loopback,0)\n\
-      --host HOST        CamillaDSP websocket host (default: localhost)\n\
-  -p, --port PORT        CamillaDSP websocket port (default: 1234)\n\
-  -r, --rate RATE        Initial fallback sample rate\n\
-  -f, --format FORMAT    Initial fallback CamillaDSP sample format (e.g. S32_LE)\n\
-  -c, --channels N       Initial fallback capture channel count\n\
-  -l, --log-level LEVEL  DEBUG, INFO, WARNING, ERROR, CRITICAL\n\
-      --probe            Read snd-aloop controls once and exit\n\
-      --ws-check         Connect, query CamillaDSP version, close, exit\n\
-      --ws-validate      Adapt YAML and ValidateConfig over websocket\n\
-      --adapt-check      Adapt YAML once, write result to stdout, exit\n\
-  -h, --help             Show this help\n\
-  -V, --version          Show version"
+  -a, --adapt PATH              Active config path/symlink to adapt\n\
+  -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
+      --host HOST               CamillaDSP websocket host (default: localhost)\n\
+  -p, --port PORT               CamillaDSP websocket port (default: 1234)\n\
+  -r, --rate RATE               Initial fallback sample rate\n\
+  -f, --format FORMAT           Initial fallback CamillaDSP sample format (e.g. S32_LE)\n\
+  -c, --channels N              Initial fallback capture channel count\n\
+  -l, --log-level LEVEL         DEBUG, INFO, WARNING, ERROR, CRITICAL\n\
+      --probe                   Read snd-aloop controls once and exit\n\
+      --ws-check                Connect, query CamillaDSP version, close, exit\n\
+      --ws-validate             Adapt YAML and ValidateConfig over websocket\n\
+      --adapt-check             Adapt YAML once, write result to stdout, exit\n\
+      --get-playback-device PATH  Print devices.playback.device from a YAML config\n\
+      --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
+      --playback-device DEVICE  Playback device for --make-bypass\n\
+      --output FILE             Output file for --make-bypass (default: stdout)\n\
+  -h, --help                    Show this help\n\
+  -V, --version                 Show version"
     );
 }
 
@@ -153,6 +174,32 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 }
                 args.mode = Mode::AdaptCheck;
             }
+            "--get-playback-device" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --get-playback-device",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::GetPlaybackDevice;
+                args.config_path =
+                    Some(PathBuf::from(next_value("--get-playback-device")?));
+            }
+            "--make-bypass" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --make-bypass",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::MakeBypass;
+            }
+            "--playback-device" => {
+                args.playback_device = Some(next_value("--playback-device")?);
+            }
+            "--output" => {
+                args.output = Some(PathBuf::from(next_value("--output")?));
+            }
             "--host" => args.host = next_value("--host")?,
             "-p" | "--port" => {
                 let v: u16 = next_value("--port")?
@@ -194,6 +241,9 @@ pub fn parse_args() -> AppResult<Option<Args>> {
     if matches!(args.mode, Mode::Run | Mode::WsValidate | Mode::AdaptCheck) && args.adapt.is_none()
     {
         return Err(app_error("this mode requires --adapt PATH"));
+    }
+    if args.mode == Mode::MakeBypass && args.playback_device.is_none() {
+        return Err(app_error("--make-bypass requires --playback-device DEVICE"));
     }
     Ok(Some(args))
 }
