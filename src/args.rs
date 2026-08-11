@@ -36,6 +36,18 @@ pub enum Mode {
     AdaptCheck,
 }
 
+impl Mode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Run => "--run (default)",
+            Self::Probe => "--probe",
+            Self::WsCheck => "--ws-check",
+            Self::WsValidate => "--ws-validate",
+            Self::AdaptCheck => "--adapt-check",
+        }
+    }
+}
+
 impl Default for Args {
     fn default() -> Self {
         Self {
@@ -105,32 +117,72 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 println!("picoredsp-controller {VERSION}");
                 return Ok(None);
             }
-            "--probe" => args.mode = Mode::Probe,
-            "--ws-check" => args.mode = Mode::WsCheck,
-            "--ws-validate" => args.mode = Mode::WsValidate,
-            "--adapt-check" => args.mode = Mode::AdaptCheck,
+            "--probe" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --probe",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::Probe;
+            }
+            "--ws-check" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --ws-check",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::WsCheck;
+            }
+            "--ws-validate" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --ws-validate",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::WsValidate;
+            }
+            "--adapt-check" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --adapt-check",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::AdaptCheck;
+            }
             "--host" => args.host = next_value("--host")?,
             "-p" | "--port" => {
-                args.port = next_value("--port")?
+                let v: u16 = next_value("--port")?
                     .parse()
                     .map_err(|_| app_error("--port must be an integer from 1 to 65535"))?;
+                if v == 0 {
+                    return Err(app_error("--port must be an integer from 1 to 65535"));
+                }
+                args.port = v;
             }
             "-d" | "--device" => args.device = next_value("--device")?,
             "-a" | "--adapt" => args.adapt = Some(PathBuf::from(next_value("--adapt")?)),
             "-r" | "--rate" => {
-                args.initial_rate = Some(
-                    next_value("--rate")?
-                        .parse()
-                        .map_err(|_| app_error("--rate must be a positive integer"))?,
-                );
+                let v: u32 = next_value("--rate")?
+                    .parse()
+                    .map_err(|_| app_error("--rate must be a positive integer"))?;
+                if v == 0 {
+                    return Err(app_error("--rate must be a positive integer"));
+                }
+                args.initial_rate = Some(v);
             }
             "-f" | "--format" => args.initial_format = Some(next_value("--format")?),
             "-c" | "--channels" => {
-                args.initial_channels = Some(
-                    next_value("--channels")?
-                        .parse()
-                        .map_err(|_| app_error("--channels must be a positive integer"))?,
-                );
+                let v: u32 = next_value("--channels")?
+                    .parse()
+                    .map_err(|_| app_error("--channels must be a positive integer"))?;
+                if v == 0 {
+                    return Err(app_error("--channels must be a positive integer"));
+                }
+                args.initial_channels = Some(v);
             }
             "-l" | "--log-level" => {
                 args.log_level = LogLevel::parse(&next_value("--log-level")?)?;

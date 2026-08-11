@@ -11,6 +11,84 @@ on:
       - main
 
 jobs:
+  # ─── Formatting check ────────────────────────────────────────────────────
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable) with rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+  # ─── Clippy lint ─────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable) with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-clippy-
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # ─── MSRV check ──────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.71)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust 1.71 (declared MSRV)
+        uses: dtolnay/rust-toolchain@1.71
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+
+      - name: Check that code compiles on MSRV
+        run: cargo check --locked
+
   # ─── Unit tests run on the host (x86-64) ─────────────────────────────────
   test:
     name: Unit tests
@@ -34,17 +112,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
 
       - name: Run unit tests
-        run: cargo test
+        run: cargo test --locked
 
   # ─── Cross-compile release binaries ──────────────────────────────────────
   build:
     name: Build (${{ matrix.binary_suffix }})
     runs-on: ubuntu-latest
-    needs: test
+    needs: [fmt, clippy, test]
     permissions:
       contents: read
 
@@ -106,25 +184,32 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       - name: Build release binary
         env:
           PKG_CONFIG_ALLOW_CROSS: "1"
           PKG_CONFIG_PATH: ${{ matrix.pkg_config_path }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Stage binary with architecture suffix
         run: |
           cp target/${{ matrix.target }}/release/picoredsp-controller \
              picoredsp-controller-${{ matrix.binary_suffix }}
 
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum picoredsp-controller-${{ matrix.binary_suffix }} \
+            > picoredsp-controller-${{ matrix.binary_suffix }}.sha256
+
       - name: Upload build artefact
         uses: actions/upload-artifact@v6
         with:
           name: picoredsp-controller-${{ matrix.binary_suffix }}
-          path: picoredsp-controller-${{ matrix.binary_suffix }}
+          path: |
+            picoredsp-controller-${{ matrix.binary_suffix }}
+            picoredsp-controller-${{ matrix.binary_suffix }}.sha256
           if-no-files-found: error
 
   # ─── Publish a rolling release for the installer on main ──────────────────
@@ -158,7 +243,9 @@ jobs:
           prerelease: true
           files: |
             picoredsp-controller-aarch64
+            picoredsp-controller-aarch64.sha256
             picoredsp-controller-armv7
+            picoredsp-controller-armv7.sha256
           overwrite_files: true
           fail_on_unmatched_files: true
 
@@ -187,6 +274,8 @@ jobs:
         with:
           files: |
             picoredsp-controller-aarch64
+            picoredsp-controller-aarch64.sha256
             picoredsp-controller-armv7
+            picoredsp-controller-armv7.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
