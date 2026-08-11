@@ -3,13 +3,54 @@ use serde_json::Value as JsonValue;
 use std::error::Error;
 use std::fmt;
 use std::net::TcpStream;
+use std::time::Duration;
 use tungstenite::client::connect;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
+/// TCP-level read/write timeout applied to every WebSocket operation.
+///
+/// 10 seconds is long enough to accommodate CamillaDSP validating a
+/// configuration that includes large FIR coefficient files, while still
+/// bounding a controller hang caused by a wedged or half-open socket.
+const WS_IO_TIMEOUT: Duration = Duration::from_secs(10);
+
 // ─── Error type ────────────────────────────────────────────────────────────
+
+/// Category of a CamillaDSP application-level command error.
+///
+/// CamillaDSP's WebSocket protocol distinguishes several named error variants.
+/// Most indicate a permanent problem with the current configuration, but some
+/// are transient.  Preserving the distinction lets the controller react
+/// appropriately instead of collapsing every error into a single string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandReason {
+    /// Configuration failed validation or could not be read.
+    /// Treat as permanent until the active config file changes.
+    ConfigValidation,
+    /// Request rate limit exceeded — transient, short retry.
+    RateLimit,
+    /// CamillaDSP is shutting down — reconnect required.
+    Shutdown,
+    /// The request contained an invalid value — programmer error.
+    InvalidValue,
+    /// Any other application-level error.
+    Other,
+}
+
+impl CommandReason {
+    fn from_variant(name: &str) -> Self {
+        match name {
+            "ConfigValidationError" | "ConfigReadError" => Self::ConfigValidation,
+            "RateLimitExceededError" => Self::RateLimit,
+            "ShutdownInProgressError" => Self::Shutdown,
+            "InvalidValueError" => Self::InvalidValue,
+            _ => Self::Other,
+        }
+    }
+}
 
 /// Errors that can arise when communicating with the CamillaDSP WebSocket API.
 #[derive(Debug)]
@@ -17,7 +58,7 @@ pub enum WsError {
     /// The TCP/WebSocket transport failed (connect, send, read, close).
     Transport(String),
     /// CamillaDSP reported an application-level error in the reply.
-    Command(String),
+    Command(CommandReason, String),
     /// The reply shape did not match the expected protocol.
     Protocol(String),
 }
@@ -26,13 +67,27 @@ impl fmt::Display for WsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(msg) => write!(f, "CamillaDSP websocket transport error: {msg}"),
-            Self::Command(msg) => write!(f, "CamillaDSP command error: {msg}"),
+            Self::Command(_, msg) => write!(f, "CamillaDSP command error: {msg}"),
             Self::Protocol(msg) => write!(f, "CamillaDSP websocket protocol error: {msg}"),
         }
     }
 }
 
 impl Error for WsError {}
+
+// ─── Client trait ──────────────────────────────────────────────────────────
+
+/// Abstraction over the CamillaDSP WebSocket protocol, used by the controller.
+///
+/// Defining a trait enables mock implementations for unit-testing the
+/// controller state machine without a live CamillaDSP process.
+pub trait CamillaClient {
+    fn query(
+        &mut self,
+        command: &str,
+        argument: Option<JsonValue>,
+    ) -> Result<Option<JsonValue>, WsError>;
+}
 
 // ─── Client ────────────────────────────────────────────────────────────────
 
@@ -47,23 +102,49 @@ pub struct CamillaWs {
 
 impl CamillaWs {
     /// Connect to CamillaDSP at `ws://<host>:<port>` and issue `GetVersion`.
+    ///
+    /// A TCP-level read/write timeout (`WS_IO_TIMEOUT`) is set so that a
+    /// wedged socket cannot block the controller thread forever.  When the
+    /// timeout fires, the read/write returns an I/O error which bubbles up as
+    /// `WsError::Transport`, causing the process to exit and the boot
+    /// supervisor to restart it — the same clean recovery path used for any
+    /// other transport failure.
     pub fn connect(host: &str, port: u16) -> Result<Self, WsError> {
         let url = format!("ws://{host}:{port}");
         let (socket, _) = connect(url)
             .map_err(|err| WsError::Transport(format!("connect failed: {err}")))?;
+
+        // Set TCP-level timeouts before the first I/O operation.
+        // `socket.get_ref()` → &MaybeTlsStream<TcpStream>; `.get_ref()` → &TcpStream.
+        {
+            let tcp = socket.get_ref().get_ref();
+            let t = Some(WS_IO_TIMEOUT);
+            tcp.set_read_timeout(t)
+                .map_err(|e| WsError::Transport(format!("set_read_timeout: {e}")))?;
+            tcp.set_write_timeout(t)
+                .map_err(|e| WsError::Transport(format!("set_write_timeout: {e}")))?;
+        }
+
         let mut client = Self { socket };
         // pyCamillaDSP calls GetVersion immediately after connecting.
-        let _ = client.query("GetVersion", None)?;
+        client.query("GetVersion", None)?;
         Ok(client)
     }
 
+    /// Send a WebSocket Close frame.
+    pub fn close(&mut self) {
+        let _ = self.socket.close(None);
+    }
+}
+
+impl CamillaClient for CamillaWs {
     /// Send `command` with an optional JSON argument and return the `value`
     /// field from a successful reply, or an error.
     ///
     /// The method loops over incoming frames, silently discarding Ping/Pong
     /// frames (tungstenite handles protocol-level responses automatically) and
     /// Binary/Frame frames until a Text reply or Close frame arrives.
-    pub fn query(
+    fn query(
         &mut self,
         command: &str,
         argument: Option<JsonValue>,
@@ -108,11 +189,6 @@ impl CamillaWs {
             }
         }
     }
-
-    /// Send a WebSocket Close frame.
-    pub fn close(&mut self) {
-        let _ = self.socket.close(None);
-    }
 }
 
 impl Drop for CamillaWs {
@@ -120,6 +196,8 @@ impl Drop for CamillaWs {
         self.close();
     }
 }
+
+// ─── DeviceListener trait moved to alsa_listener.rs ───────────────────────
 
 // ─── Reply parsing ─────────────────────────────────────────────────────────
 
@@ -136,7 +214,7 @@ pub fn parse_ws_reply(command: &str, reply: JsonValue) -> Result<Option<JsonValu
     })?;
 
     if let Some(error) = entry.get("error") {
-        return Err(WsError::Command(error.to_string()));
+        return Err(WsError::Command(CommandReason::Other, error.to_string()));
     }
 
     let result = entry
@@ -145,14 +223,19 @@ pub fn parse_ws_reply(command: &str, reply: JsonValue) -> Result<Option<JsonValu
 
     match result {
         JsonValue::String(value) if value == "Ok" => Ok(entry.get("value").cloned()),
-        JsonValue::String(value) => Err(WsError::Command(value.clone())),
+        JsonValue::String(value) => {
+            Err(WsError::Command(CommandReason::Other, value.clone()))
+        }
         JsonValue::Object(values) => {
-            let message = values
+            let (kind, msg) = values
                 .iter()
                 .next()
-                .map(|(kind, msg)| format!("{kind}: {msg}"))
-                .unwrap_or_else(|| "empty error result".to_owned());
-            Err(WsError::Command(message))
+                .map(|(k, v)| (k.as_str(), v.to_string()))
+                .unwrap_or(("", "empty error result".to_owned()));
+            Err(WsError::Command(
+                CommandReason::from_variant(kind),
+                format!("{kind}: {msg}"),
+            ))
         }
         other => Err(WsError::Protocol(format!(
             "invalid result for '{command}': {other}"
@@ -296,7 +379,7 @@ mod tests {
         });
         assert!(matches!(
             parse_ws_reply("SetConfig", err),
-            Err(WsError::Command(_))
+            Err(WsError::Command(CommandReason::ConfigValidation, _))
         ));
     }
 
@@ -305,7 +388,7 @@ mod tests {
         let err = serde_json::json!({"SetConfig": {"result": "Error"}});
         assert!(matches!(
             parse_ws_reply("SetConfig", err),
-            Err(WsError::Command(_))
+            Err(WsError::Command(CommandReason::Other, _))
         ));
     }
 }

@@ -10,6 +10,18 @@ const LOOPBACK_FORMAT: &str = "PCM Slave Format";
 const LOOPBACK_RATE: &str = "PCM Slave Rate";
 const GADGET_CAPTURE_RATE: &str = "Capture Rate";
 
+// ─── Listener trait ────────────────────────────────────────────────────────
+
+/// Abstraction over the ALSA loopback control interface, used by the controller.
+///
+/// Defining a trait enables mock implementations for unit-testing the
+/// controller state machine without physical ALSA hardware.
+pub trait DeviceListener {
+    fn wait_for_event(&self, timeout_ms: u32) -> AppResult<bool>;
+    fn handle_events(&self) -> AppResult<()>;
+    fn read_snapshot(&self) -> AppResult<DeviceSnapshot>;
+}
+
 /// Non-blocking listener for the ALSA `snd-aloop` (or USB gadget) HCTL interface.
 ///
 /// Wraps an open `HCtl` handle and provides snapshot reads and event polling.
@@ -226,6 +238,18 @@ pub fn alsa_format_to_camilladsp(value: i32) -> AppResult<Option<&'static str>> 
         }
     };
     Ok(mapped)
+}
+
+impl DeviceListener for AlsaLoopbackListener {
+    fn wait_for_event(&self, timeout_ms: u32) -> AppResult<bool> {
+        AlsaLoopbackListener::wait_for_event(self, timeout_ms)
+    }
+    fn handle_events(&self) -> AppResult<()> {
+        AlsaLoopbackListener::handle_events(self)
+    }
+    fn read_snapshot(&self) -> AppResult<DeviceSnapshot> {
+        AlsaLoopbackListener::read_snapshot(self)
+    }
 }
 
 #[cfg(test)]
