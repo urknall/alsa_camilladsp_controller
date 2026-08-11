@@ -382,6 +382,81 @@ fi
 echo "ALSA Loopback is available."
 
 ###############################################################################
+# Download picoredsp-controller
+###############################################################################
+
+# Map the piCorePlayer architecture identifier to the binary name used in
+# GitHub release artefacts.
+case "${architecture}" in
+    aarch64) controller_arch="aarch64" ;;
+    armv7)   controller_arch="armv7"   ;;
+esac
+
+CONTROLLER_RELEASE_URL="https://github.com/${CONTROLLER_REPO}/releases/download/${CONTROLLER_RELEASE_TAG}/picoredsp-controller-${controller_arch}"
+
+echo "Downloading picoredsp-controller ${CONTROLLER_RELEASE_TAG} for ${controller_arch}..."
+
+mkdir -p "${BUILD_DIR}/usr/local/bin"
+
+if $keepDownloads; then
+    mkdir -p "${CACHE_DIR}"
+    CACHED_CONTROLLER="${CACHE_DIR}/picoredsp-controller-${controller_arch}-${CONTROLLER_RELEASE_TAG}"
+    # Never use a stale cache for a mutable rolling tag — always re-download.
+    if [ "${CONTROLLER_RELEASE_TAG}" = "installer-latest" ]; then
+        echo "Rolling tag ${CONTROLLER_RELEASE_TAG}: skipping cache, re-downloading."
+        wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
+    elif [ ! -f "${CACHED_CONTROLLER}" ]; then
+        wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
+    else
+        echo "Using cached ${CACHED_CONTROLLER}"
+    fi
+    cp "${CACHED_CONTROLLER}" "${RUST_RUNTIME_BIN}"
+else
+    wget -O "${RUST_RUNTIME_BIN}" "${CONTROLLER_RELEASE_URL}"
+fi
+
+chmod 755 "${RUST_RUNTIME_BIN}"
+
+# Verify SHA256 checksum against the published .sha256 file before executing
+# the binary or passing it through --help or --probe.
+_sha256_tmp="/tmp/picoredsp-controller-${controller_arch}.sha256.$$"
+wget -O "${_sha256_tmp}" "${CONTROLLER_RELEASE_URL}.sha256" \
+    || { echo "ERROR: Failed to download SHA256 checksum for picoredsp-controller-${controller_arch}."; exit 1; }
+_expected_hash=$(awk '{print $1; exit}' "${_sha256_tmp}")
+_actual_hash=$(sha256sum "${RUST_RUNTIME_BIN}" | awk '{print $1}')
+rm -f "${_sha256_tmp}"
+if [ "${_expected_hash}" != "${_actual_hash}" ]; then
+    echo "ERROR: SHA256 mismatch for picoredsp-controller-${controller_arch}."
+    echo "  Expected: ${_expected_hash}"
+    echo "  Got:      ${_actual_hash}"
+    exit 1
+fi
+echo "picoredsp-controller SHA256 verified: ${_actual_hash}"
+
+if [ ! -x "${RUST_RUNTIME_BIN}" ]; then
+    echo "ERROR: picoredsp-controller binary was not downloaded."
+    exit 1
+fi
+
+# Verify the binary can actually execute.
+"${RUST_RUNTIME_BIN}" --help >/dev/null
+
+# Catch missing runtime libraries before the transactional commit.
+if command -v ldd >/dev/null 2>&1; then
+    if ldd "${RUST_RUNTIME_BIN}" 2>&1 | grep -q 'not found'; then
+        echo "ERROR: picoredsp-controller has unresolved runtime libraries:"
+        ldd "${RUST_RUNTIME_BIN}" 2>&1 || true
+        exit 1
+    fi
+fi
+
+# Verify the binary can open the exact snd-aloop HCTL device used at runtime,
+# find the expected PCM controls, and read their values on this kernel.
+echo "Probing snd-aloop controls with picoredsp-controller..."
+"${RUST_RUNTIME_BIN}" --probe --device hw:Loopback,0
+
+
+###############################################################################
 # Resolve the real CamillaDSP playback device
 #
 # First install:
@@ -410,83 +485,6 @@ read_pcp_output() {
         exit
     }
     ' "${PCP_CONFIG}"
-}
-
-read_statefile_config_path() {
-    statefile="$1"
-    [ -f "${statefile}" ] || return 1
-
-    awk '
-    /^[[:space:]]*config_path:[[:space:]]*/ {
-        value = $0
-        sub(/^[[:space:]]*config_path:[[:space:]]*/, "", value)
-        sub(/^"/, "", value)
-        sub(/"$/, "", value)
-        sub(/^\047/, "", value)
-        sub(/\047$/, "", value)
-        print value
-        exit
-    }
-    ' "${statefile}"
-}
-
-read_cdsp_playback_device() {
-    config="$1"
-    [ -f "${config}" ] || return 1
-
-    awk '
-    function indentation(s) {
-        match(s, /^[ \t]*/)
-        return RLENGTH
-    }
-    {
-        raw = $0
-        indent = indentation(raw)
-        line = raw
-        sub(/^[ \t]*/, "", line)
-
-        if (line == "" || line ~ /^#/)
-            next
-
-        if (!in_devices) {
-            if (line ~ /^devices:[ \t]*$/) {
-                in_devices = 1
-                devices_indent = indent
-            }
-            next
-        }
-
-        if (indent <= devices_indent) {
-            in_devices = 0
-            in_playback = 0
-            next
-        }
-
-        if (!in_playback) {
-            if (line ~ /^playback:[ \t]*$/) {
-                in_playback = 1
-                playback_indent = indent
-            }
-            next
-        }
-
-        if (indent <= playback_indent) {
-            in_playback = 0
-            next
-        }
-
-        if (line ~ /^device:[ \t]*/) {
-            sub(/^device:[ \t]*/, "", line)
-            sub(/[ \t]+$/, "", line)
-            sub(/^"/, "", line)
-            sub(/"$/, "", line)
-            sub(/^\047/, "", line)
-            sub(/\047$/, "", line)
-            print line
-            exit
-        }
-    }
-    ' "${config}"
 }
 
 is_usable_playback_device() {
@@ -536,11 +534,11 @@ else
             fi
 
             if [ -z "${ACTIVE_CONFIG_TARGET}" ]; then
-                ACTIVE_CONFIG_TARGET=$(read_statefile_config_path "${STATEFILE}" 2>/dev/null || true)
+                ACTIVE_CONFIG_TARGET=$("${RUST_RUNTIME_BIN}" --get-config-path "${STATEFILE}" 2>/dev/null || true)
             fi
 
             if [ -n "${ACTIVE_CONFIG_TARGET}" ]; then
-                candidate=$(read_cdsp_playback_device "${ACTIVE_CONFIG_TARGET}" 2>/dev/null || true)
+                candidate=$("${RUST_RUNTIME_BIN}" --get-playback-device "${ACTIVE_CONFIG_TARGET}" 2>/dev/null || true)
                 if is_usable_playback_device "${candidate}"; then
                     PLAYBACK_DEVICE="${candidate}"
                     PLAYBACK_SOURCE="active CamillaDSP config (${ACTIVE_CONFIG_TARGET})"
@@ -548,7 +546,7 @@ else
             fi
 
             if [ -z "${PLAYBACK_DEVICE}" ]; then
-                candidate=$(read_cdsp_playback_device "${BYPASS_CONFIG}" 2>/dev/null || true)
+                candidate=$("${RUST_RUNTIME_BIN}" --get-playback-device "${BYPASS_CONFIG}" 2>/dev/null || true)
                 if is_usable_playback_device "${candidate}"; then
                     PLAYBACK_DEVICE="${candidate}"
                     PLAYBACK_SOURCE="existing Bypass.yml"
@@ -594,42 +592,11 @@ echo "Playback device source: ${PLAYBACK_SOURCE}"
 
 # Leave ALSA sample formats automatic. With snd-aloop, the playback side fixes
 # the format that the capture side must use. CamillaDSP can select that format.
-cat > "${STAGE_DEFAULT_CONFIG}" <<EOF
-devices:
-  samplerate: 44100
-  chunksize: 2048
-  queuelimit: 4
-  enable_rate_adjust: true
+"${RUST_RUNTIME_BIN}" --make-bypass \
+    --playback-device "${PLAYBACK_DEVICE}" \
+    --output "${STAGE_BYPASS_CONFIG}"
 
-  capture:
-    type: Alsa
-    channels: 2
-    device: "hw:Loopback,0,0"
-    stop_on_inactive: true
-
-  playback:
-    type: Alsa
-    channels: 2
-    device: "${PLAYBACK_DEVICE}"
-
-filters: {}
-mixers: {}
-pipeline: []
-processors: {}
-EOF
-
-cp "${STAGE_DEFAULT_CONFIG}" "${STAGE_BYPASS_CONFIG}"
-
-cat >> "${STAGE_BYPASS_CONFIG}" <<EOF
-
-title: 'Bypass'
-description: |
-  Default piCoreDSP pass-through configuration.
-  Audio is captured from snd-aloop and played to the piCorePlayer output
-  that was selected before installation: ${PLAYBACK_DEVICE}
-
-  Add filters/mixers in CamillaGUI or duplicate this config for DSP work.
-EOF
+cp "${STAGE_BYPASS_CONFIG}" "${STAGE_DEFAULT_CONFIG}"
 
 cat > "${STAGE_NULL_CONFIG}" <<'EOF'
 devices:
@@ -784,81 +751,6 @@ if ! grep -qx 'OUTPUT="picoredsp"' "${PCP_STAGED}"; then
     exit 1
 fi
 
-
-###############################################################################
-# Download picoredsp-controller
-###############################################################################
-
-# Map the piCorePlayer architecture identifier to the binary name used in
-# GitHub release artefacts.
-case "${architecture}" in
-    aarch64) controller_arch="aarch64" ;;
-    armv7)   controller_arch="armv7"   ;;
-esac
-
-CONTROLLER_RELEASE_URL="https://github.com/${CONTROLLER_REPO}/releases/download/${CONTROLLER_RELEASE_TAG}/picoredsp-controller-${controller_arch}"
-
-echo "Downloading picoredsp-controller ${CONTROLLER_RELEASE_TAG} for ${controller_arch}..."
-
-mkdir -p "${BUILD_DIR}/usr/local/bin"
-
-if $keepDownloads; then
-    mkdir -p "${CACHE_DIR}"
-    CACHED_CONTROLLER="${CACHE_DIR}/picoredsp-controller-${controller_arch}-${CONTROLLER_RELEASE_TAG}"
-    # Never use a stale cache for a mutable rolling tag — always re-download.
-    if [ "${CONTROLLER_RELEASE_TAG}" = "installer-latest" ]; then
-        echo "Rolling tag ${CONTROLLER_RELEASE_TAG}: skipping cache, re-downloading."
-        wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
-    elif [ ! -f "${CACHED_CONTROLLER}" ]; then
-        wget -O "${CACHED_CONTROLLER}" "${CONTROLLER_RELEASE_URL}"
-    else
-        echo "Using cached ${CACHED_CONTROLLER}"
-    fi
-    cp "${CACHED_CONTROLLER}" "${RUST_RUNTIME_BIN}"
-else
-    wget -O "${RUST_RUNTIME_BIN}" "${CONTROLLER_RELEASE_URL}"
-fi
-
-chmod 755 "${RUST_RUNTIME_BIN}"
-
-# Verify SHA256 checksum against the published .sha256 file before executing
-# the binary or passing it through --help or --probe.
-_sha256_tmp="/tmp/picoredsp-controller-${controller_arch}.sha256.$$"
-wget -O "${_sha256_tmp}" "${CONTROLLER_RELEASE_URL}.sha256" \
-    || { echo "ERROR: Failed to download SHA256 checksum for picoredsp-controller-${controller_arch}."; exit 1; }
-_expected_hash=$(awk '{print $1; exit}' "${_sha256_tmp}")
-_actual_hash=$(sha256sum "${RUST_RUNTIME_BIN}" | awk '{print $1}')
-rm -f "${_sha256_tmp}"
-if [ "${_expected_hash}" != "${_actual_hash}" ]; then
-    echo "ERROR: SHA256 mismatch for picoredsp-controller-${controller_arch}."
-    echo "  Expected: ${_expected_hash}"
-    echo "  Got:      ${_actual_hash}"
-    exit 1
-fi
-echo "picoredsp-controller SHA256 verified: ${_actual_hash}"
-
-if [ ! -x "${RUST_RUNTIME_BIN}" ]; then
-    echo "ERROR: picoredsp-controller binary was not downloaded."
-    exit 1
-fi
-
-# Verify the binary can actually execute.
-"${RUST_RUNTIME_BIN}" --help >/dev/null
-
-# Catch missing runtime libraries before the transactional commit.
-if command -v ldd >/dev/null 2>&1; then
-    if ldd "${RUST_RUNTIME_BIN}" 2>&1 | grep -q 'not found'; then
-        echo "ERROR: picoredsp-controller has unresolved runtime libraries:"
-        ldd "${RUST_RUNTIME_BIN}" 2>&1 || true
-        exit 1
-    fi
-fi
-
-# Verify the binary can open the exact snd-aloop HCTL device used at runtime,
-# find the expected PCM controls, and read their values on this kernel.
-echo "Probing snd-aloop controls with picoredsp-controller..."
-"${RUST_RUNTIME_BIN}" --probe --device hw:Loopback,0
-
 # Verify piCoreDSP-specific adaptation behavior on the ACTUAL staged Bypass
 # config: symlink/file parsing, rate update and channel validation.
 RUST_ADAPTED_TEST="/tmp/picoredsp-adapted.$$.yml"
@@ -875,7 +767,7 @@ if ! grep -Eq '^[[:space:]]*samplerate:[[:space:]]*48000[[:space:]]*$' "${RUST_A
     exit 1
 fi
 
-if [ "$(read_cdsp_playback_device "${RUST_ADAPTED_TEST}" 2>/dev/null || true)" != "${PLAYBACK_DEVICE}" ]; then
+if [ "$("${RUST_RUNTIME_BIN}" --get-playback-device "${RUST_ADAPTED_TEST}" 2>/dev/null || true)" != "${PLAYBACK_DEVICE}" ]; then
     echo "ERROR: Controller adaptation did not preserve the selected playback device."
     exit 1
 fi

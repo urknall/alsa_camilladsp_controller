@@ -7,12 +7,12 @@ mod error;
 mod logging;
 mod wave;
 
-use adapt::adapt_config;
+use adapt::{adapt_config, get_config_path, get_playback_device, make_bypass_config};
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Mode};
 use camilla_ws::{CamillaClient, CamillaWs};
 use controller::Controller;
-use error::AppResult;
+use error::{app_error, AppResult};
 use serde_json::Value as JsonValue;
 use wave::WaveFormat;
 
@@ -70,6 +70,33 @@ fn run_main() -> AppResult<()> {
             let wave = wave_from_args(&args);
             let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
             print!("{adapted}");
+            Ok(())
+        }
+
+        Mode::GetPlaybackDevice => {
+            let path = args.config_path.as_deref().expect("validated");
+            let device = get_playback_device(path)?;
+            println!("{device}");
+            Ok(())
+        }
+
+        Mode::GetConfigPath => {
+            let path = args.config_path.as_deref().expect("validated");
+            let config = get_config_path(path)?;
+            println!("{config}");
+            Ok(())
+        }
+
+        Mode::MakeBypass => {
+            let device = args.playback_device.as_deref().expect("validated");
+            let yaml = make_bypass_config(device)?;
+            if let Some(output) = args.output.as_deref() {
+                std::fs::write(output, &yaml).map_err(|err| {
+                    app_error(format!("unable to write {}: {err}", output.display()))
+                })?;
+            } else {
+                print!("{yaml}");
+            }
             Ok(())
         }
 

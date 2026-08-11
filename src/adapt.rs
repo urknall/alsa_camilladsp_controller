@@ -106,6 +106,102 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
     }
 }
 
+// ─── Installer utility functions ───────────────────────────────────────────
+
+/// Read the `devices.playback.device` value from a CamillaDSP YAML config.
+///
+/// Handles both block and flow YAML correctly via `serde_yaml_ng`, replacing
+/// the AWK-based `read_cdsp_playback_device` in the installer shell script.
+/// Flow YAML like `playback: {type: Alsa, device: "hw:USB,0"}` is parsed
+/// correctly, and device names containing special characters are returned
+/// verbatim without shell-quoting side-effects.
+/// Read `config_path` from a CamillaDSP statefile (YAML).
+///
+/// CamillaDSP writes a statefile containing the active config path, volume,
+/// and mute state.  Parsing it with `serde_yaml_ng` handles all valid YAML
+/// representations (quoted, unquoted, flow) and replaces the fragile AWK
+/// parser previously used in the shell installer.
+pub fn get_config_path(path: &Path) -> AppResult<String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| app_error(format!("unable to read statefile {}: {err}", path.display())))?;
+    let root: YamlValue = serde_yaml_ng::from_str(&raw)
+        .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
+    root.get("config_path")
+        .and_then(YamlValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| app_error("statefile has no 'config_path' value"))
+}
+
+pub fn get_playback_device(path: &Path) -> AppResult<String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| app_error(format!("unable to read config {}: {err}", path.display())))?;
+    let root: YamlValue = serde_yaml_ng::from_str(&raw)
+        .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
+    root.get("devices")
+        .and_then(|d| d.get("playback"))
+        .and_then(|p| p.get("device"))
+        .and_then(YamlValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| app_error("config has no 'devices.playback.device' value"))
+}
+
+/// Write a bypass CamillaDSP config with the given playback device to a YAML
+/// string.
+///
+/// All string values — including the playback device name — are serialized via
+/// `serde_yaml_ng`, which applies correct YAML quoting and escaping regardless
+/// of characters like `"`, `'`, or `\` in the device name.  This replaces the
+/// shell heredoc that interpolated `${PLAYBACK_DEVICE}` directly, which could
+/// produce invalid YAML for unusual device names (issue 20).
+///
+/// The output is the piCoreDSP *Bypass* configuration, a minimal pass-through
+/// config suitable for use as both the initial startup config
+/// (`default_config.yml`) and the active config link target (`Bypass.yml`).
+pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
+    let mut capture = Mapping::new();
+    capture.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
+    capture.insert(yaml_key("channels"), YamlValue::from(2u64));
+    capture.insert(
+        yaml_key("device"),
+        YamlValue::String("hw:Loopback,0,0".to_owned()),
+    );
+    capture.insert(yaml_key("stop_on_inactive"), YamlValue::Bool(true));
+
+    let mut playback = Mapping::new();
+    playback.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
+    playback.insert(yaml_key("channels"), YamlValue::from(2u64));
+    playback.insert(
+        yaml_key("device"),
+        YamlValue::String(playback_device.to_owned()),
+    );
+
+    let mut devices = Mapping::new();
+    devices.insert(yaml_key("samplerate"), YamlValue::from(44100u64));
+    devices.insert(yaml_key("chunksize"), YamlValue::from(2048u64));
+    devices.insert(yaml_key("queuelimit"), YamlValue::from(4u64));
+    devices.insert(yaml_key("enable_rate_adjust"), YamlValue::Bool(true));
+    devices.insert(yaml_key("capture"), YamlValue::Mapping(capture));
+    devices.insert(yaml_key("playback"), YamlValue::Mapping(playback));
+
+    let description = format!(
+        "Default piCoreDSP pass-through configuration.\n\
+         Audio is captured from snd-aloop and played to the piCorePlayer output\n\
+         that was selected before installation: {playback_device}\n\n\
+         Add filters/mixers in CamillaGUI or duplicate this config for DSP work.\n"
+    );
+
+    let mut root = Mapping::new();
+    root.insert(yaml_key("devices"), YamlValue::Mapping(devices));
+    root.insert(yaml_key("filters"), YamlValue::Mapping(Mapping::new()));
+    root.insert(yaml_key("mixers"), YamlValue::Mapping(Mapping::new()));
+    root.insert(yaml_key("pipeline"), YamlValue::Sequence(vec![]));
+    root.insert(yaml_key("processors"), YamlValue::Mapping(Mapping::new()));
+    root.insert(yaml_key("title"), YamlValue::String("Bypass".to_owned()));
+    root.insert(yaml_key("description"), YamlValue::String(description));
+
+    Ok(serde_yaml_ng::to_string(&YamlValue::Mapping(root))?)
+}
+
 // ─── Config adaptation ─────────────────────────────────────────────────────
 
 /// Adapt a CamillaDSP YAML config for the current wave format and return the
@@ -449,5 +545,126 @@ mod tests {
         let value: YamlValue = serde_yaml_ng::from_str(&base_config("null", None)).unwrap();
         let root = mapping(&value, "root").unwrap();
         assert!(root.contains_key(yaml_key("devices")));
+    }
+
+    // ── get_playback_device tests ────────────────────────────────────────
+
+    #[test]
+    fn get_playback_device_reads_block_yaml() {
+        let dir = test_dir("get-dev-block");
+        let config = dir.join("config.yml");
+        fs::write(&config, base_config("hw:USB,0", None)).unwrap();
+        assert_eq!(get_playback_device(&config).unwrap(), "hw:USB,0");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_playback_device_reads_flow_yaml() {
+        // Reproduces issue 19: AWK parser fails on flow YAML; serde_yaml_ng handles it.
+        let dir = test_dir("get-dev-flow");
+        let config = dir.join("config.yml");
+        fs::write(
+            &config,
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             capture:\n    type: Alsa\n    channels: 2\n    device: \"hw:Loopback,0,0\"\n  \
+             playback: {type: Alsa, channels: 2, device: \"hw:USB,0\"}\n\
+             filters: {}\nmixers: {}\npipeline: []\nprocessors: {}\n",
+        )
+        .unwrap();
+        assert_eq!(get_playback_device(&config).unwrap(), "hw:USB,0");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_playback_device_returns_error_when_field_missing() {
+        let dir = test_dir("get-dev-missing");
+        let config = dir.join("config.yml");
+        // Config without a playback device field.
+        fs::write(
+            &config,
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             capture:\n    type: Alsa\n    channels: 2\n    device: \"hw:Loopback,0,0\"\n  \
+             playback:\n    type: Alsa\n    channels: 2\n\
+             filters: {}\nmixers: {}\npipeline: []\nprocessors: {}\n",
+        )
+        .unwrap();
+        assert!(get_playback_device(&config).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ── make_bypass_config tests ─────────────────────────────────────────
+
+    #[test]
+    fn make_bypass_config_produces_valid_yaml_with_correct_device() {
+        let yaml = make_bypass_config("hw:DAC,0").unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed["devices"]["playback"]["device"].as_str(),
+            Some("hw:DAC,0")
+        );
+        assert_eq!(parsed["devices"]["samplerate"].as_u64(), Some(44100));
+        assert_eq!(parsed["devices"]["enable_rate_adjust"].as_bool(), Some(true));
+        assert_eq!(
+            parsed["devices"]["capture"]["device"].as_str(),
+            Some("hw:Loopback,0,0")
+        );
+        assert!(parsed["title"].as_str().is_some());
+    }
+
+    #[test]
+    fn make_bypass_config_escapes_special_characters_in_device_name() {
+        // Reproduces issue 20: device names with `"` or `\` must not produce
+        // invalid YAML when the Rust serializer is used instead of shell heredoc.
+        let yaml = make_bypass_config(r#"hw:"Quoted",0"#).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed["devices"]["playback"]["device"].as_str(),
+            Some(r#"hw:"Quoted",0"#)
+        );
+    }
+
+    #[test]
+    fn make_bypass_config_roundtrips_via_get_playback_device() {
+        let dir = test_dir("bypass-roundtrip");
+        let config = dir.join("Bypass.yml");
+        let device = "hw:CARD=USB_Audio,DEV=0";
+        let yaml = make_bypass_config(device).unwrap();
+        fs::write(&config, &yaml).unwrap();
+        let recovered = get_playback_device(&config).unwrap();
+        assert_eq!(recovered, device);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_reads_unquoted_value() {
+        let dir = test_dir("statefile-unquoted");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "config_path: /mnt/camilladsp/MyDSP.yml\nvolume:\n- -10.0\n").unwrap();
+        assert_eq!(
+            get_config_path(&sf).unwrap(),
+            "/mnt/camilladsp/MyDSP.yml"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_reads_quoted_value() {
+        let dir = test_dir("statefile-quoted");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "config_path: \"/mnt/camilladsp/My DSP.yml\"\nvolume:\n- -10.0\n").unwrap();
+        assert_eq!(
+            get_config_path(&sf).unwrap(),
+            "/mnt/camilladsp/My DSP.yml"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_errors_when_key_missing() {
+        let dir = test_dir("statefile-no-key");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "volume:\n- -10.0\n").unwrap();
+        assert!(get_config_path(&sf).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

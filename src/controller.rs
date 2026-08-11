@@ -22,6 +22,11 @@ const CONTROL_LOOP_MS: u32 = 200;
 /// Maximum time (seconds) the controller waits for CamillaDSP to consume a
 /// pending `SetConfig` before giving up and entering normal backoff/retry.
 const PENDING_DEADLINE_SECS: u64 = 10;
+/// Maximum time (seconds) CamillaDSP is allowed to remain in the `Starting`
+/// state before the controller forces a restart.  In practice CamillaDSP
+/// transitions through `Starting` in milliseconds; a multi-second hang
+/// indicates a wedged process that will never recover on its own.
+const STARTING_DEADLINE_SECS: u64 = 30;
 
 // ─── Retry/backoff state ───────────────────────────────────────────────────
 
@@ -236,12 +241,25 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     "CamillaDSP is shutting down: {msg}"
                 ))))
             }
-            Err(WsError::Command(_, msg)) => {
+            Err(WsError::Command(CommandReason::InvalidValue, msg)) => {
+                // Programmer/protocol error — retrying will not help.
                 log(
                     LogLevel::Error,
                     self.log_level,
-                    format!("SetConfig error: {msg}"),
+                    format!("SetConfig InvalidValue error (latching until file changes): {msg}"),
                 );
+                self.retry.latch();
+                Ok(())
+            }
+            Err(WsError::Command(CommandReason::Other, msg)) => {
+                // Unknown command error — latch to avoid endless retry on a
+                // permanent protocol-level failure.
+                log(
+                    LogLevel::Error,
+                    self.log_level,
+                    format!("SetConfig unknown command error (latching until file changes): {msg}"),
+                );
+                self.retry.latch();
                 Ok(())
             }
             Err(err) => Err(Box::new(err)),
@@ -481,8 +499,24 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     self.pending_since = None;
                 }
                 ProcessingState::Starting => {
-                    // SetConfig was consumed; confirm pending state.
-                    self.pending_since.get_or_insert_with(Instant::now);
+                    // SetConfig was consumed; start (or re-arm) the timer.
+                    let since = *self.pending_since.get_or_insert_with(Instant::now);
+
+                    // Guard against a CamillaDSP process stuck indefinitely in
+                    // Starting (not a normal occurrence, but a defensive bound).
+                    if since.elapsed() >= Duration::from_secs(STARTING_DEADLINE_SECS) {
+                        log(
+                            LogLevel::Warning,
+                            self.log_level,
+                            format!(
+                                "CamillaDSP stuck in Starting for >{STARTING_DEADLINE_SECS} s \
+                                 — forcing restart"
+                            ),
+                        );
+                        self.pending_since = None;
+                        self.stop_cdsp()?;
+                        self.start_cdsp()?;
+                    }
                 }
                 ProcessingState::Inactive => {
                     self.process_inactive_state(&current)?;
