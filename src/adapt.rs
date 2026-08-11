@@ -122,8 +122,12 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
 /// representations (quoted, unquoted, flow) and replaces the fragile AWK
 /// parser previously used in the shell installer.
 pub fn get_config_path(path: &Path) -> AppResult<String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|err| app_error(format!("unable to read statefile {}: {err}", path.display())))?;
+    let raw = fs::read_to_string(path).map_err(|err| {
+        app_error(format!(
+            "unable to read statefile {}: {err}",
+            path.display()
+        ))
+    })?;
     let root: YamlValue = serde_yaml_ng::from_str(&raw)
         .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
     root.get("config_path")
@@ -603,7 +607,10 @@ mod tests {
             Some("hw:DAC,0")
         );
         assert_eq!(parsed["devices"]["samplerate"].as_u64(), Some(44100));
-        assert_eq!(parsed["devices"]["enable_rate_adjust"].as_bool(), Some(true));
+        assert_eq!(
+            parsed["devices"]["enable_rate_adjust"].as_bool(),
+            Some(true)
+        );
         assert_eq!(
             parsed["devices"]["capture"]["device"].as_str(),
             Some("hw:Loopback,0,0")
@@ -639,11 +646,12 @@ mod tests {
     fn get_config_path_reads_unquoted_value() {
         let dir = test_dir("statefile-unquoted");
         let sf = dir.join("state.yml");
-        fs::write(&sf, "config_path: /mnt/camilladsp/MyDSP.yml\nvolume:\n- -10.0\n").unwrap();
-        assert_eq!(
-            get_config_path(&sf).unwrap(),
-            "/mnt/camilladsp/MyDSP.yml"
-        );
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/MyDSP.yml\nvolume:\n- -10.0\n",
+        )
+        .unwrap();
+        assert_eq!(get_config_path(&sf).unwrap(), "/mnt/camilladsp/MyDSP.yml");
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -651,11 +659,12 @@ mod tests {
     fn get_config_path_reads_quoted_value() {
         let dir = test_dir("statefile-quoted");
         let sf = dir.join("state.yml");
-        fs::write(&sf, "config_path: \"/mnt/camilladsp/My DSP.yml\"\nvolume:\n- -10.0\n").unwrap();
-        assert_eq!(
-            get_config_path(&sf).unwrap(),
-            "/mnt/camilladsp/My DSP.yml"
-        );
+        fs::write(
+            &sf,
+            "config_path: \"/mnt/camilladsp/My DSP.yml\"\nvolume:\n- -10.0\n",
+        )
+        .unwrap();
+        assert_eq!(get_config_path(&sf).unwrap(), "/mnt/camilladsp/My DSP.yml");
         fs::remove_dir_all(dir).unwrap();
     }
 
