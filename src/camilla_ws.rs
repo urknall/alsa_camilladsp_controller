@@ -1,7 +1,9 @@
 use serde_json::Value as JsonValue;
 use std::error::Error;
 use std::fmt;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 use tungstenite::client::client_with_config;
 use tungstenite::stream::MaybeTlsStream;
@@ -16,6 +18,12 @@ type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 /// an indefinite block if the port is filtered or CamillaDSP has not started
 /// yet and the OS is not sending a TCP RST.
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for resolving remote hostnames to socket addresses.
+///
+/// Local IP literals bypass DNS entirely. For remote hostnames, this timeout
+/// prevents a broken resolver path from wedging controller startup forever.
+const WS_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// TCP-level read/write timeout applied to every WebSocket operation.
 ///
@@ -108,6 +116,17 @@ pub struct CamillaWs {
 }
 
 impl CamillaWs {
+    fn resolve_socket_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, WsError> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(vec![SocketAddr::new(ip, port)]);
+        }
+
+        let addr_str = format!("{host}:{port}");
+        resolve_socket_addrs_with_timeout(addr_str.clone(), WS_DNS_TIMEOUT, move || {
+            addr_str.to_socket_addrs().map(|addrs| addrs.collect())
+        })
+    }
+
     fn connect_socket(url: &str, addr: SocketAddr) -> Result<WsSocket, WsError> {
         let tcp = TcpStream::connect_timeout(&addr, WS_CONNECT_TIMEOUT)
             .map_err(|e| WsError::Transport(format!("connect to {addr} failed: {e}")))?;
@@ -134,18 +153,7 @@ impl CamillaWs {
     pub fn connect(host: &str, port: u16) -> Result<Self, WsError> {
         let addr_str = format!("{host}:{port}");
         let url = format!("ws://{addr_str}");
-
-        // Resolve the host to a socket address.  For 127.0.0.1 this is
-        // instantaneous; for hostnames it may involve a DNS lookup.
-        let addrs = addr_str
-            .to_socket_addrs()
-            .map_err(|e| WsError::Transport(format!("address resolution failed: {e}")))?
-            .collect::<Vec<_>>();
-        if addrs.is_empty() {
-            return Err(WsError::Transport(format!(
-                "address resolution returned no results: {addr_str}"
-            )));
-        }
+        let addrs = Self::resolve_socket_addrs(host, port)?;
 
         let mut errors = Vec::new();
         let socket = addrs
@@ -173,6 +181,36 @@ impl CamillaWs {
     /// Send a WebSocket Close frame.
     pub fn close(&mut self) {
         let _ = self.socket.close(None);
+    }
+}
+
+fn resolve_socket_addrs_with_timeout<F>(
+    addr_str: String,
+    timeout: Duration,
+    resolver: F,
+) -> Result<Vec<SocketAddr>, WsError>
+where
+    F: FnOnce() -> std::io::Result<Vec<SocketAddr>> + Send + 'static,
+{
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let result = resolver().map_err(|err| err.to_string());
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(addrs)) if addrs.is_empty() => Err(WsError::Transport(format!(
+            "address resolution returned no results: {addr_str}"
+        ))),
+        Ok(Ok(addrs)) => Ok(addrs),
+        Ok(Err(err)) => Err(WsError::Transport(format!("address resolution failed: {err}"))),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(WsError::Transport(format!(
+            "address resolution timed out after {}s: {addr_str}",
+            timeout.as_secs()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(WsError::Transport(format!(
+            "address resolution thread terminated unexpectedly: {addr_str}"
+        ))),
     }
 }
 
@@ -456,6 +494,42 @@ mod tests {
         assert!(matches!(
             parse_ws_reply("SetConfig", reply),
             Err(WsError::Command(CommandReason::Shutdown, _))
+        ));
+    }
+
+    #[test]
+    fn resolve_socket_addrs_returns_ip_literals_without_dns() {
+        let addrs = CamillaWs::resolve_socket_addrs("127.0.0.1", 1234).unwrap();
+        assert_eq!(addrs, vec!["127.0.0.1:1234".parse().unwrap()]);
+    }
+
+    #[test]
+    fn resolve_socket_addrs_timeout_is_reported() {
+        let err = resolve_socket_addrs_with_timeout(
+            "camilla.local:1234".to_owned(),
+            Duration::from_millis(10),
+            || {
+                thread::sleep(Duration::from_millis(50));
+                Ok(Vec::new())
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, WsError::Transport(msg) if msg.contains("timed out")));
+    }
+
+    #[test]
+    fn resolve_socket_addrs_empty_results_are_rejected() {
+        let err = resolve_socket_addrs_with_timeout(
+            "camilla.local:1234".to_owned(),
+            Duration::from_millis(10),
+            || Ok(Vec::new()),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WsError::Transport(msg) if msg.contains("returned no results")
         ));
     }
 }
