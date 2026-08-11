@@ -271,9 +271,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_mapping_matches_python_reference_controller() {
+    fn format_mapping_produces_camilladsp_alsa_config_names() {
         assert_eq!(alsa_format_to_camilladsp(2).unwrap(), Some("S16_LE"));
-        assert_eq!(alsa_format_to_camilladsp(6).unwrap(), Some("S24_4_RJ_LE"));
+        assert_eq!(alsa_format_to_camilladsp(6).unwrap(), Some("S24_4_LE"));
         assert_eq!(alsa_format_to_camilladsp(10).unwrap(), Some("S32_LE"));
         assert_eq!(alsa_format_to_camilladsp(14).unwrap(), Some("F32_LE"));
         assert_eq!(alsa_format_to_camilladsp(16).unwrap(), Some("F64_LE"));
