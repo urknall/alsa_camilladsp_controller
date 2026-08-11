@@ -10,7 +10,7 @@ mod wave;
 use adapt::adapt_config;
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Mode};
-use camilla_ws::CamillaWs;
+use camilla_ws::{CamillaClient, CamillaWs};
 use controller::Controller;
 use error::AppResult;
 use serde_json::Value as JsonValue;

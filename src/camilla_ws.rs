@@ -1,4 +1,3 @@
-use crate::error::app_error;
 use serde_json::Value as JsonValue;
 use std::error::Error;
 use std::fmt;
@@ -115,14 +114,15 @@ impl CamillaWs {
             connect(url).map_err(|err| WsError::Transport(format!("connect failed: {err}")))?;
 
         // Set TCP-level timeouts before the first I/O operation.
-        // `socket.get_ref()` → &MaybeTlsStream<TcpStream>; `.get_ref()` → &TcpStream.
+        // MaybeTlsStream is an enum; we only use plain ws:// so match Plain.
         {
-            let tcp = socket.get_ref().get_ref();
-            let t = Some(WS_IO_TIMEOUT);
-            tcp.set_read_timeout(t)
-                .map_err(|e| WsError::Transport(format!("set_read_timeout: {e}")))?;
-            tcp.set_write_timeout(t)
-                .map_err(|e| WsError::Transport(format!("set_write_timeout: {e}")))?;
+            if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = socket.get_ref() {
+                let t = Some(WS_IO_TIMEOUT);
+                tcp.set_read_timeout(t)
+                    .map_err(|e| WsError::Transport(format!("set_read_timeout: {e}")))?;
+                tcp.set_write_timeout(t)
+                    .map_err(|e| WsError::Transport(format!("set_write_timeout: {e}")))?;
+            }
         }
 
         let mut client = Self { socket };
