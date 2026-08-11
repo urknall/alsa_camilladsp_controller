@@ -188,10 +188,13 @@ impl AlsaLoopbackListener {
         let sample_format = alsa_format_to_camilladsp(raw_format)?;
         if sample_format.is_none() {
             log(
-                LogLevel::Debug,
+                LogLevel::Warning,
                 self.log_level,
                 format!(
-                    "ALSA format value {raw_format} is known but not mapped to a CamillaDSP format"
+                    "ALSA capture format {raw_format} is within the valid snd_pcm_format_t \
+                     range but has no CamillaDSP mapping; format will not be updated in the \
+                     active config — CamillaDSP may fail to start if the config specifies a \
+                     different format"
                 ),
             );
         }

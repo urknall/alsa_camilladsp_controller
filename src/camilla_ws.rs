@@ -151,8 +151,13 @@ impl CamillaWs {
     /// supervisor to restart it — the same clean recovery path used for any
     /// other transport failure.
     pub fn connect(host: &str, port: u16) -> Result<Self, WsError> {
-        let addr_str = format!("{host}:{port}");
-        let url = format!("ws://{addr_str}");
+        // IPv6 literals must be bracketed in URLs: ws://[::1]:1234
+        let host_in_url = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        let url = format!("ws://{host_in_url}:{port}");
         let addrs = Self::resolve_socket_addrs(host, port)?;
 
         let mut errors = Vec::new();
@@ -392,20 +397,34 @@ pub fn parse_stop_reason(value: Option<JsonValue>) -> Result<StopReason, WsError
                 "CaptureError" => StopReason::CaptureError(json_payload_string(data)),
                 "PlaybackError" => StopReason::PlaybackError(json_payload_string(data)),
                 "UnknownError" => StopReason::UnknownError(json_payload_string(data)),
-                "CaptureFormatChange" => StopReason::CaptureFormatChange(
-                    data.as_u64()
+                "CaptureFormatChange" => {
+                    let rate = data
+                        .as_u64()
                         .and_then(|v| u32::try_from(v).ok())
-                        .unwrap_or(0),
-                ),
-                "PlaybackFormatChange" => StopReason::PlaybackFormatChange(
-                    data.as_u64()
+                        .ok_or_else(|| {
+                            WsError::Protocol(format!(
+                                "CaptureFormatChange payload is not a valid u32: {data}"
+                            ))
+                        })?;
+                    StopReason::CaptureFormatChange(rate)
+                }
+                "PlaybackFormatChange" => {
+                    let rate = data
+                        .as_u64()
                         .and_then(|v| u32::try_from(v).ok())
-                        .unwrap_or(0),
-                ),
+                        .ok_or_else(|| {
+                            WsError::Protocol(format!(
+                                "PlaybackFormatChange payload is not a valid u32: {data}"
+                            ))
+                        })?;
+                    StopReason::PlaybackFormatChange(rate)
+                }
                 _ => StopReason::Unknown(value.clone()),
             })
         }
-        _ => Ok(StopReason::Unknown(value)),
+        _ => Err(WsError::Protocol(format!(
+            "unexpected GetStopReason shape: {value}"
+        ))),
     }
 }
 
@@ -433,6 +452,28 @@ mod tests {
             parse_stop_reason(Some(serde_json::json!("Done"))).unwrap(),
             StopReason::Done
         );
+    }
+
+    #[test]
+    fn stop_reason_malformed_format_change_payload_is_protocol_error() {
+        assert!(matches!(
+            parse_stop_reason(Some(serde_json::json!({"CaptureFormatChange": "garbage"}))),
+            Err(WsError::Protocol(_))
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some(serde_json::json!({"PlaybackFormatChange": null}))),
+            Err(WsError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn stop_reason_multi_key_object_is_protocol_error() {
+        assert!(matches!(
+            parse_stop_reason(Some(
+                serde_json::json!({"CaptureError": "a", "PlaybackError": "b"})
+            )),
+            Err(WsError::Protocol(_))
+        ));
     }
 
     #[test]
