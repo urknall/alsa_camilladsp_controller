@@ -69,7 +69,7 @@ impl Mode {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            host: "localhost".to_owned(),
+            host: "127.0.0.1".to_owned(),
             port: 1234,
             device: "hw:Loopback,0".to_owned(),
             adapt: None,
@@ -104,7 +104,7 @@ Usage:\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
-      --host HOST               CamillaDSP websocket host (default: localhost)\n\
+      --host HOST               CamillaDSP websocket host (default: 127.0.0.1)\n\
   -p, --port PORT               CamillaDSP websocket port (default: 1234)\n\
   -r, --rate RATE               Initial fallback sample rate\n\
   -f, --format FORMAT           Initial fallback CamillaDSP sample format (e.g. S32_LE)\n\
