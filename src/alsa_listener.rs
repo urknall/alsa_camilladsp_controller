@@ -1,8 +1,8 @@
-use alsa::ctl::ElemIface;
-use alsa::hctl::HCtl;
 use crate::error::{app_error, AppResult};
 use crate::logging::{log, LogLevel};
 use crate::wave::{DeviceSnapshot, WaveFormat};
+use alsa::ctl::ElemIface;
+use alsa::hctl::HCtl;
 
 const LOOPBACK_ACTIVE: &str = "PCM Slave Active";
 const LOOPBACK_CHANNELS: &str = "PCM Slave Channels";
@@ -67,7 +67,12 @@ impl AlsaLoopbackListener {
         let hctl = HCtl::new(card, true)?;
         hctl.load()?;
 
-        let listener = Self { hctl, device, subdevice, log_level };
+        let listener = Self {
+            hctl,
+            device,
+            subdevice,
+            log_level,
+        };
 
         // Fail early if this is not the snd-aloop control device expected by
         // piCoreDSP. This is more useful than silently running with no controls.
@@ -75,7 +80,10 @@ impl AlsaLoopbackListener {
         log(
             LogLevel::Debug,
             log_level,
-            format!("Initial ALSA snapshot: active={}, {}", snapshot.active, snapshot.wave),
+            format!(
+                "Initial ALSA snapshot: active={}, {}",
+                snapshot.active, snapshot.wave
+            ),
         );
         Ok(listener)
     }
@@ -182,7 +190,9 @@ impl AlsaLoopbackListener {
             log(
                 LogLevel::Debug,
                 self.log_level,
-                format!("ALSA format value {raw_format} is known but not mapped to a CamillaDSP format"),
+                format!(
+                    "ALSA format value {raw_format} is known but not mapped to a CamillaDSP format"
+                ),
             );
         }
 
@@ -223,8 +233,8 @@ fn nonneg_u32(value: i32) -> Option<u32> {
 /// counterpart return `Ok(None)`. Genuinely unknown values return an error.
 pub fn alsa_format_to_camilladsp(value: i32) -> AppResult<Option<&'static str>> {
     let mapped = match value {
-        2  => Some("S16_LE"),
-        6  => Some("S24_4_RJ_LE"),
+        2 => Some("S16_LE"),
+        6 => Some("S24_4_RJ_LE"),
         10 => Some("S32_LE"),
         14 => Some("F32_LE"),
         16 => Some("F64_LE"),
@@ -258,16 +268,16 @@ mod tests {
 
     #[test]
     fn format_mapping_matches_python_reference_controller() {
-        assert_eq!(alsa_format_to_camilladsp(2).unwrap(),  Some("S16_LE"));
-        assert_eq!(alsa_format_to_camilladsp(6).unwrap(),  Some("S24_4_RJ_LE"));
+        assert_eq!(alsa_format_to_camilladsp(2).unwrap(), Some("S16_LE"));
+        assert_eq!(alsa_format_to_camilladsp(6).unwrap(), Some("S24_4_RJ_LE"));
         assert_eq!(alsa_format_to_camilladsp(10).unwrap(), Some("S32_LE"));
         assert_eq!(alsa_format_to_camilladsp(14).unwrap(), Some("F32_LE"));
         assert_eq!(alsa_format_to_camilladsp(16).unwrap(), Some("F64_LE"));
         assert_eq!(alsa_format_to_camilladsp(32).unwrap(), Some("S24_3_LE"));
         // Values in range but unmapped.
-        assert_eq!(alsa_format_to_camilladsp(0).unwrap(),  None);
+        assert_eq!(alsa_format_to_camilladsp(0).unwrap(), None);
         assert_eq!(alsa_format_to_camilladsp(31).unwrap(), None); // SND_PCM_FORMAT_SPECIAL
-        // Out-of-range values are errors.
+                                                                  // Out-of-range values are errors.
         assert!(alsa_format_to_camilladsp(99).is_err());
         assert!(alsa_format_to_camilladsp(-1).is_err());
     }

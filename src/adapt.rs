@@ -101,11 +101,8 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
                 let p = Path::new(name_str);
                 if p.is_relative() {
                     let abs = config_dir.join(p);
-                    let resolved = abs
-                        .canonicalize()
-                        .unwrap_or_else(|_| normalize_path(&abs));
-                    *filename_val =
-                        YamlValue::String(resolved.to_string_lossy().into_owned());
+                    let resolved = abs.canonicalize().unwrap_or_else(|_| normalize_path(&abs));
+                    *filename_val = YamlValue::String(resolved.to_string_lossy().into_owned());
                 }
             }
         }
@@ -180,10 +177,7 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
 
             let configured_rate = devices.get(&yaml_key("samplerate")).and_then(yaml_u32);
 
-            devices.insert(
-                yaml_key("capture_samplerate"),
-                YamlValue::from(rate as u64),
-            );
+            devices.insert(yaml_key("capture_samplerate"), YamlValue::from(rate as u64));
 
             if resampler_type == "Synchronous" && configured_rate == Some(rate) {
                 devices.insert(resampler_key, YamlValue::Null);
@@ -245,10 +239,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "picoredsp-{name}-{}-{stamp}",
-            std::process::id()
-        ));
+        let path = env::temp_dir().join(format!("picoredsp-{name}-{}-{stamp}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -366,7 +357,10 @@ mod tests {
         let adapted = adapt_config(&config, &wave).unwrap();
         let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
         assert!(parsed["devices"]["resampler"].is_null());
-        assert_eq!(parsed["devices"]["capture_samplerate"].as_u64(), Some(48000));
+        assert_eq!(
+            parsed["devices"]["capture_samplerate"].as_u64(),
+            Some(48000)
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
