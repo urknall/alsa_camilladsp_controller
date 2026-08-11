@@ -499,25 +499,23 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     self.pending_since = None;
                 }
                 ProcessingState::Starting => {
-                    // SetConfig was consumed; confirm pending state.
-                    self.pending_since.get_or_insert_with(Instant::now);
+                    // SetConfig was consumed; start (or re-arm) the timer.
+                    let since = *self.pending_since.get_or_insert_with(Instant::now);
 
                     // Guard against a CamillaDSP process stuck indefinitely in
                     // Starting (not a normal occurrence, but a defensive bound).
-                    if let Some(since) = self.pending_since {
-                        if since.elapsed() >= Duration::from_secs(STARTING_DEADLINE_SECS) {
-                            log(
-                                LogLevel::Warning,
-                                self.log_level,
-                                format!(
-                                    "CamillaDSP stuck in Starting for >{STARTING_DEADLINE_SECS} s \
-                                     — forcing restart"
-                                ),
-                            );
-                            self.pending_since = None;
-                            self.stop_cdsp()?;
-                            self.start_cdsp()?;
-                        }
+                    if since.elapsed() >= Duration::from_secs(STARTING_DEADLINE_SECS) {
+                        log(
+                            LogLevel::Warning,
+                            self.log_level,
+                            format!(
+                                "CamillaDSP stuck in Starting for >{STARTING_DEADLINE_SECS} s \
+                                 — forcing restart"
+                            ),
+                        );
+                        self.pending_since = None;
+                        self.stop_cdsp()?;
+                        self.start_cdsp()?;
                     }
                 }
                 ProcessingState::Inactive => {
