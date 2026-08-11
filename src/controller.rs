@@ -394,6 +394,33 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         Ok(())
     }
 
+    /// Handle a single iteration of the `ProcessingState::Starting` branch.
+    ///
+    /// Arms (or re-arms) `pending_since` and forces a restart when CamillaDSP
+    /// has been stuck in `Starting` longer than [`STARTING_DEADLINE_SECS`].
+    /// Returns `Ok(())` in the normal case (still within deadline).
+    fn check_starting_deadline(&mut self) -> AppResult<()> {
+        // SetConfig was consumed; start (or re-arm) the timer.
+        let since = *self.pending_since.get_or_insert_with(Instant::now);
+
+        // Guard against a CamillaDSP process stuck indefinitely in
+        // Starting (not a normal occurrence, but a defensive bound).
+        if since.elapsed() >= Duration::from_secs(STARTING_DEADLINE_SECS) {
+            log(
+                LogLevel::Warning,
+                self.log_level,
+                format!(
+                    "CamillaDSP stuck in Starting for >{STARTING_DEADLINE_SECS} s \
+                     — forcing restart"
+                ),
+            );
+            self.pending_since = None;
+            self.stop_cdsp()?;
+            self.start_cdsp()?;
+        }
+        Ok(())
+    }
+
     fn process_inactive_state(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
         let reason = parse_stop_reason(self.client.query("GetStopReason", None)?)?;
         if let Some(since) = self.pending_since {
@@ -499,24 +526,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     self.pending_since = None;
                 }
                 ProcessingState::Starting => {
-                    // SetConfig was consumed; start (or re-arm) the timer.
-                    let since = *self.pending_since.get_or_insert_with(Instant::now);
-
-                    // Guard against a CamillaDSP process stuck indefinitely in
-                    // Starting (not a normal occurrence, but a defensive bound).
-                    if since.elapsed() >= Duration::from_secs(STARTING_DEADLINE_SECS) {
-                        log(
-                            LogLevel::Warning,
-                            self.log_level,
-                            format!(
-                                "CamillaDSP stuck in Starting for >{STARTING_DEADLINE_SECS} s \
-                                 — forcing restart"
-                            ),
-                        );
-                        self.pending_since = None;
-                        self.stop_cdsp()?;
-                        self.start_cdsp()?;
-                    }
+                    self.check_starting_deadline()?;
                 }
                 ProcessingState::Inactive => {
                     self.process_inactive_state(&current)?;
@@ -921,6 +931,167 @@ mod tests {
             ctrl.client.sent_configs.len(),
             1,
             "should have attempted a restart"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Issue 6: 30-second Starting-state timeout forces a restart.
+    ///
+    /// Simulates CamillaDSP stuck in `Starting` by setting `pending_since` to
+    /// a timestamp 31 seconds in the past, then calling
+    /// `check_starting_deadline`.  The controller must issue `Stop` and a new
+    /// `SetConfig`.
+    #[test]
+    fn starting_timeout_forces_restart() {
+        let dir = test_dir("starting-timeout");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop
+            MockClient::ok(), // SetConfig (restart attempt)
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        // Pre-arm pending_since with a timestamp 31 seconds in the past to
+        // simulate CamillaDSP being stuck in Starting beyond the deadline.
+        ctrl.pending_since = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(STARTING_DEADLINE_SECS + 1))
+                .unwrap(),
+        );
+
+        ctrl.check_starting_deadline().unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "should have sent a new SetConfig after Starting timeout"
+        );
+        assert!(
+            ctrl.pending_since.is_some(),
+            "pending_since re-armed by the fresh SetConfig"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Issue 6: Within the Starting deadline, `check_starting_deadline` is a no-op.
+    #[test]
+    fn starting_within_deadline_does_nothing() {
+        let dir = test_dir("starting-ok");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![]); // no responses expected
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        // pending_since is None (will be set to now() by check_starting_deadline).
+        ctrl.check_starting_deadline().unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "no restart within deadline"
+        );
+        assert!(
+            ctrl.pending_since.is_some(),
+            "pending_since was initialised"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Issue 6: Pending-SetConfig deadline expiry triggers a retry.
+    ///
+    /// When `pending_since` is set but CamillaDSP stays `Inactive` with
+    /// `StopReason::None` for longer than `PENDING_DEADLINE_SECS`, the
+    /// controller must clear the pending state and fall through to the normal
+    /// retry path (issuing a new `SetConfig`).
+    #[test]
+    fn pending_deadline_expired_triggers_retry() {
+        let dir = test_dir("pending-deadline");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::stop_reason("None"), // GetStopReason — still None after deadline
+            MockClient::ok(),                // SetConfig (retry after deadline clears)
+        ]);
+        let listener = MockListener::new(vec![MockListener::active_with_rate(44100)]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        // Simulate a pending_since that is already past the deadline.
+        ctrl.pending_since = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(PENDING_DEADLINE_SECS + 1))
+                .unwrap(),
+        );
+
+        let snap = MockListener::active_with_rate(44100);
+        ctrl.process_inactive_state(&snap).unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "should have retried after pending deadline"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Issue 7: PlaybackFormatChange with active source schedules a restart.
+    #[test]
+    fn playback_format_change_with_active_source_restarts() {
+        let dir = test_dir("pb-fmt-change");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![MockClient::ok()]); // SetConfig
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        let active_snap = MockListener::active_with_rate(96000);
+        ctrl.handle_stop_reason(StopReason::PlaybackFormatChange(96000), &active_snap)
+            .unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "should restart on PlaybackFormatChange with active source"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Issue 7: PlaybackFormatChange with inactive source must NOT restart.
+    #[test]
+    fn playback_format_change_with_inactive_source_skips_restart() {
+        let dir = test_dir("pb-fmt-change-inactive");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![]); // no responses expected
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        let inactive_snap = MockListener::inactive();
+        ctrl.handle_stop_reason(StopReason::PlaybackFormatChange(96000), &inactive_snap)
+            .unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "no restart when source is inactive"
         );
 
         fs::remove_dir_all(dir).unwrap();
