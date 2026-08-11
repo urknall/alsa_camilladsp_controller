@@ -19,7 +19,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get install -y libasound2-dev
 
       - name: Cache Cargo registry and build artefacts
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -67,7 +67,7 @@ jobs:
             pkg_config_path: /usr/lib/arm-linux-gnueabihf/pkgconfig
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust (stable) with cross-compilation target
         uses: dtolnay/rust-toolchain@stable
@@ -101,7 +101,7 @@ jobs:
             libasound2-dev:${{ matrix.libasound_arch }}
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -121,7 +121,7 @@ jobs:
              picoredsp-controller-${{ matrix.binary_suffix }}
 
       - name: Upload build artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: picoredsp-controller-${{ matrix.binary_suffix }}
           path: picoredsp-controller-${{ matrix.binary_suffix }}
@@ -138,12 +138,12 @@ jobs:
 
     steps:
       - name: Download aarch64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: picoredsp-controller-aarch64
 
       - name: Download armv7 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: picoredsp-controller-armv7
 
