@@ -269,6 +269,19 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          CARGO_VERSION="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')"
+          if [ "${TAG}" != "${CARGO_VERSION}" ]; then
+            echo "ERROR: Git tag '${TAG}' does not match Cargo.toml version '${CARGO_VERSION}'."
+            echo "Update Cargo.toml before pushing a release tag."
+            exit 1
+          fi
+          echo "Tag ${TAG} matches Cargo.toml version — OK."
+
       - name: Download aarch64 binary
         uses: actions/download-artifact@v7
         with:

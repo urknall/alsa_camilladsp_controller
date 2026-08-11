@@ -11,6 +11,13 @@ This repository contains:
 | `Cargo.toml` | Rust package manifest |
 | `.github/workflows/build.yml` | GitHub Actions CI/CD — builds and releases binaries |
 
+## Supported architectures
+
+| Architecture | Boards |
+|---|---|
+| `aarch64` | Raspberry Pi 3/4/5 running 64-bit piCorePlayer |
+| `armv7` | Raspberry Pi 2/3 running 32-bit piCorePlayer |
+
 ## Audio path
 
 ```
@@ -34,6 +41,10 @@ Squeezelite / AirPlay / Bluetooth
              DAC
 ```
 
+> **Note:** The `pcm.picoredsp` routing is fixed to **stereo (2 channels)**. Only
+> stereo audio sources are supported. The controller rejects ALSA events that
+> indicate a channel count other than 2.
+
 The `picoredsp-controller` binary sits entirely outside the audio path. It
 monitors the `snd-aloop` ALSA HCTL controls (`PCM Slave Active`, `PCM Slave
 Rate`, `PCM Slave Format`, `PCM Slave Channels`) and drives CamillaDSP through
@@ -48,14 +59,17 @@ chmod +x install_picoredsp.sh
 ./install_picoredsp.sh
 ```
 
-The installer:
+The installer performs these steps in order:
+
 1. Tests `snd-aloop` availability.
 2. Detects the physical DAC selected in Squeezelite Settings.
-3. Downloads the pre-built `picoredsp-controller` binary from GitHub Releases.
-4. Downloads CamillaDSP and CamillaGUI backend binaries.
-5. Generates default/bypass/null configs and ALSA PCM definitions.
-6. Bundles everything into a Tiny Core `.tcz` extension.
-7. Routes Squeezelite through `pcm.picoredsp` and reboots.
+3. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
+4. Probes the snd-aloop ALSA controls with the downloaded binary.
+5. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.
+6. Generates default/bypass/null configs and ALSA PCM definitions.
+7. Validates all staged configs with `camilladsp --check`.
+8. Bundles everything into a Tiny Core `.tcz` extension.
+9. Routes Squeezelite through `pcm.picoredsp` and reboots.
 
 After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
 
@@ -93,7 +107,7 @@ before relying on a config change to survive a playback format switch or reboot.
 
 - Pushes to `main` run tests, cross-build both ARM binaries, and refresh the rolling `installer-latest` GitHub release used by the installer.
 - Pull requests run tests and cross-build both ARM binaries as GitHub Actions artifacts for CI verification.
-- Pushing a `v*.*.*` tag additionally creates an immutable GitHub Release and attaches both binaries.
+- Pushing a `v*.*.*` tag additionally creates an immutable GitHub Release and attaches both binaries. The CI enforces that the tag matches the `version` field in `Cargo.toml`.
 
 The installer downloads `picoredsp-controller` from the rolling `installer-latest` GitHub release, not from workflow artifacts.
 Pushes to `main` refresh that release, while version tags still create immutable `v*.*.*` releases for manual versioned downloads.

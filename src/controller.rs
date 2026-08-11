@@ -477,8 +477,11 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                         self.log_level,
                         "Config file changed — clearing error latch",
                     );
-                    self.retry.reset();
                 }
+                // Any deliberate config change is a good reason to allow an
+                // immediate new start attempt even if we are in a normal backoff
+                // window (e.g. after a hardware error or rate-limit).
+                self.retry.reset();
                 self.config_fp = fp;
             }
 

@@ -65,6 +65,14 @@ CAMILLA_GUI_VERSION="v4.1.0"
 CONTROLLER_RELEASE_TAG="installer-latest"
 CONTROLLER_REPO="urknall/alsa_camilladsp_controller"
 
+# Expected SHA256 checksums for the pinned CamillaDSP and CamillaGUI archives.
+# These are verified after download to detect corruption or supply-chain tampering.
+# When upgrading CDSP_VERSION or CAMILLA_GUI_VERSION, update these values.
+CDSP_SHA256_AARCH64="d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a"
+CDSP_SHA256_ARMV7="dd1af57129e078383e2a1d5dc28cc13f3f02a78dce9247eb7d9232731b8f7609"
+GUI_SHA256_AARCH64="9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7"
+GUI_SHA256_ARMV7="22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1"
+
 ###############################################################################
 # Paths
 ###############################################################################
@@ -222,9 +230,13 @@ trap 'exit 143' TERM
 case "$(uname -m)" in
     aarch64)
         architecture="aarch64"
+        CDSP_SHA256="${CDSP_SHA256_AARCH64}"
+        GUI_SHA256="${GUI_SHA256_AARCH64}"
         ;;
     armv7l|armv7*)
         architecture="armv7"
+        CDSP_SHA256="${CDSP_SHA256_ARMV7}"
+        GUI_SHA256="${GUI_SHA256_ARMV7}"
         ;;
     *)
         echo "ERROR: Unsupported architecture: $(uname -m)"
@@ -295,6 +307,7 @@ install_temporarily_if_missing() {
 download_and_extract_tar_gz() {
     localFileName="$1"
     url="$2"
+    expected_sha256="$3"
 
     echo "Downloading ${url}"
 
@@ -302,14 +315,50 @@ download_and_extract_tar_gz() {
         mkdir -p "${CACHE_DIR}"
 
         if [ ! -f "${CACHE_DIR}/${localFileName}" ]; then
-            wget -O "${CACHE_DIR}/${localFileName}" "${url}"
+            # Download atomically: write to .part, verify, then rename.
+            wget -O "${CACHE_DIR}/${localFileName}.part" "${url}"
+            if ! tar -tzf "${CACHE_DIR}/${localFileName}.part" >/dev/null 2>&1; then
+                rm -f "${CACHE_DIR}/${localFileName}.part"
+                echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+                exit 1
+            fi
+            mv "${CACHE_DIR}/${localFileName}.part" "${CACHE_DIR}/${localFileName}"
         else
             echo "Using cached ${CACHE_DIR}/${localFileName}"
         fi
 
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${CACHE_DIR}/${localFileName}" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${CACHE_DIR}/${localFileName}"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}"
+        fi
+
         tar -xzf "${CACHE_DIR}/${localFileName}"
     else
-        wget -O "${localFileName}" "${url}"
+        wget -O "${localFileName}.part" "${url}"
+        if ! tar -tzf "${localFileName}.part" >/dev/null 2>&1; then
+            rm -f "${localFileName}.part"
+            echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+            exit 1
+        fi
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${localFileName}.part" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${localFileName}.part"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}"
+        fi
+        mv "${localFileName}.part" "${localFileName}"
         tar -xzf "${localFileName}"
         rm -f "${localFileName}"
     fi
@@ -323,6 +372,28 @@ if [ -f "${FINAL_TCZ}" ]; then
     echo "ERROR: ${EXTENSION_NAME}.tcz is already installed."
     echo
     echo "Uninstall the existing extension and reboot before reinstalling."
+    exit 1
+fi
+
+# Even when the TCZ is absent (e.g. deleted manually), old piCoreDSP processes
+# may still be running from the previously loaded extension in RAM.  Installing
+# over a live runtime risks race conditions and process conflicts.
+_running_procs=""
+if pgrep -x picoredsp-controller >/dev/null 2>&1; then
+    _running_procs="${_running_procs} picoredsp-controller"
+fi
+if pgrep -x camilladsp >/dev/null 2>&1; then
+    _running_procs="${_running_procs} camilladsp"
+fi
+if pgrep -x camillagui_backend >/dev/null 2>&1; then
+    _running_procs="${_running_procs} camillagui_backend"
+fi
+
+if [ -n "${_running_procs}" ]; then
+    echo "ERROR: Existing piCoreDSP runtime processes are still running:"
+    echo " ${_running_procs}"
+    echo
+    echo "Reboot piCorePlayer before reinstalling."
     exit 1
 fi
 
@@ -646,10 +717,16 @@ volume:
 - 0.0"
 
 if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
-    _extracted_state_fragment=$("${RUST_RUNTIME_BIN}" --get-state-fragment "${STATEFILE}" 2>/dev/null || true)
-    if [ -n "${_extracted_state_fragment}" ]; then
-        _stage_state_fragment="${_extracted_state_fragment}"
+    if ! _extracted_state_fragment=$(
+        "${RUST_RUNTIME_BIN}" --get-state-fragment "${STATEFILE}"
+    ); then
+        echo "ERROR: Existing CamillaDSP statefile is invalid or cannot be parsed."
+        echo "  File: ${STATEFILE}"
+        echo "Refusing to silently reset saved volume/mute state to defaults."
+        echo "Remove or repair the statefile before reinstalling."
+        exit 1
     fi
+    _stage_state_fragment="${_extracted_state_fragment}"
 fi
 
 cat > "${STAGE_STATEFILE}" <<EOF
@@ -674,15 +751,18 @@ awk '
 BEGIN {
     newblock = 0
     oldblock = 0
+    found_end = 1
 }
 
 /^# BEGIN piCoreDSP$/ {
     newblock = 1
+    found_end = 0
     next
 }
 
 /^# END piCoreDSP$/ {
     newblock = 0
+    found_end = 1
     next
 }
 
@@ -699,7 +779,20 @@ oldblock && /^# pcm\.camilladsp$/ {
 !newblock && !oldblock {
     print
 }
-' "${ASOUND_SOURCE}" > "${ASOUND_STAGED}"
+
+END {
+    if (!found_end) {
+        print "ERROR: /etc/asound.conf contains a \"# BEGIN piCoreDSP\" marker without a" \
+              " matching \"# END piCoreDSP\" marker." > "/dev/stderr"
+        print "The file may be corrupted. Remove or repair the incomplete block before reinstalling." \
+              > "/dev/stderr"
+        exit 1
+    }
+}
+' "${ASOUND_SOURCE}" > "${ASOUND_STAGED}" || {
+    echo "ERROR: Failed to process /etc/asound.conf — see message above."
+    exit 1
+}
 
 cat >> "${ASOUND_STAGED}" <<'EOF'
 
@@ -769,7 +862,10 @@ echo "picoredsp-controller ${CONTROLLER_RELEASE_TAG} download and ALSA probe OK.
 
 cd "${BUILD_DIR}/usr/local"
 
-download_and_extract_tar_gz     "camilladsp-${CDSP_VERSION}-${architecture}.tar.gz"     "https://github.com/HEnquist/camilladsp/releases/download/${CDSP_VERSION}/camilladsp-linux-${architecture}.tar.gz"
+download_and_extract_tar_gz \
+    "camilladsp-${CDSP_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camilladsp/releases/download/${CDSP_VERSION}/camilladsp-linux-${architecture}.tar.gz" \
+    "${CDSP_SHA256}"
 
 if [ ! -f "${BUILD_DIR}/usr/local/camilladsp" ]; then
     echo "ERROR: CamillaDSP binary was not found after extraction."
@@ -886,7 +982,10 @@ echo "Rust controller WebSocket integration with CamillaDSP OK."
 
 cd "${BUILD_DIR}/usr/local"
 
-download_and_extract_tar_gz     "camillagui-${CAMILLA_GUI_VERSION}-${architecture}.tar.gz"     "https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${architecture}.tar.gz"
+download_and_extract_tar_gz \
+    "camillagui-${CAMILLA_GUI_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${architecture}.tar.gz" \
+    "${GUI_SHA256}"
 
 if [ ! -f "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ]; then
     echo "ERROR: CamillaGUI backend was not found after extraction."
@@ -925,7 +1024,13 @@ default_config: "${DEFAULT_CONFIG}"
 statefile_path: "${STATEFILE}"
 log_file: "/tmp/camilladsp.log"
 
-on_set_active_config: "ln -sfn {} ${ACTIVE_CONFIG_LINK}"
+# on_set_active_config intentionally does NOT use the {} placeholder.
+# CamillaGUI calls this via os.system(), which evaluates shell metacharacters
+# before invoking the command.  Using {} would allow a config file named with
+# shell metacharacters (e.g. "\$(cmd)") to execute arbitrary commands as tc.
+# The wrapper reads the config path from CamillaDSP's own statefile instead,
+# so no user-controlled string ever reaches the shell.
+on_set_active_config: "/usr/local/bin/picoredsp-sync-config"
 on_get_active_config: "readlink -f ${ACTIVE_CONFIG_LINK}"
 
 supported_capture_types:
@@ -934,6 +1039,59 @@ supported_capture_types:
 supported_playback_types:
   - "Alsa"
 EOF
+
+###############################################################################
+# piCoreDSP set-active-config wrapper
+# Reads the active config path from CamillaDSP's statefile and updates the
+# symlink — without using any user-supplied data in a shell command.
+###############################################################################
+
+mkdir -p "${BUILD_DIR}/usr/local/bin"
+
+cat > "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config" <<EOF
+#!/bin/sh
+# Called by CamillaGUI on_set_active_config.  CamillaGUI has already sent
+# SetConfig to CamillaDSP, so the statefile contains the new config_path.
+# We read it from there to avoid any shell injection from a maliciously named
+# config file.  The CamillaGUI-supplied argument is intentionally discarded.
+STATEFILE="${STATEFILE}"
+ACTIVE_CONFIG_LINK="${ACTIVE_CONFIG_LINK}"
+CONTROLLER="/usr/local/bin/picoredsp-controller"
+CONFIG_DIR="${CONFIG_DIR}"
+
+config_path=\$("\${CONTROLLER}" --get-config-path "\${STATEFILE}" 2>/dev/null) || {
+    echo "picoredsp-sync-config: failed to read config_path from statefile" >&2
+    exit 1
+}
+
+case "\${config_path}" in
+    "\${CONFIG_DIR}/"*.yml) ;;
+    *)
+        echo "picoredsp-sync-config: config path rejected: \${config_path}" >&2
+        exit 1
+        ;;
+esac
+
+ln -sfn "\${config_path}" "\${ACTIVE_CONFIG_LINK}"
+EOF
+
+chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config"
+
+# Helper script shared by all three supervisor loops.
+cat > "${BUILD_DIR}/usr/local/bin/picoredsp-trim-log" <<'EOF'
+#!/bin/sh
+# Trim a log file to the most recent 256 KB to prevent filling /tmp (RAM).
+# Uses copy-truncate so that any process with the file open via ">>" continues
+# writing to the same inode rather than to an orphaned unlinked file.
+_log="$1"
+if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
+    tail -c 262144 "${_log}" > "${_log}.tmp" \
+        && cat "${_log}.tmp" > "${_log}" \
+        && rm -f "${_log}.tmp" \
+        || true
+fi
+EOF
+chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-trim-log"
 
 ###############################################################################
 # Boot script
@@ -984,13 +1142,23 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+_log=/tmp/camilladsp-supervisor.log
 while :
 do
-    /usr/local/camilladsp         --wait         --no_config         --port 1234         --address 127.0.0.1         --logfile /tmp/camilladsp.log         --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
+    /usr/local/bin/picoredsp-trim-log "${_log}"
+
+    /usr/local/camilladsp \
+        --wait \
+        --no_config \
+        --port 1234 \
+        --address 127.0.0.1 \
+        --logfile /tmp/camilladsp.log \
+        --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
 
     rc=$?
 
-    echo "$(date): CamillaDSP exited with ${rc}; restarting"         >> /tmp/picoredsp-startup.log
+    echo "$(date): CamillaDSP exited with ${rc}; restarting" \
+        >> /tmp/picoredsp-startup.log
 
     sleep 2
 done
@@ -1026,8 +1194,11 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+_log=/tmp/picoredsp-controller.log
 while :
 do
+    /usr/local/bin/picoredsp-trim-log "${_log}"
+
     /usr/local/bin/picoredsp-controller \
         --host 127.0.0.1 \
         --port 1234 \
@@ -1045,10 +1216,25 @@ done
 ' >> /tmp/picoredsp-controller.log 2>&1 &
 
 ###############################################################################
-# CamillaGUI
+# CamillaGUI supervisor
 ###############################################################################
 
-sudo -u tc     /usr/local/camillagui_backend/camillagui_backend     >> /tmp/camillagui-backend.log     2>&1 &
+sudo -u tc sh -c '
+_log=/tmp/camillagui-backend.log
+while :
+do
+    /usr/local/bin/picoredsp-trim-log "${_log}"
+
+    /usr/local/camillagui_backend/camillagui_backend
+
+    rc=$?
+
+    echo "$(date): CamillaGUI exited with ${rc}; restarting" \
+        >> /tmp/picoredsp-startup.log
+
+    sleep 2
+done
+' >> /tmp/camillagui-backend.log 2>&1 &
 
 exit 0
 EOF
@@ -1095,6 +1281,33 @@ if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] ||
     exit 1
 fi
 
+# Determine the active config that will be used after the commit.  On a first
+# install this is always Bypass.  On reinstall it may be a custom config that
+# the user had previously selected.  Validate it HERE, before COMMIT_STARTED,
+# so a broken preserved config aborts cleanly without requiring a rollback.
+_new_active_target="${BYPASS_CONFIG}"
+if $EXISTING_INSTALL; then
+    _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
+    if [ -f "${_old_active}" ] && \
+       echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
+        _new_active_target="${_old_active}"
+    fi
+fi
+
+if [ "${_new_active_target}" != "${BYPASS_CONFIG}" ]; then
+    echo "Validating preserved active config: ${_new_active_target}"
+    _check_output=$("${BUILD_DIR}/usr/local/camilladsp" --check "${_new_active_target}" 2>&1) || {
+        echo "ERROR: The preserved active CamillaDSP config failed validation:"
+        echo "  ${_new_active_target}"
+        echo "${_check_output}"
+        echo
+        echo "Repair or remove the config, then reinstall."
+        echo "Alternatively, point the active_config.yml symlink to Bypass.yml first."
+        exit 1
+    }
+    echo "Preserved active config is valid."
+fi
+
 echo
 echo "All downloads, builds and validations completed successfully."
 echo "Committing piCoreDSP changes to piCorePlayer..."
@@ -1114,18 +1327,8 @@ sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
 sudo cp -f "${STAGE_STATEFILE}" "${STATEFILE}"
 sudo cp -f "${STAGE_PLAYBACK_DEVICE_FILE}" "${PLAYBACK_DEVICE_FILE}"
 
-# Set the active config symlink.  On a first install always point to Bypass.
-# On reinstall, preserve the user's current selection when the target is a
-# valid YAML file inside CONFIG_DIR; fall back to Bypass otherwise.
-# Read the existing symlink target BEFORE removing it.
-_new_active_target="${BYPASS_CONFIG}"
-if $EXISTING_INSTALL; then
-    _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
-    if [ -f "${_old_active}" ] && \
-       echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
-        _new_active_target="${_old_active}"
-    fi
-fi
+# Set the active config symlink using the target already determined and
+# validated in the pre-commit check above.
 sudo rm -f "${ACTIVE_CONFIG_LINK}"
 sudo ln -s "${_new_active_target}" "${ACTIVE_CONFIG_LINK}"
 
@@ -1149,8 +1352,19 @@ sudo tee /etc/asound.conf < "${ASOUND_STAGED}" >/dev/null
 # Route pCP sources LAST, when the extension/config are already in place.
 sudo tee "${PCP_CONFIG}" < "${PCP_STAGED}" >/dev/null
 
-sudo chown -R tc:staff "${DATA_DIR}"
-sudo chmod -R u+rwX,g+rwX "${DATA_DIR}"
+# Apply ownership and permissions only to the directories and files this
+# installer created or modified — not recursively over the entire DATA_DIR.
+# This preserves existing metadata on user-created configs and coeff files,
+# making rollback fully accurate even if pcp backup later fails.
+for _d in "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"; do
+    sudo chown tc:staff "${_d}" 2>/dev/null || true
+    sudo chmod u+rwx,g+rwx "${_d}" 2>/dev/null || true
+done
+for _f in "${DEFAULT_CONFIG}" "${BYPASS_CONFIG}" "${NULL_CONFIG}" \
+           "${STATEFILE}" "${PLAYBACK_DEVICE_FILE}" "${ACTIVE_CONFIG_LINK}"; do
+    sudo chown tc:staff "${_f}" 2>/dev/null || true
+    sudo chmod u+rw,g+rw "${_f}" 2>/dev/null || true
+done
 
 # Persist only after the entire commit completed successfully.
 pcp backup
