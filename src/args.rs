@@ -259,5 +259,39 @@ pub fn parse_args() -> AppResult<Option<Args>> {
     if args.mode == Mode::MakeBypass && args.playback_device.is_none() {
         return Err(app_error("--make-bypass requires --playback-device DEVICE"));
     }
+    if args.playback_device.is_some() && args.mode != Mode::MakeBypass {
+        return Err(app_error(
+            "--playback-device is only valid with --make-bypass",
+        ));
+    }
+    if args.output.is_some() && args.mode != Mode::MakeBypass {
+        return Err(app_error("--output is only valid with --make-bypass"));
+    }
+    if matches!(args.mode, Mode::GetPlaybackDevice | Mode::GetConfigPath) {
+        if args.adapt.is_some() {
+            return Err(app_error(format!(
+                "--adapt is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_rate.is_some() {
+            return Err(app_error(format!(
+                "--rate is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_format.is_some() {
+            return Err(app_error(format!(
+                "--format is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_channels.is_some() {
+            return Err(app_error(format!(
+                "--channels is not valid with {}",
+                args.mode.name()
+            )));
+        }
+    }
     Ok(Some(args))
 }
