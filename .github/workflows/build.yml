@@ -77,6 +77,24 @@ jobs:
       - name: Enable multiarch and install cross toolchain + ALSA headers
         run: |
           sudo dpkg --add-architecture ${{ matrix.libasound_arch }}
+          # On Ubuntu 24.04 (Noble), apt sources use the new DEB822 format
+          # (/etc/apt/sources.list.d/ubuntu.sources).  After adding a foreign
+          # arch, apt tries to fetch that arch's packages from the standard
+          # archive, which returns 404 for arm64/armhf on noble.
+          # Fix: restrict the existing DEB822 source to amd64 only, then add
+          # a classic-format source for ports.ubuntu.com for the cross arch.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            grep -q '^Architectures:' /etc/apt/sources.list.d/ubuntu.sources || \
+              sudo sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          else
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          fi
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee /etc/apt/sources.list.d/cross-ports.list
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee -a /etc/apt/sources.list.d/cross-ports.list
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee -a /etc/apt/sources.list.d/cross-ports.list
           sudo apt-get update -qq
           sudo apt-get install -y \
             ${{ matrix.cross_gcc }} \
