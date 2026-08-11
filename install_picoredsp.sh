@@ -487,24 +487,6 @@ read_pcp_output() {
     ' "${PCP_CONFIG}"
 }
 
-read_statefile_config_path() {
-    statefile="$1"
-    [ -f "${statefile}" ] || return 1
-
-    awk '
-    /^[[:space:]]*config_path:[[:space:]]*/ {
-        value = $0
-        sub(/^[[:space:]]*config_path:[[:space:]]*/, "", value)
-        sub(/^"/, "", value)
-        sub(/"$/, "", value)
-        sub(/^\047/, "", value)
-        sub(/\047$/, "", value)
-        print value
-        exit
-    }
-    ' "${statefile}"
-}
-
 is_usable_playback_device() {
     candidate="$1"
 
@@ -552,7 +534,7 @@ else
             fi
 
             if [ -z "${ACTIVE_CONFIG_TARGET}" ]; then
-                ACTIVE_CONFIG_TARGET=$(read_statefile_config_path "${STATEFILE}" 2>/dev/null || true)
+                ACTIVE_CONFIG_TARGET=$("${RUST_RUNTIME_BIN}" --get-config-path "${STATEFILE}" 2>/dev/null || true)
             fi
 
             if [ -n "${ACTIVE_CONFIG_TARGET}" ]; then

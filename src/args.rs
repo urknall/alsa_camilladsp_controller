@@ -19,7 +19,7 @@ pub struct Args {
     pub initial_channels: Option<u32>,
     pub log_level: LogLevel,
     pub mode: Mode,
-    /// CamillaDSP YAML config path supplied to `--get-playback-device`.
+    /// CamillaDSP YAML config/statefile path supplied to `--get-playback-device`/`--get-config-path`.
     pub config_path: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
     pub playback_device: Option<String>,
@@ -42,6 +42,8 @@ pub enum Mode {
     AdaptCheck,
     /// Read `devices.playback.device` from a CamillaDSP YAML config and print it.
     GetPlaybackDevice,
+    /// Read `config_path` from a CamillaDSP statefile and print it.
+    GetConfigPath,
     /// Write a piCoreDSP bypass CamillaDSP config with the given playback device.
     MakeBypass,
 }
@@ -55,6 +57,7 @@ impl Mode {
             Self::WsValidate => "--ws-validate",
             Self::AdaptCheck => "--adapt-check",
             Self::GetPlaybackDevice => "--get-playback-device",
+            Self::GetConfigPath => "--get-config-path",
             Self::MakeBypass => "--make-bypass",
         }
     }
@@ -92,6 +95,7 @@ Usage:\n\
   picoredsp-controller --ws-validate --adapt PATH [--host HOST] [--port PORT]\n\
   picoredsp-controller --adapt-check --adapt PATH [--rate R --format F --channels N]\n\
   picoredsp-controller --get-playback-device CONFIG\n\
+  picoredsp-controller --get-config-path STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
@@ -107,6 +111,7 @@ Options:\n\
       --ws-validate             Adapt YAML and ValidateConfig over websocket\n\
       --adapt-check             Adapt YAML once, write result to stdout, exit\n\
       --get-playback-device PATH  Print devices.playback.device from a YAML config\n\
+      --get-config-path STATEFILE Print config_path from a CamillaDSP statefile\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
       --output FILE             Output file for --make-bypass (default: stdout)\n\
@@ -184,6 +189,17 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 args.mode = Mode::GetPlaybackDevice;
                 args.config_path =
                     Some(PathBuf::from(next_value("--get-playback-device")?));
+            }
+            "--get-config-path" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --get-config-path",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::GetConfigPath;
+                args.config_path =
+                    Some(PathBuf::from(next_value("--get-config-path")?));
             }
             "--make-bypass" => {
                 if args.mode != Mode::Run {

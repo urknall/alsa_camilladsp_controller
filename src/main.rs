@@ -7,7 +7,7 @@ mod error;
 mod logging;
 mod wave;
 
-use adapt::{adapt_config, get_playback_device, make_bypass_config};
+use adapt::{adapt_config, get_config_path, get_playback_device, make_bypass_config};
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Mode};
 use camilla_ws::{CamillaClient, CamillaWs};
@@ -77,6 +77,13 @@ fn run_main() -> AppResult<()> {
             let path = args.config_path.as_deref().expect("validated");
             let device = get_playback_device(path)?;
             println!("{device}");
+            Ok(())
+        }
+
+        Mode::GetConfigPath => {
+            let path = args.config_path.as_deref().expect("validated");
+            let config = get_config_path(path)?;
+            println!("{config}");
             Ok(())
         }
 

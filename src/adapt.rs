@@ -115,6 +115,23 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
 /// Flow YAML like `playback: {type: Alsa, device: "hw:USB,0"}` is parsed
 /// correctly, and device names containing special characters are returned
 /// verbatim without shell-quoting side-effects.
+/// Read `config_path` from a CamillaDSP statefile (YAML).
+///
+/// CamillaDSP writes a statefile containing the active config path, volume,
+/// and mute state.  Parsing it with `serde_yaml_ng` handles all valid YAML
+/// representations (quoted, unquoted, flow) and replaces the fragile AWK
+/// parser previously used in the shell installer.
+pub fn get_config_path(path: &Path) -> AppResult<String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| app_error(format!("unable to read statefile {}: {err}", path.display())))?;
+    let root: YamlValue = serde_yaml_ng::from_str(&raw)
+        .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
+    root.get("config_path")
+        .and_then(YamlValue::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| app_error("statefile has no 'config_path' value"))
+}
+
 pub fn get_playback_device(path: &Path) -> AppResult<String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| app_error(format!("unable to read config {}: {err}", path.display())))?;
@@ -615,6 +632,39 @@ mod tests {
         fs::write(&config, &yaml).unwrap();
         let recovered = get_playback_device(&config).unwrap();
         assert_eq!(recovered, device);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_reads_unquoted_value() {
+        let dir = test_dir("statefile-unquoted");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "config_path: /mnt/camilladsp/MyDSP.yml\nvolume:\n- -10.0\n").unwrap();
+        assert_eq!(
+            get_config_path(&sf).unwrap(),
+            "/mnt/camilladsp/MyDSP.yml"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_reads_quoted_value() {
+        let dir = test_dir("statefile-quoted");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "config_path: \"/mnt/camilladsp/My DSP.yml\"\nvolume:\n- -10.0\n").unwrap();
+        assert_eq!(
+            get_config_path(&sf).unwrap(),
+            "/mnt/camilladsp/My DSP.yml"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn get_config_path_errors_when_key_missing() {
+        let dir = test_dir("statefile-no-key");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "volume:\n- -10.0\n").unwrap();
+        assert!(get_config_path(&sf).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 }
