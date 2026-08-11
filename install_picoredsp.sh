@@ -631,44 +631,31 @@ EOF
 # The statefile contains FINAL runtime paths even though it is staged here.
 # On reinstall, preserve any existing volume/mute values so a user's current
 # speaker levels are not silently reset to 0 dB.
-_stage_mute_block="- false
+_stage_state_fragment="mute:
 - false
 - false
 - false
-- false"
-_stage_volume_block="- 0.0
+- false
+- false
+
+volume:
+- 0.0
 - 0.0
 - 0.0
 - 0.0
 - 0.0"
 
 if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
-    _extracted_mute=$(awk '
-        /^mute:/   { section="mute";   next }
-        /^volume:/ { section="volume"; next }
-        /^[a-z_]/  { section="" }
-        section == "mute" && /^- / { print; next }
-    ' "${STATEFILE}" | head -5)
-    _extracted_volume=$(awk '
-        /^mute:/   { section="mute";   next }
-        /^volume:/ { section="volume"; next }
-        /^[a-z_]/  { section="" }
-        section == "volume" && /^- / { print; next }
-    ' "${STATEFILE}" | head -5)
-    if [ -n "${_extracted_mute}" ] && [ -n "${_extracted_volume}" ]; then
-        _stage_mute_block="${_extracted_mute}"
-        _stage_volume_block="${_extracted_volume}"
+    _extracted_state_fragment=$("${RUST_RUNTIME_BIN}" --get-state-fragment "${STATEFILE}" 2>/dev/null || true)
+    if [ -n "${_extracted_state_fragment}" ]; then
+        _stage_state_fragment="${_extracted_state_fragment}"
     fi
 fi
 
 cat > "${STAGE_STATEFILE}" <<EOF
 config_path: ${BYPASS_CONFIG}
 
-mute:
-${_stage_mute_block}
-
-volume:
-${_stage_volume_block}
+${_stage_state_fragment}
 EOF
 
 ln -sfn "${STAGE_BYPASS_CONFIG}" "${STAGE_ACTIVE_CONFIG_LINK}"
