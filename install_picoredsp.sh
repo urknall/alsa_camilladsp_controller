@@ -1041,7 +1041,7 @@ supported_playback_types:
 EOF
 
 ###############################################################################
-# piCoredDSP set-active-config wrapper
+# piCoreDSP set-active-config wrapper
 # Reads the active config path from CamillaDSP's statefile and updates the
 # symlink — without using any user-supplied data in a shell command.
 ###############################################################################
@@ -1076,6 +1076,22 @@ ln -sfn "\${config_path}" "\${ACTIVE_CONFIG_LINK}"
 EOF
 
 chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config"
+
+# Helper script shared by all three supervisor loops.
+cat > "${BUILD_DIR}/usr/local/bin/picoredsp-trim-log" <<'EOF'
+#!/bin/sh
+# Trim a log file to the most recent 256 KB to prevent filling /tmp (RAM).
+# Uses copy-truncate so that any process with the file open via ">>" continues
+# writing to the same inode rather than to an orphaned unlinked file.
+_log="$1"
+if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
+    tail -c 262144 "${_log}" > "${_log}.tmp" \
+        && cat "${_log}.tmp" > "${_log}" \
+        && rm -f "${_log}.tmp" \
+        || true
+fi
+EOF
+chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-trim-log"
 
 ###############################################################################
 # Boot script
@@ -1129,9 +1145,7 @@ sudo -u tc sh -c '
 _log=/tmp/camilladsp-supervisor.log
 while :
 do
-    if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
-        tail -c 262144 "${_log}" > "${_log}.tmp" && mv "${_log}.tmp" "${_log}" || true
-    fi
+    /usr/local/bin/picoredsp-trim-log "${_log}"
 
     /usr/local/camilladsp \
         --wait \
@@ -1183,9 +1197,7 @@ sudo -u tc sh -c '
 _log=/tmp/picoredsp-controller.log
 while :
 do
-    if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
-        tail -c 262144 "${_log}" > "${_log}.tmp" && mv "${_log}.tmp" "${_log}" || true
-    fi
+    /usr/local/bin/picoredsp-trim-log "${_log}"
 
     /usr/local/bin/picoredsp-controller \
         --host 127.0.0.1 \
@@ -1211,10 +1223,7 @@ sudo -u tc sh -c '
 _log=/tmp/camillagui-backend.log
 while :
 do
-    # Trim log to the most recent 256 KB to prevent filling /tmp (RAM).
-    if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
-        tail -c 262144 "${_log}" > "${_log}.tmp" && mv "${_log}.tmp" "${_log}" || true
-    fi
+    /usr/local/bin/picoredsp-trim-log "${_log}"
 
     /usr/local/camillagui_backend/camillagui_backend
 
@@ -1287,15 +1296,15 @@ fi
 
 if [ "${_new_active_target}" != "${BYPASS_CONFIG}" ]; then
     echo "Validating preserved active config: ${_new_active_target}"
-    if ! "${BUILD_DIR}/usr/local/camilladsp" --check "${_new_active_target}" >/dev/null 2>&1; then
+    _check_output=$("${BUILD_DIR}/usr/local/camilladsp" --check "${_new_active_target}" 2>&1) || {
         echo "ERROR: The preserved active CamillaDSP config failed validation:"
         echo "  ${_new_active_target}"
-        "${BUILD_DIR}/usr/local/camilladsp" --check "${_new_active_target}" || true
+        echo "${_check_output}"
         echo
         echo "Repair or remove the config, then reinstall."
         echo "Alternatively, point the active_config.yml symlink to Bypass.yml first."
         exit 1
-    fi
+    }
     echo "Preserved active config is valid."
 fi
 
