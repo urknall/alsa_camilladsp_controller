@@ -77,10 +77,12 @@ After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
 
 `.github/workflows/build.yml` runs in two modes:
 
-- Pushes to `main` and pull requests run tests and cross-build both ARM binaries as GitHub Actions artifacts for CI verification only.
-- Pushing a `v*.*.*` tag additionally creates a GitHub Release and attaches both binaries.
+- Pushes to `main` run tests, cross-build both ARM binaries, and refresh the rolling `installer-latest` GitHub release used by the installer.
+- Pull requests run tests and cross-build both ARM binaries as GitHub Actions artifacts for CI verification.
+- Pushing a `v*.*.*` tag additionally creates an immutable GitHub Release and attaches both binaries.
 
-The installer downloads `picoredsp-controller` from GitHub Releases, not from workflow artifacts, so installer-visible binaries are updated only when a version tag is released.
+The installer downloads `picoredsp-controller` from the rolling `installer-latest` GitHub release, not from workflow artifacts.
+Pushes to `main` refresh that release, while version tags still create immutable `v*.*.*` releases for manual versioned downloads.
 
 ## Diagnostics
 
