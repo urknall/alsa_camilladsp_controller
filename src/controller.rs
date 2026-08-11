@@ -88,6 +88,7 @@ struct ConfigFingerprint {
 }
 
 impl ConfigFingerprint {
+    #[allow(dead_code)]
     fn absent() -> Self {
         Self {
             target: PathBuf::new(),
@@ -545,6 +546,7 @@ mod tests {
         fn ok() -> Result<Option<JsonValue>, WsError> {
             Ok(None)
         }
+        #[allow(dead_code)]
         fn state(s: &str) -> Result<Option<JsonValue>, WsError> {
             Ok(Some(JsonValue::String(s.to_owned())))
         }

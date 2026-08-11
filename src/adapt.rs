@@ -72,7 +72,7 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
 
         // Only process Conv filters.
         let is_conv = filter_map
-            .get(&yaml_key("type"))
+            .get(yaml_key("type"))
             .and_then(YamlValue::as_str)
             .map(|t| t == "Conv")
             .unwrap_or(false);
@@ -80,7 +80,7 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
             continue;
         }
 
-        let Some(params) = filter_map.get_mut(&yaml_key("parameters")) else {
+        let Some(params) = filter_map.get_mut(yaml_key("parameters")) else {
             continue;
         };
         let Some(params_map) = params.as_mapping_mut() else {
@@ -88,15 +88,12 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
         };
 
         // Only Raw/Wav types have a file-based coefficient.
-        match params_map
-            .get(&yaml_key("type"))
-            .and_then(YamlValue::as_str)
-        {
+        match params_map.get(yaml_key("type")).and_then(YamlValue::as_str) {
             Some("Raw") | Some("Wav") => {}
             _ => continue,
         }
 
-        if let Some(filename_val) = params_map.get_mut(&yaml_key("filename")) {
+        if let Some(filename_val) = params_map.get_mut(yaml_key("filename")) {
             if let Some(name_str) = filename_val.as_str() {
                 let p = Path::new(name_str);
                 if p.is_relative() {
@@ -149,7 +146,7 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
 
     let root_map = mapping_mut(&mut root, "config root")?;
     let devices_value = root_map
-        .get_mut(&yaml_key("devices"))
+        .get_mut(yaml_key("devices"))
         .ok_or_else(|| app_error("config has no 'devices' section"))?;
     let devices = mapping_mut(devices_value, "devices")?;
 
@@ -170,12 +167,12 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
                 .ok_or_else(|| app_error("devices.resampler disappeared during adaptation"))?;
             let resampler_map = mapping(resampler, "devices.resampler")?;
             let resampler_type = resampler_map
-                .get(&yaml_key("type"))
+                .get(yaml_key("type"))
                 .and_then(YamlValue::as_str)
                 .ok_or_else(|| app_error("devices.resampler.type must be a string"))?
                 .to_owned();
 
-            let configured_rate = devices.get(&yaml_key("samplerate")).and_then(yaml_u32);
+            let configured_rate = devices.get(yaml_key("samplerate")).and_then(yaml_u32);
 
             devices.insert(yaml_key("capture_samplerate"), YamlValue::from(rate as u64));
 
@@ -186,7 +183,7 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
     }
 
     let capture_value = devices
-        .get_mut(&yaml_key("capture"))
+        .get_mut(yaml_key("capture"))
         .ok_or_else(|| app_error("config has no 'devices.capture' section"))?;
     let capture = mapping_mut(capture_value, "devices.capture")?;
 
@@ -206,7 +203,7 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
     // Channel count changes are not supported; validate equality only.
     if let Some(channels) = wave.channels {
         let configured = capture
-            .get(&yaml_key("channels"))
+            .get(yaml_key("channels"))
             .and_then(yaml_u32)
             .ok_or_else(|| app_error("devices.capture.channels is missing or invalid"))?;
         if configured != channels {
@@ -416,16 +413,14 @@ mod tests {
         let coeff_file = coeff_dir.join("test.wav");
         fs::write(&coeff_file, b"dummy").unwrap();
 
-        let config_content = format!(
-            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+        let config_content = "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
              capture:\n    type: Alsa\n    channels: 2\n    \
              device: \"hw:Loopback,0,0\"\n  \
              playback:\n    type: Alsa\n    channels: 2\n    \
              device: \"null\"\n\
              filters:\n  LeftFIR:\n    type: Conv\n    parameters:\n      \
              type: Wav\n      filename: \"../coeffs/test.wav\"\n\
-             mixers: {{}}\npipeline: []\nprocessors: {{}}\n"
-        );
+             mixers: {}\npipeline: []\nprocessors: {}\n";
         let config_path = config_dir.join("MyDSP.yml");
         fs::write(&config_path, config_content).unwrap();
 
@@ -453,6 +448,6 @@ mod tests {
     fn yaml_helpers_accept_normal_camilladsp_config() {
         let value: YamlValue = serde_yaml_ng::from_str(&base_config("null", None)).unwrap();
         let root = mapping(&value, "root").unwrap();
-        assert!(root.contains_key(&yaml_key("devices")));
+        assert!(root.contains_key(yaml_key("devices")));
     }
 }
