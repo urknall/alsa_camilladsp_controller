@@ -1194,7 +1194,7 @@ sudo cp -f "${STAGE_PLAYBACK_DEVICE_FILE}" "${PLAYBACK_DEVICE_FILE}"
 # Set the active config symlink.  On a first install always point to Bypass.
 # On reinstall, preserve the user's current selection when the target is a
 # valid YAML file inside CONFIG_DIR; fall back to Bypass otherwise.
-sudo rm -f "${ACTIVE_CONFIG_LINK}"
+# Read the existing symlink target BEFORE removing it.
 _new_active_target="${BYPASS_CONFIG}"
 if [ "${INSTALL_MODE}" = "reinstall" ]; then
     _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
@@ -1203,6 +1203,7 @@ if [ "${INSTALL_MODE}" = "reinstall" ]; then
         _new_active_target="${_old_active}"
     fi
 fi
+sudo rm -f "${ACTIVE_CONFIG_LINK}"
 sudo ln -s "${_new_active_target}" "${ACTIVE_CONFIG_LINK}"
 
 # Install extension before routing live audio to it. Remove a stale dependency
