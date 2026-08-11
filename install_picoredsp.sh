@@ -336,7 +336,7 @@ download_and_extract_tar_gz() {
                 rm -f "${CACHE_DIR}/${localFileName}"
                 exit 1
             fi
-            echo "SHA256 verified: ${localFileName}"
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
         fi
 
         tar -xzf "${CACHE_DIR}/${localFileName}"
@@ -356,7 +356,7 @@ download_and_extract_tar_gz() {
                 rm -f "${localFileName}.part"
                 exit 1
             fi
-            echo "SHA256 verified: ${localFileName}"
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
         fi
         mv "${localFileName}.part" "${localFileName}"
         tar -xzf "${localFileName}"
@@ -378,6 +378,13 @@ fi
 # Even when the TCZ is absent (e.g. deleted manually), old piCoreDSP processes
 # may still be running from the previously loaded extension in RAM.  Installing
 # over a live runtime risks race conditions and process conflicts.
+if [ -e "/usr/local/tce.installed/${EXTENSION_NAME}" ]; then
+    echo "ERROR: piCoreDSP is still loaded in RAM. Reboot first."
+    echo
+    echo "Reboot piCorePlayer before reinstalling."
+    exit 1
+fi
+
 _running_procs=""
 if pgrep -x picoredsp-controller >/dev/null 2>&1; then
     _running_procs="${_running_procs} picoredsp-controller"
@@ -752,6 +759,7 @@ BEGIN {
     newblock = 0
     oldblock = 0
     found_end = 1
+    found_old_end = 1
 }
 
 /^# BEGIN piCoreDSP$/ {
@@ -768,11 +776,13 @@ BEGIN {
 
 /^# For more info about this configuration see: .*alsa_cdsp/ {
     oldblock = 1
+    found_old_end = 0
     next
 }
 
 oldblock && /^# pcm\.camilladsp$/ {
     oldblock = 0
+    found_old_end = 1
     next
 }
 
@@ -784,6 +794,13 @@ END {
     if (!found_end) {
         print "ERROR: /etc/asound.conf contains a \"# BEGIN piCoreDSP\" marker without a" \
               " matching \"# END piCoreDSP\" marker." > "/dev/stderr"
+        print "The file may be corrupted. Remove or repair the incomplete block before reinstalling." \
+              > "/dev/stderr"
+        exit 1
+    }
+    if (!found_old_end) {
+        print "ERROR: /etc/asound.conf contains an old alsa_cdsp block that is missing its" \
+              " closing \"# pcm.camilladsp\" marker." > "/dev/stderr"
         print "The file may be corrupted. Remove or repair the incomplete block before reinstalling." \
               > "/dev/stderr"
         exit 1
@@ -1028,7 +1045,7 @@ log_file: "/tmp/camilladsp.log"
 # CamillaGUI calls this via os.system(), which evaluates shell metacharacters
 # before invoking the command.  Using {} would allow a config file named with
 # shell metacharacters (e.g. "\$(cmd)") to execute arbitrary commands as tc.
-# The wrapper reads the config path from CamillaDSP's own statefile instead,
+# The wrapper queries the config path from CamillaDSP via WebSocket instead,
 # so no user-controlled string ever reaches the shell.
 on_set_active_config: "/usr/local/bin/picoredsp-sync-config"
 on_get_active_config: "readlink -f ${ACTIVE_CONFIG_LINK}"
@@ -1042,37 +1059,48 @@ EOF
 
 ###############################################################################
 # piCoreDSP set-active-config wrapper
-# Reads the active config path from CamillaDSP's statefile and updates the
-# symlink — without using any user-supplied data in a shell command.
+# Reads the active config path via WebSocket (GetConfigFilePath) which is
+# synchronously updated by CamillaDSP on SetConfigFilePath, avoiding the
+# ~1 s statefile write delay that would cause a race condition.
 ###############################################################################
 
 mkdir -p "${BUILD_DIR}/usr/local/bin"
 
 cat > "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config" <<EOF
 #!/bin/sh
-# Called by CamillaGUI on_set_active_config.  CamillaGUI has already sent
-# SetConfig to CamillaDSP, so the statefile contains the new config_path.
-# We read it from there to avoid any shell injection from a maliciously named
-# config file.  The CamillaGUI-supplied argument is intentionally discarded.
-STATEFILE="${STATEFILE}"
+# Called by CamillaGUI on_set_active_config.  Reads the active config path
+# directly from CamillaDSP via WebSocket (GetConfigFilePath) — not from the
+# statefile — because CamillaDSP updates its in-memory path synchronously
+# but writes the statefile with a ~1 s delay.  The CamillaGUI-supplied
+# argument is intentionally discarded to prevent shell injection.
 ACTIVE_CONFIG_LINK="${ACTIVE_CONFIG_LINK}"
 CONTROLLER="/usr/local/bin/picoredsp-controller"
 CONFIG_DIR="${CONFIG_DIR}"
 
-config_path=\$("\${CONTROLLER}" --get-config-path "\${STATEFILE}" 2>/dev/null) || {
-    echo "picoredsp-sync-config: failed to read config_path from statefile" >&2
+config_path=\$("\${CONTROLLER}" --ws-get-config-path --host 127.0.0.1 --port 1234 2>/dev/null) || {
+    echo "picoredsp-sync-config: failed to read config path from CamillaDSP" >&2
     exit 1
 }
 
-case "\${config_path}" in
-    "\${CONFIG_DIR}/"*.yml) ;;
+canonical=\$(readlink -f "\${config_path}") || {
+    echo "picoredsp-sync-config: failed to resolve config path: \${config_path}" >&2
+    exit 1
+}
+
+case "\${canonical}" in
+    "\${CONFIG_DIR}/"*) ;;
     *)
-        echo "picoredsp-sync-config: config path rejected: \${config_path}" >&2
+        echo "picoredsp-sync-config: config path outside CONFIG_DIR: \${canonical}" >&2
         exit 1
         ;;
 esac
 
-ln -sfn "\${config_path}" "\${ACTIVE_CONFIG_LINK}"
+[ -f "\${canonical}" ] || {
+    echo "picoredsp-sync-config: config file does not exist: \${canonical}" >&2
+    exit 1
+}
+
+ln -sfn "\${canonical}" "\${ACTIVE_CONFIG_LINK}"
 EOF
 
 chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config"
@@ -1153,6 +1181,8 @@ do
         --port 1234 \
         --address 127.0.0.1 \
         --logfile /tmp/camilladsp.log \
+        --log_rotate_size 262144 \
+        --log_keep_nbr 1 \
         --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
 
     rc=$?
@@ -1361,7 +1391,7 @@ for _d in "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"; do
     sudo chmod u+rwx,g+rwx "${_d}" 2>/dev/null || true
 done
 for _f in "${DEFAULT_CONFIG}" "${BYPASS_CONFIG}" "${NULL_CONFIG}" \
-           "${STATEFILE}" "${PLAYBACK_DEVICE_FILE}" "${ACTIVE_CONFIG_LINK}"; do
+           "${STATEFILE}" "${PLAYBACK_DEVICE_FILE}"; do
     sudo chown tc:staff "${_f}" 2>/dev/null || true
     sudo chmod u+rw,g+rw "${_f}" 2>/dev/null || true
 done
