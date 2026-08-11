@@ -37,7 +37,11 @@ struct RetryState {
 
 impl RetryState {
     fn new() -> Self {
-        Self { consecutive: 0, next_at: None, latch_until_change: false }
+        Self {
+            consecutive: 0,
+            next_at: None,
+            latch_until_change: false,
+        }
     }
 
     fn reset(&mut self) {
@@ -85,7 +89,11 @@ struct ConfigFingerprint {
 
 impl ConfigFingerprint {
     fn absent() -> Self {
-        Self { target: PathBuf::new(), modified: None, size: 0 }
+        Self {
+            target: PathBuf::new(),
+            modified: None,
+            size: 0,
+        }
     }
 
     fn sample(path: &PathBuf) -> Self {
@@ -93,7 +101,11 @@ impl ConfigFingerprint {
         let meta = fs::metadata(path);
         let modified = meta.as_ref().ok().and_then(|m| m.modified().ok());
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        Self { target, modified, size }
+        Self {
+            target,
+            modified,
+            size,
+        }
     }
 }
 
@@ -270,7 +282,11 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 }
             }
             StopReason::Done => {
-                log(LogLevel::Debug, self.log_level, "Capture is done, no action");
+                log(
+                    LogLevel::Debug,
+                    self.log_level,
+                    "Capture is done, no action",
+                );
             }
             StopReason::None => {
                 log(LogLevel::Debug, self.log_level, "Initial/inactive state");
@@ -431,9 +447,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
             // ── CamillaDSP state ─────────────────────────────────────────
             let state = parse_processing_state(self.client.query("GetState", None)?)?;
             match state {
-                ProcessingState::Running
-                | ProcessingState::Paused
-                | ProcessingState::Stalled => {
+                ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
                     // Confirmed success — reset retry and pending.
                     if self.start_pending || self.retry.consecutive > 0 {
                         self.retry.reset();
@@ -562,7 +576,9 @@ mod tests {
 
     impl MockListener {
         fn new(snapshots: Vec<DeviceSnapshot>) -> Self {
-            Self { snapshots: snapshots.into() }
+            Self {
+                snapshots: snapshots.into(),
+            }
         }
         fn active_with_rate(rate: u32) -> DeviceSnapshot {
             DeviceSnapshot {
@@ -575,7 +591,10 @@ mod tests {
             }
         }
         fn inactive() -> DeviceSnapshot {
-            DeviceSnapshot { active: false, wave: WaveFormat::default() }
+            DeviceSnapshot {
+                active: false,
+                wave: WaveFormat::default(),
+            }
         }
     }
 
@@ -665,7 +684,10 @@ mod tests {
         // First start → config_a should be sent.
         ctrl.start_cdsp().unwrap();
         assert_eq!(ctrl.client.sent_configs.len(), 1);
-        assert!(ctrl.client.sent_configs[0].contains("hw:CardA,0"), "first start should use CardA");
+        assert!(
+            ctrl.client.sent_configs[0].contains("hw:CardA,0"),
+            "first start should use CardA"
+        );
 
         // Retarget symlink to config_b, reset retry.
         ctrl.retry.reset();
@@ -676,7 +698,10 @@ mod tests {
         // Second start → config_b must be sent, not the cached config_a.
         ctrl.start_cdsp().unwrap();
         assert_eq!(ctrl.client.sent_configs.len(), 2);
-        assert!(ctrl.client.sent_configs[1].contains("hw:CardB,0"), "second start should use CardB");
+        assert!(
+            ctrl.client.sent_configs[1].contains("hw:CardB,0"),
+            "second start should use CardB"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -692,17 +717,20 @@ mod tests {
         symlink(&config, &active).unwrap();
 
         let client = MockClient::new(vec![
-            MockClient::ok(),                         // SetConfig OK
-            MockClient::stop_reason("None"),          // GetStopReason → None (still pending)
+            MockClient::ok(),                // SetConfig OK
+            MockClient::stop_reason("None"), // GetStopReason → None (still pending)
         ]);
         let listener = MockListener::new(vec![
-            MockListener::active_with_rate(44100),    // read_snapshot for process_inactive
+            MockListener::active_with_rate(44100), // read_snapshot for process_inactive
         ]);
         let mut ctrl = make_controller(client, listener, active.clone());
 
         // Simulate: start_cdsp() called normally.
         ctrl.start_cdsp().unwrap();
-        assert!(ctrl.start_pending, "should be pending after successful SetConfig");
+        assert!(
+            ctrl.start_pending,
+            "should be pending after successful SetConfig"
+        );
         assert_eq!(ctrl.client.sent_configs.len(), 1);
 
         // Simulate: process_inactive_state called while still pending.
@@ -795,11 +823,18 @@ mod tests {
         let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
 
         ctrl.start_cdsp().unwrap();
-        assert!(ctrl.retry.latch_until_change, "should be latched after validation error");
+        assert!(
+            ctrl.retry.latch_until_change,
+            "should be latched after validation error"
+        );
 
         // A second call must not produce another SetConfig.
         ctrl.start_cdsp().unwrap();
-        assert_eq!(ctrl.client.sent_configs.len(), 1, "latched — no second SetConfig");
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "latched — no second SetConfig"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -821,7 +856,11 @@ mod tests {
         ctrl.handle_stop_reason(StopReason::UnknownError("oom".to_owned()), &active_snap)
             .unwrap();
 
-        assert_eq!(ctrl.client.sent_configs.len(), 1, "should have attempted a restart");
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "should have attempted a restart"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

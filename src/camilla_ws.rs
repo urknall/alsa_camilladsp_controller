@@ -111,8 +111,8 @@ impl CamillaWs {
     /// other transport failure.
     pub fn connect(host: &str, port: u16) -> Result<Self, WsError> {
         let url = format!("ws://{host}:{port}");
-        let (socket, _) = connect(url)
-            .map_err(|err| WsError::Transport(format!("connect failed: {err}")))?;
+        let (socket, _) =
+            connect(url).map_err(|err| WsError::Transport(format!("connect failed: {err}")))?;
 
         // Set TCP-level timeouts before the first I/O operation.
         // `socket.get_ref()` → &MaybeTlsStream<TcpStream>; `.get_ref()` → &TcpStream.
@@ -217,15 +217,13 @@ pub fn parse_ws_reply(command: &str, reply: JsonValue) -> Result<Option<JsonValu
         return Err(WsError::Command(CommandReason::Other, error.to_string()));
     }
 
-    let result = entry
-        .get("result")
-        .ok_or_else(|| WsError::Protocol(format!("reply for '{command}' has no result: {entry}")))?;
+    let result = entry.get("result").ok_or_else(|| {
+        WsError::Protocol(format!("reply for '{command}' has no result: {entry}"))
+    })?;
 
     match result {
         JsonValue::String(value) if value == "Ok" => Ok(entry.get("value").cloned()),
-        JsonValue::String(value) => {
-            Err(WsError::Command(CommandReason::Other, value.clone()))
-        }
+        JsonValue::String(value) => Err(WsError::Command(CommandReason::Other, value.clone())),
         JsonValue::Object(values) => {
             let (kind, msg) = values
                 .iter()
@@ -258,8 +256,7 @@ pub enum ProcessingState {
 
 /// Parse the `value` returned by `GetState` into a `ProcessingState`.
 pub fn parse_processing_state(value: Option<JsonValue>) -> Result<ProcessingState, WsError> {
-    let value =
-        value.ok_or_else(|| WsError::Protocol("GetState returned no value".to_owned()))?;
+    let value = value.ok_or_else(|| WsError::Protocol("GetState returned no value".to_owned()))?;
     let state = value
         .as_str()
         .ok_or_else(|| WsError::Protocol(format!("GetState returned non-string: {value}")))?;
