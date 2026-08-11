@@ -1,13 +1,21 @@
 use serde_json::Value as JsonValue;
 use std::error::Error;
 use std::fmt;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
-use tungstenite::client::connect;
+use tungstenite::client::client_with_config;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// Timeout for the initial TCP connection (three-way handshake).
+///
+/// Connecting to 127.0.0.1 should complete in well under a millisecond on any
+/// healthy host.  Five seconds gives generous headroom while still preventing
+/// an indefinite block if the port is filtered or CamillaDSP has not started
+/// yet and the OS is not sending a TCP RST.
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// TCP-level read/write timeout applied to every WebSocket operation.
 ///
@@ -109,21 +117,34 @@ impl CamillaWs {
     /// supervisor to restart it — the same clean recovery path used for any
     /// other transport failure.
     pub fn connect(host: &str, port: u16) -> Result<Self, WsError> {
-        let url = format!("ws://{host}:{port}");
-        let (socket, _) =
-            connect(url).map_err(|err| WsError::Transport(format!("connect failed: {err}")))?;
+        let addr_str = format!("{host}:{port}");
+        let url = format!("ws://{addr_str}");
 
-        // Set TCP-level timeouts before the first I/O operation.
-        // MaybeTlsStream is an enum; we only use plain ws:// so match Plain.
-        {
-            if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = socket.get_ref() {
-                let t = Some(WS_IO_TIMEOUT);
-                tcp.set_read_timeout(t)
-                    .map_err(|e| WsError::Transport(format!("set_read_timeout: {e}")))?;
-                tcp.set_write_timeout(t)
-                    .map_err(|e| WsError::Transport(format!("set_write_timeout: {e}")))?;
-            }
-        }
+        // Resolve the host to a socket address.  For 127.0.0.1 this is
+        // instantaneous; for hostnames it may involve a DNS lookup.
+        let addr = addr_str
+            .to_socket_addrs()
+            .map_err(|e| WsError::Transport(format!("address resolution failed: {e}")))?
+            .next()
+            .ok_or_else(|| {
+                WsError::Transport(format!(
+                    "address resolution returned no results: {addr_str}"
+                ))
+            })?;
+
+        // Use connect_timeout so the TCP handshake itself cannot block forever.
+        let tcp = TcpStream::connect_timeout(&addr, WS_CONNECT_TIMEOUT)
+            .map_err(|e| WsError::Transport(format!("connect failed: {e}")))?;
+
+        // Set TCP-level I/O timeouts before the WebSocket handshake.
+        let t = Some(WS_IO_TIMEOUT);
+        tcp.set_read_timeout(t)
+            .map_err(|e| WsError::Transport(format!("set_read_timeout: {e}")))?;
+        tcp.set_write_timeout(t)
+            .map_err(|e| WsError::Transport(format!("set_write_timeout: {e}")))?;
+
+        let (socket, _) = client_with_config(url.as_str(), MaybeTlsStream::Plain(tcp), None)
+            .map_err(|e| WsError::Transport(format!("WebSocket handshake failed: {e}")))?;
 
         let mut client = Self { socket };
         // pyCamillaDSP calls GetVersion immediately after connecting.
