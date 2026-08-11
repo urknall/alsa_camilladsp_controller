@@ -59,6 +59,20 @@ The installer:
 
 After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
 
+## CamillaGUI — Apply without Save
+
+CamillaGUI lets you click **Apply** to send a configuration directly to CamillaDSP
+without clicking **Save**.  When that happens, CamillaDSP is running an in-memory
+config that is not written to disk.
+
+The controller uses the file behind the `active_config.yml` symlink as its source
+of truth.  On the next sample-rate change (or controller restart) it re-reads that
+file, which will be the previously saved version — **not** the unsaved in-memory
+config.
+
+**Recommendation:** always click **Save** (or **Apply and Save**) in CamillaGUI
+before relying on a config change to survive a playback format switch or reboot.
+
 ## Controller modules
 
 | Module | Contents |

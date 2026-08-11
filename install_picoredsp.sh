@@ -510,6 +510,18 @@ PLAYBACK_DEVICE=""
 PLAYBACK_SOURCE=""
 INSTALL_MODE="first-install"
 
+# EXISTING_INSTALL is true when any piece of a previous piCoreDSP installation
+# is detected on disk, regardless of how Squeezelite is currently routed.
+# Volume/mute and the active config symlink are preserved whenever
+# EXISTING_INSTALL=true so that a user who temporarily switched Squeezelite
+# back to the physical DAC does not lose their settings.
+EXISTING_INSTALL=false
+if [ -f "${STATEFILE}" ] || \
+   [ -L "${ACTIVE_CONFIG_LINK}" ] || \
+   [ -f "${PLAYBACK_DEVICE_FILE}" ]; then
+    EXISTING_INSTALL=true
+fi
+
 if is_usable_playback_device "${PCP_OUTPUT}"; then
     PLAYBACK_DEVICE="${PCP_OUTPUT}"
     PLAYBACK_SOURCE="piCorePlayer Squeezelite output"
@@ -663,7 +675,7 @@ _stage_volume_block="- 0.0
 - 0.0
 - 0.0"
 
-if [ "${INSTALL_MODE}" = "reinstall" ] && [ -f "${STATEFILE}" ]; then
+if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
     _extracted_mute=$(awk '
         /^mute:/   { section="mute";   next }
         /^volume:/ { section="volume"; next }
@@ -808,6 +820,21 @@ else
 fi
 
 chmod 755 "${RUST_RUNTIME_BIN}"
+
+# Verify SHA256 checksum against the published .sha256 file before executing
+# the binary or passing it through --help or --probe.
+_sha256_tmp="/tmp/picoredsp-controller-${controller_arch}.sha256.$$"
+wget -O "${_sha256_tmp}" "${CONTROLLER_RELEASE_URL}.sha256"
+_expected_hash=$(awk '{print $1; exit}' "${_sha256_tmp}")
+_actual_hash=$(sha256sum "${RUST_RUNTIME_BIN}" | awk '{print $1}')
+rm -f "${_sha256_tmp}"
+if [ "${_expected_hash}" != "${_actual_hash}" ]; then
+    echo "ERROR: SHA256 mismatch for picoredsp-controller-${controller_arch}."
+    echo "  Expected: ${_expected_hash}"
+    echo "  Got:      ${_actual_hash}"
+    exit 1
+fi
+echo "picoredsp-controller SHA256 verified: ${_actual_hash}"
 
 if [ ! -x "${RUST_RUNTIME_BIN}" ]; then
     echo "ERROR: picoredsp-controller binary was not downloaded."
@@ -1196,7 +1223,7 @@ sudo cp -f "${STAGE_PLAYBACK_DEVICE_FILE}" "${PLAYBACK_DEVICE_FILE}"
 # valid YAML file inside CONFIG_DIR; fall back to Bypass otherwise.
 # Read the existing symlink target BEFORE removing it.
 _new_active_target="${BYPASS_CONFIG}"
-if [ "${INSTALL_MODE}" = "reinstall" ]; then
+if $EXISTING_INSTALL; then
     _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
     if [ -f "${_old_active}" ] && \
        echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
@@ -1268,7 +1295,7 @@ echo "                v"
 echo "               DAC"
 echo
 echo "Active CamillaDSP config after reboot:"
-echo "  ${BYPASS_CONFIG}"
+echo "  ${_new_active_target}"
 echo
 echo "CamillaDSP playback device:"
 echo "  ${PLAYBACK_DEVICE}"

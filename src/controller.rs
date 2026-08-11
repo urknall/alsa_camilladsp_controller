@@ -10,6 +10,7 @@ use crate::logging::{log, LogLevel};
 use crate::wave::{DeviceSnapshot, WaveFormat};
 use serde_json::Value as JsonValue;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -18,6 +19,9 @@ use std::time::{Duration, Instant, SystemTime};
 const ALSA_DEBOUNCE_MS: u64 = 50;
 /// Matches the Python controller's 200 ms event-queue poll interval.
 const CONTROL_LOOP_MS: u32 = 200;
+/// Maximum time (seconds) the controller waits for CamillaDSP to consume a
+/// pending `SetConfig` before giving up and entering normal backoff/retry.
+const PENDING_DEADLINE_SECS: u64 = 10;
 
 // ─── Retry/backoff state ───────────────────────────────────────────────────
 
@@ -79,12 +83,14 @@ impl RetryState {
 /// polling the entire YAML content.
 ///
 /// Tracks the canonicalized symlink target (catches CamillaGUI config
-/// switches) and the target file's mtime/size (catches in-place edits).
+/// switches), the target file's mtime/size (catches in-place edits), and the
+/// inode number (distinguishes files with identical size and visible mtime).
 #[derive(Eq, PartialEq)]
 struct ConfigFingerprint {
     target: PathBuf,
     modified: Option<SystemTime>,
     size: u64,
+    ino: u64,
 }
 
 impl ConfigFingerprint {
@@ -94,6 +100,7 @@ impl ConfigFingerprint {
             target: PathBuf::new(),
             modified: None,
             size: 0,
+            ino: 0,
         }
     }
 
@@ -102,10 +109,12 @@ impl ConfigFingerprint {
         let meta = fs::metadata(path);
         let modified = meta.as_ref().ok().and_then(|m| m.modified().ok());
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let ino = meta.as_ref().map(|m| m.ino()).unwrap_or(0);
         Self {
             target,
             modified,
             size,
+            ino,
         }
     }
 }
@@ -127,10 +136,15 @@ pub struct Controller<D, C> {
     current_wave: WaveFormat,
     /// Backoff/latch state for restart attempts.
     retry: RetryState,
-    /// Whether a `SetConfig` has been sent but CamillaDSP has not yet confirmed
-    /// the new config (by transitioning to Starting/Running/Paused/Stalled).
-    /// While pending, duplicate `SetConfig` calls are suppressed.
-    start_pending: bool,
+    /// Timestamp of the last `SetConfig` that was accepted by CamillaDSP but
+    /// not yet confirmed (i.e. CamillaDSP has not yet transitioned to
+    /// Starting/Running/Paused/Stalled).  `None` means no pending start.
+    ///
+    /// Duplicate `SetConfig` calls are suppressed while a start is pending.
+    /// If CamillaDSP remains `Inactive` with `StopReason::None` longer than
+    /// [`PENDING_DEADLINE_SECS`], the pending state is cleared and the normal
+    /// backoff/retry path takes over.
+    pending_since: Option<Instant>,
     /// Fingerprint of the active config at the last check.
     config_fp: ConfigFingerprint,
     log_level: LogLevel,
@@ -192,9 +206,9 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         {
             Ok(_) => {
                 // SetConfig accepted.  CamillaDSP processes the config
-                // asynchronously, so set the pending flag to prevent a
+                // asynchronously, so record the pending timestamp to prevent a
                 // duplicate start before the state transition is confirmed.
-                self.start_pending = true;
+                self.pending_since = Some(Instant::now());
                 Ok(())
             }
             Err(WsError::Command(CommandReason::ConfigValidation, msg)) => {
@@ -243,7 +257,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         );
         // Fresh ALSA start: clear retry/pending state and apply current config.
         self.retry.reset();
-        self.start_pending = false;
+        self.pending_since = None;
         self.stop_cdsp()?;
         self.start_cdsp()
     }
@@ -364,20 +378,31 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
 
     fn process_inactive_state(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
         let reason = parse_stop_reason(self.client.query("GetStopReason", None)?)?;
-        if self.start_pending {
+        if let Some(since) = self.pending_since {
             // We sent SetConfig and are waiting for CamillaDSP to process it.
-            // StopReason None means it hasn't consumed the config yet — wait.
-            // Any real stop reason means the start failed.
+            // StopReason None means it hasn't consumed the config yet.
             if matches!(reason, StopReason::None) {
+                if since.elapsed() < Duration::from_secs(PENDING_DEADLINE_SECS) {
+                    log(
+                        LogLevel::Debug,
+                        self.log_level,
+                        "Waiting for pending SetConfig to be applied",
+                    );
+                    return Ok(());
+                }
+                // Deadline elapsed — treat as a failed start and fall through
+                // to normal backoff/retry so the controller does not wait forever.
                 log(
-                    LogLevel::Debug,
+                    LogLevel::Warning,
                     self.log_level,
-                    "Waiting for pending SetConfig to be applied",
+                    format!(
+                        "Pending SetConfig not consumed after {PENDING_DEADLINE_SECS} s \
+                         — treating as failed start"
+                    ),
                 );
-                return Ok(());
             }
-            // Start failed — clear the pending flag and handle normally.
-            self.start_pending = false;
+            // Any real stop reason, or a timed-out pending: clear and retry normally.
+            self.pending_since = None;
         }
         self.handle_stop_reason(reason, snapshot)
     }
@@ -428,7 +453,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 self.stop_cdsp()?;
                 // Reset retry so the next start attempt is immediate.
                 self.retry.reset();
-                self.start_pending = false;
+                self.pending_since = None;
             } else if previous.active && current.active && previous.wave != current.wave {
                 // Mirrors the Python listener's STOPPED-then-STARTED pair.
                 log(
@@ -439,7 +464,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 self.stop_cdsp()?;
                 self.current_wave = current.wave.with_fallback(&self.fallback_wave);
                 self.retry.reset();
-                self.start_pending = false;
+                self.pending_since = None;
                 self.start_cdsp()?;
             }
 
@@ -450,14 +475,14 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
             match state {
                 ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
                     // Confirmed success — reset retry and pending.
-                    if self.start_pending || self.retry.consecutive > 0 {
+                    if self.pending_since.is_some() || self.retry.consecutive > 0 {
                         self.retry.reset();
                     }
-                    self.start_pending = false;
+                    self.pending_since = None;
                 }
                 ProcessingState::Starting => {
                     // SetConfig was consumed; confirm pending state.
-                    self.start_pending = true;
+                    self.pending_since.get_or_insert_with(Instant::now);
                 }
                 ProcessingState::Inactive => {
                     self.process_inactive_state(&current)?;
@@ -503,7 +528,7 @@ impl Controller<AlsaLoopbackListener, CamillaWs> {
             fallback_wave,
             current_wave,
             retry: RetryState::new(),
-            start_pending: false,
+            pending_since: None,
             config_fp,
             log_level: args.log_level,
         };
@@ -655,7 +680,7 @@ mod tests {
             fallback_wave: WaveFormat::default(),
             adapt_path: adapt_path.clone(),
             retry: RetryState::new(),
-            start_pending: false,
+            pending_since: None,
             config_fp: ConfigFingerprint::absent(),
             log_level: LogLevel::Error,
         }
@@ -693,7 +718,7 @@ mod tests {
 
         // Retarget symlink to config_b, reset retry.
         ctrl.retry.reset();
-        ctrl.start_pending = false;
+        ctrl.pending_since = None;
         fs::remove_file(&active).unwrap();
         symlink(&config_b, &active).unwrap();
 
@@ -730,7 +755,7 @@ mod tests {
         // Simulate: start_cdsp() called normally.
         ctrl.start_cdsp().unwrap();
         assert!(
-            ctrl.start_pending,
+            ctrl.pending_since.is_some(),
             "should be pending after successful SetConfig"
         );
         assert_eq!(ctrl.client.sent_configs.len(), 1);
@@ -795,7 +820,7 @@ mod tests {
         assert_eq!(ctrl.client.sent_configs.len(), 1);
 
         // Second call immediately: backoff should suppress it.
-        ctrl.start_pending = false; // simulate start failed asynchronously
+        ctrl.pending_since = None; // simulate start failed asynchronously
         ctrl.start_cdsp().unwrap();
         assert_eq!(
             ctrl.client.sent_configs.len(),
