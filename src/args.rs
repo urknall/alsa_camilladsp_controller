@@ -187,8 +187,7 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                     )));
                 }
                 args.mode = Mode::GetPlaybackDevice;
-                args.config_path =
-                    Some(PathBuf::from(next_value("--get-playback-device")?));
+                args.config_path = Some(PathBuf::from(next_value("--get-playback-device")?));
             }
             "--get-config-path" => {
                 if args.mode != Mode::Run {
@@ -198,8 +197,7 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                     )));
                 }
                 args.mode = Mode::GetConfigPath;
-                args.config_path =
-                    Some(PathBuf::from(next_value("--get-config-path")?));
+                args.config_path = Some(PathBuf::from(next_value("--get-config-path")?));
             }
             "--make-bypass" => {
                 if args.mode != Mode::Run {
