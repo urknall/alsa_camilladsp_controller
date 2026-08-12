@@ -701,14 +701,23 @@ processors: {}
 
 title: 'Null'
 description: |
+  IMPORTANT: This description is longer than the visible CamillaGUI field.
+  Scroll down and read it completely before changing or applying this config.
+
   Diagnostic-only piCoreDSP configuration.
   Audio is captured from snd-aloop and intentionally discarded.
   Do not select this configuration when testing audible output.
 
-  This YAML is a persistent baseline configuration. The picoredsp-controller
-  adapts the CamillaDSP runtime configuration in memory to the active stream.
-  Values in the config editor can therefore differ from the current live
-  values shown in CamillaGUI's status area.
+  This YAML file is a persistent baseline configuration. It does not
+  necessarily contain the parameters currently used by CamillaDSP.
+
+  picoredsp-controller monitors the active snd-aloop stream and adapts the
+  CamillaDSP runtime configuration in memory to the current sample rate and,
+  where applicable, capture format and channel count.
+
+  Values in this YAML or in the CamillaGUI config editor can therefore differ
+  from the current live values shown in CamillaGUI's status area. The live
+  status values are authoritative for the stream currently playing.
 
   Runtime-adapted values are not written back to this file.
 

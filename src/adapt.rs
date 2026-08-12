@@ -21,6 +21,7 @@ const CAMILLA_STATE_CHANNELS: usize = 5;
 /// `config_path` is `Option<String>` because CamillaDSP 4.1.3 writes `null`
 /// when it is started with `--no_config` (the controller's normal boot path).
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct StateFile {
     pub config_path: Option<String>,
     pub mute: [bool; 5],
@@ -322,26 +323,30 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
     devices.insert(yaml_key("playback"), YamlValue::Mapping(playback));
 
     let description = format!(
-        "Default piCoreDSP pass-through baseline configuration.\n\n\
+        "IMPORTANT: This description is longer than the visible CamillaGUI field.\n\
+         Scroll down and read it completely before changing or applying this config.\n\n\
+         Default piCoreDSP pass-through baseline configuration.\n\n\
          This YAML file is the persistent baseline configuration. It does not\n\
          necessarily contain the parameters currently used by CamillaDSP.\n\n\
          Audio is captured from snd-aloop and played to the piCorePlayer output\n\
          that was selected before installation: {playback_device}\n\n\
-         piCoreDSP differs from the upstream controller setup by monitoring\n\
-         snd-aloop with the Rust picoredsp-controller. When playback becomes\n\
-         active, the controller reads the live stream parameters and adapts the\n\
-         CamillaDSP configuration in memory to the current sample rate and,\n\
-         where applicable, capture format and channel count.\n\n\
-         Therefore values shown in this YAML or in the CamillaGUI config\n\
-         editor, such as samplerate: 44100, may differ from the live values\n\
-         shown in CamillaGUI's status area. The live status values are\n\
-         authoritative for the stream currently playing.\n\n\
+         piCoreDSP builds on the upstream camilladsp-controller snd-aloop adaptation\n\
+         model, but replaces its Python runtime with the native Rust\n\
+         picoredsp-controller and adds piCorePlayer-specific persistence,\n\
+         active-config reloading and startup/rate-switch handling.\n\n\
+         When playback becomes active, picoredsp-controller reads the live stream\n\
+         parameters from snd-aloop and adapts the CamillaDSP configuration in memory\n\
+         to the current sample rate and, where applicable, capture format and channel\n\
+         count.\n\n\
+         Therefore values shown in this YAML or in the CamillaGUI config editor,\n\
+         such as samplerate: 44100, may differ from the live values shown in\n\
+         CamillaGUI's status area. The live status values are authoritative for the\n\
+         stream currently playing.\n\n\
          Runtime-adapted values are not written back to this file.\n\n\
-         Save DSP/filter changes in CamillaGUI if they must survive a\n\
-         sample-rate or format change or a reboot. Prefer Apply and Save for\n\
-         persistent changes.\n\n\
-         On piCorePlayer, run \"pcp backup\" before rebooting after\n\
-         configuration changes.\n\n\
+         Save DSP/filter changes in CamillaGUI if they must survive a sample-rate or\n\
+         format change or a reboot. Prefer \"Apply and Save\" for persistent changes.\n\n\
+         On piCorePlayer, run \"pcp backup\" after persistent configuration changes and\n\
+         before rebooting, so the current system configuration is backed up.\n\n\
          Do not manually Apply a configuration merely to initialize DSP while\n\
          playback is stopped. The controller automatically loads and adapts the\n\
          configuration when playback becomes active.\n"
@@ -1086,5 +1091,29 @@ mod tests {
                 "round-trip failed for config_path: {path}"
             );
         }
+    }
+
+    /// Statefile with an unexpected extra key must be rejected even though all
+    /// known fields are present and valid.  This mirrors CamillaDSP's own
+    /// `#[serde(deny_unknown_fields)]` behaviour so that our installer treats
+    /// an unknown-field statefile as invalid rather than silently ignoring it.
+    #[test]
+    fn make_statefile_rejects_unknown_existing_state_fields() {
+        let dir = test_dir("make-state-unknown-field");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "config_path: null\n\
+             mute:\n- false\n- false\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n\
+             unexpected: true\n",
+        )
+        .unwrap();
+        let result = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf));
+        assert!(
+            result.is_err(),
+            "statefile with unknown field must be rejected"
+        );
+        fs::remove_dir_all(dir).unwrap();
     }
 }

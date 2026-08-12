@@ -89,25 +89,33 @@ before relying on a config change to survive a playback format switch or reboot.
 
 ## Baseline config vs. live runtime config
 
-On piCoreDSP, the saved YAML files such as `Bypass.yml` are the persistent
-baseline configuration and user-editable source files.
+piCoreDSP stores the selected YAML file as a persistent baseline configuration.
 
-The Rust `picoredsp-controller` monitors `snd-aloop`. When playback becomes
-active, it reads the live stream parameters and adapts the CamillaDSP
-configuration in memory to the current sample rate and, where applicable,
-capture format and channel count.
+The Rust `picoredsp-controller` monitors `snd-aloop` and adapts the configuration
+in memory when playback starts or the stream format changes. The runtime sample rate,
+capture format and channel count can therefore differ from the values stored in the
+YAML file.
 
-Because of that split, the CamillaGUI config editor can show a saved baseline
-value such as `samplerate: 44100` while CamillaGUI's live status area correctly
-shows `48 kHz` for the stream currently playing. The live status values are the
-authoritative runtime values.
+For example, a config file may contain:
 
-Those runtime-adapted values are not written back to the YAML file
-automatically. Save DSP or config changes in CamillaGUI if they must survive a
-sample-rate or format change or a reboot, and prefer **Apply and Save** for
-persistent changes.
+    samplerate: 44100
 
-On piCorePlayer, run `pcp backup` before rebooting after configuration changes.
+while CamillaGUI's live status shows:
+
+    48000 Hz
+
+This is expected. The live CamillaGUI status reflects the stream currently processed
+by CamillaDSP and is authoritative for current runtime parameters.
+
+Runtime adaptations are not written back to the YAML file.
+
+Use **Apply and Save** for DSP or filter changes that must persist across sample-rate
+changes or reboots. On piCorePlayer, run:
+
+    pcp backup
+
+after persistent configuration changes and before rebooting, so the current system
+configuration is backed up.
 
 Do not manually use **Apply** just to initialize DSP while playback is stopped.
 The controller automatically loads and adapts the configuration when playback
