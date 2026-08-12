@@ -295,7 +295,10 @@ pub fn parse_args() -> AppResult<Option<Args>> {
         }
     }
 
-    if matches!(args.mode, Mode::Run | Mode::WsValidate | Mode::AdaptCheck | Mode::WsApply) && args.adapt.is_none()
+    if matches!(
+        args.mode,
+        Mode::Run | Mode::WsValidate | Mode::AdaptCheck | Mode::WsApply
+    ) && args.adapt.is_none()
     {
         return Err(app_error("this mode requires --adapt PATH"));
     }
