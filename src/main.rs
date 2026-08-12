@@ -149,7 +149,7 @@ fn run_main() -> AppResult<()> {
 /// This is the programmatic equivalent of what the removed `--ws-apply` CLI
 /// mode did.  It is kept as an internal helper so other code paths can apply
 /// a config over WebSocket without going through the controller state-machine.
-pub fn ws_apply(path: &std::path::Path, wave: &WaveFormat, host: &str, port: u16) -> AppResult<()> {
+pub(crate) fn ws_apply(path: &std::path::Path, wave: &WaveFormat, host: &str, port: u16) -> AppResult<()> {
     let adapted = adapt_config(path, wave)?;
     let mut client = CamillaWs::connect(host, port)?;
     // The success payload for SetConfig is always null; discarding it is safe.
