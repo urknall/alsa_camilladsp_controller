@@ -1,10 +1,63 @@
 use crate::error::{app_error, AppResult};
 use crate::wave::WaveFormat;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const CAMILLA_STATE_CHANNELS: usize = 5;
+
+// ─── Statefile types ───────────────────────────────────────────────────────
+
+/// Typed representation of a CamillaDSP statefile, used for both reading an
+/// existing statefile and writing a newly generated one.
+///
+/// Using fixed-length arrays `[bool; 5]` and `[f64; 5]` means serde
+/// automatically enforces both element type and exact length (5) without any
+/// manual validation loop.  `serde_yaml_ng::to_string` handles all necessary
+/// YAML quoting for `config_path`, including filenames that contain spaces,
+/// colons, brackets, or other YAML-significant characters.
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct StateFile {
+    pub config_path: String,
+    pub mute: [bool; 5],
+    pub volume: [f64; 5],
+}
+
+/// Create a CamillaDSP statefile YAML string.
+///
+/// * **First install** (`existing_state_path = None`): `config_path` is taken
+///   from the argument; `mute` and `volume` are initialised to safe defaults
+///   (`false` / `0.0`).
+/// * **Reinstall** (`existing_state_path = Some(path)`): `mute` and `volume`
+///   are preserved exactly from the existing statefile; `config_path` comes
+///   from the argument.  Any error reading or parsing the existing statefile
+///   is propagated immediately — no silent fallback to defaults is ever
+///   applied when `--existing-state` is supplied.
+pub fn make_statefile(config_path: &str, existing_state_path: Option<&Path>) -> AppResult<String> {
+    let (mute, volume) = match existing_state_path {
+        Some(path) => {
+            let raw = fs::read_to_string(path).map_err(|err| {
+                app_error(format!(
+                    "unable to read existing statefile {}: {err}",
+                    path.display()
+                ))
+            })?;
+            let sf: StateFile = serde_yaml_ng::from_str(&raw).map_err(|err| {
+                app_error(format!("invalid statefile {}: {err}", path.display()))
+            })?;
+            (sf.mute, sf.volume)
+        }
+        None => ([false; 5], [0.0_f64; 5]),
+    };
+
+    let sf = StateFile {
+        config_path: config_path.to_owned(),
+        mute,
+        volume,
+    };
+    Ok(serde_yaml_ng::to_string(&sf)?)
+}
 
 // ─── YAML helpers ──────────────────────────────────────────────────────────
 
@@ -800,5 +853,145 @@ mod tests {
         assert!(err.contains("exactly 5 values"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ── make_statefile tests ─────────────────────────────────────────────
+
+    #[test]
+    fn make_statefile_first_install_produces_defaults() {
+        let yaml = make_statefile("/mnt/camilladsp/Bypass.yml", None).unwrap();
+        let sf: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(sf.config_path, "/mnt/camilladsp/Bypass.yml");
+        assert_eq!(sf.mute, [false; 5]);
+        assert_eq!(sf.volume, [0.0_f64; 5]);
+    }
+
+    #[test]
+    fn make_statefile_reinstall_preserves_mute_and_volume() {
+        let dir = test_dir("make-state-reinstall");
+        let old_sf = dir.join("old_state.yml");
+        let original_mute = [true, false, true, false, true];
+        let original_volume = [-10.0_f64, -5.0, 0.0, 1.5, -20.5];
+        let original_path = "/mnt/camilladsp/My DSP.yml";
+        let existing = StateFile {
+            config_path: original_path.to_owned(),
+            mute: original_mute,
+            volume: original_volume,
+        };
+        fs::write(&old_sf, serde_yaml_ng::to_string(&existing).unwrap()).unwrap();
+
+        let new_config_path = "/mnt/camilladsp/New DSP.yml";
+        let yaml = make_statefile(new_config_path, Some(&old_sf)).unwrap();
+        let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+
+        assert_eq!(loaded.config_path, new_config_path);
+        assert_eq!(loaded.mute, original_mute);
+        assert_eq!(loaded.volume, original_volume);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_reinstall_roundtrip_same_path() {
+        let dir = test_dir("make-state-roundtrip");
+        let old_sf = dir.join("state.yml");
+        let original_path = "/mnt/camilladsp/Bypass.yml";
+        let original_mute = [false, true, false, false, true];
+        let original_volume = [0.0_f64, -3.0, -6.0, -9.0, -12.0];
+        let existing = StateFile {
+            config_path: original_path.to_owned(),
+            mute: original_mute,
+            volume: original_volume,
+        };
+        fs::write(&old_sf, serde_yaml_ng::to_string(&existing).unwrap()).unwrap();
+
+        let yaml = make_statefile(original_path, Some(&old_sf)).unwrap();
+        let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+
+        assert_eq!(loaded.config_path, original_path);
+        assert_eq!(loaded.mute, original_mute);
+        assert_eq!(loaded.volume, original_volume);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_missing_file_is_error() {
+        let result = make_statefile(
+            "/mnt/camilladsp/Bypass.yml",
+            Some(Path::new("/nonexistent/state.yml")),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unable to read"));
+    }
+
+    #[test]
+    fn make_statefile_existing_state_wrong_mute_length_is_error() {
+        let dir = test_dir("make-state-bad-len");
+        let sf = dir.join("state.yml");
+        // Only 3 mute values instead of 5 — serde must reject this.
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/Bypass.yml\n\
+             mute:\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+        let result = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf));
+        assert!(result.is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_wrong_volume_type_is_error() {
+        let dir = test_dir("make-state-bad-type");
+        let sf = dir.join("state.yml");
+        // One volume entry is a string — serde must reject this.
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/Bypass.yml\n\
+             mute:\n- false\n- false\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- notanumber\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+        let result = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf));
+        assert!(result.is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_invalid_yaml_is_error() {
+        let dir = test_dir("make-state-bad-yaml");
+        let sf = dir.join("state.yml");
+        fs::write(&sf, "{ not valid yaml: [").unwrap();
+        let result = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf));
+        assert!(result.is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Verify that config_path values containing YAML-significant characters
+    /// are correctly round-tripped through the statefile serializer.
+    /// These are exactly the filenames that caused problems with shell heredoc
+    /// interpolation or YAML plain-scalar parsing.
+    #[test]
+    fn make_statefile_special_config_path_filenames() {
+        let tricky_names = [
+            "My DSP #1.yml",
+            "My: DSP.yml",
+            "\"quoted\".yml",
+            "[room].yml",
+            "{room}.yml",
+            "-room.yml",
+            "room's dsp.yml",
+        ];
+        for name in &tricky_names {
+            let path = format!("/mnt/camilladsp/{name}");
+            let yaml = make_statefile(&path, None).unwrap();
+            let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert_eq!(
+                loaded.config_path, path,
+                "round-trip failed for config_path: {path}"
+            );
+        }
     }
 }
