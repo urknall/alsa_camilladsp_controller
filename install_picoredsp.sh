@@ -1039,7 +1039,7 @@ config_dir: "${CONFIG_DIR}"
 coeff_dir: "${COEFF_DIR}"
 default_config: "${DEFAULT_CONFIG}"
 statefile_path: "${STATEFILE}"
-log_file: "/tmp/camilladsp.log"
+log_file: "/tmp/camilladsp_rCURRENT.log"
 
 # on_set_active_config intentionally does NOT use the {} placeholder.
 # CamillaGUI calls this via os.system(), which evaluates shell metacharacters
@@ -1059,9 +1059,10 @@ EOF
 
 ###############################################################################
 # piCoreDSP set-active-config wrapper
-# Reads the active config path via WebSocket (GetConfigFilePath) which is
-# synchronously updated by CamillaDSP on SetConfigFilePath, avoiding the
-# ~1 s statefile write delay that would cause a race condition.
+# Reads the active config path via WebSocket (GetConfigFilePath) when
+# CamillaDSP is online (synchronously updated, no statefile race).
+# Falls back to reading the statefile when CamillaDSP is offline
+# (CamillaGUI writes the path directly to the statefile in that case).
 ###############################################################################
 
 mkdir -p "${BUILD_DIR}/usr/local/bin"
@@ -1069,18 +1070,35 @@ mkdir -p "${BUILD_DIR}/usr/local/bin"
 cat > "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config" <<EOF
 #!/bin/sh
 # Called by CamillaGUI on_set_active_config.  Reads the active config path
-# directly from CamillaDSP via WebSocket (GetConfigFilePath) — not from the
-# statefile — because CamillaDSP updates its in-memory path synchronously
-# but writes the statefile with a ~1 s delay.  The CamillaGUI-supplied
-# argument is intentionally discarded to prevent shell injection.
+# via WebSocket when CamillaDSP is online (GetConfigFilePath is synchronously
+# updated, avoiding the ~1 s statefile write delay).  Falls back to the
+# statefile when CamillaDSP is offline (CamillaGUI writes the path directly
+# to the statefile in that case).  The CamillaGUI-supplied argument is
+# intentionally discarded to prevent shell injection.
 ACTIVE_CONFIG_LINK="${ACTIVE_CONFIG_LINK}"
 CONTROLLER="/usr/local/bin/picoredsp-controller"
 CONFIG_DIR="${CONFIG_DIR}"
+STATEFILE="${STATEFILE}"
 
-config_path=\$("\${CONTROLLER}" --ws-get-config-path --host 127.0.0.1 --port 1234 2>/dev/null) || {
-    echo "picoredsp-sync-config: failed to read config path from CamillaDSP" >&2
-    exit 1
-}
+# Try WebSocket first (CamillaDSP online: synchronously updated in-memory path
+# avoids the ~1 s statefile write delay).  Retry briefly in case the DSP is
+# mid-restart.  Fall back to reading the statefile when CamillaDSP is offline
+# (e.g. CamillaGUI wrote the path directly to the statefile while DSP was down).
+config_path=""
+_ws_attempt=0
+while [ "\${_ws_attempt}" -lt 3 ]; do
+    config_path=\$("\${CONTROLLER}" --ws-get-config-path --host 127.0.0.1 --port 1234 2>/dev/null) \
+        && break
+    _ws_attempt=\$((_ws_attempt + 1))
+    [ "\${_ws_attempt}" -lt 3 ] && sleep 1
+done
+
+if [ -z "\${config_path}" ]; then
+    config_path=\$("\${CONTROLLER}" --get-config-path "\${STATEFILE}") || {
+        echo "picoredsp-sync-config: failed to read config path from CamillaDSP and statefile" >&2
+        exit 1
+    }
+fi
 
 canonical=\$(readlink -f "\${config_path}") || {
     echo "picoredsp-sync-config: failed to resolve config path: \${config_path}" >&2
@@ -1217,6 +1235,27 @@ done
 
 if [ "${i}" -ge 30 ]; then
     echo "$(date): CamillaDSP websocket did not become ready"         >> "${STARTUP_LOG}"
+fi
+
+###############################################################################
+# Apply initial DSP config
+###############################################################################
+
+# Load the active config into CamillaDSP immediately at boot so audio routing
+# is active before the first ALSA event arrives and without requiring the user
+# to click "Apply DSP" in CamillaGUI.  The controller loop will re-adapt and
+# reload the config automatically whenever audio actually starts playing.
+if sudo -u tc "${CONTROLLER}" \
+    --ws-apply \
+    --adapt "${ACTIVE_CONFIG}" \
+    --host 127.0.0.1 \
+    --port 1234 \
+    >> "${STARTUP_LOG}" 2>&1
+then
+    echo "$(date): Initial DSP config applied" >> "${STARTUP_LOG}"
+else
+    echo "$(date): WARNING: Initial DSP config apply failed (controller will retry)" \
+        >> "${STARTUP_LOG}"
 fi
 
 ###############################################################################

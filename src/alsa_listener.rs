@@ -215,29 +215,30 @@ fn nonneg_u32(value: i32) -> Option<u32> {
     (value >= 0).then_some(value as u32)
 }
 
-/// Map a Linux `snd_pcm_format_t` integer to the corresponding CamillaDSP format
-/// name string, replicating the exact table in the Python reference controller's
-/// `alsa_format_to_cdsp()` at commit e9fde205.
+/// Map a Linux `snd_pcm_format_t` integer to the corresponding CamillaDSP ALSA
+/// config format name string.
 ///
-/// | ALSA value | `snd_pcm_format_t` name        | CamillaDSP name  |
-/// |-----------:|--------------------------------|------------------|
-/// |          2 | `SND_PCM_FORMAT_S16_LE`        | `S16_LE`         |
-/// |          6 | `SND_PCM_FORMAT_S24_LE`        | `S24_4_RJ_LE`    |
-/// |         10 | `SND_PCM_FORMAT_S32_LE`        | `S32_LE`         |
-/// |         14 | `SND_PCM_FORMAT_FLOAT_LE`      | `F32_LE`         |
-/// |         16 | `SND_PCM_FORMAT_FLOAT64_LE`    | `F64_LE`         |
-/// |         32 | `SND_PCM_FORMAT_S24_3LE`       | `S24_3_LE`       |
+/// | ALSA value | `snd_pcm_format_t` name        | CamillaDSP ALSA name |
+/// |-----------:|--------------------------------|----------------------|
+/// |          2 | `SND_PCM_FORMAT_S16_LE`        | `S16_LE`             |
+/// |          6 | `SND_PCM_FORMAT_S24_LE`        | `S24_4_LE`           |
+/// |         10 | `SND_PCM_FORMAT_S32_LE`        | `S32_LE`             |
+/// |         14 | `SND_PCM_FORMAT_FLOAT_LE`      | `F32_LE`             |
+/// |         16 | `SND_PCM_FORMAT_FLOAT64_LE`    | `F64_LE`             |
+/// |         32 | `SND_PCM_FORMAT_S24_3LE`       | `S24_3_LE`           |
 ///
-/// Note on value 6: `SND_PCM_FORMAT_S24_LE` places the 24-bit sample in the
-/// low 3 bytes of a 4-byte container, which CamillaDSP calls `S24_4_RJ_LE`
-/// (right-justified). This is the Python author's deliberate semantic mapping.
+/// Note on value 6: `SND_PCM_FORMAT_S24_LE` is a 24-bit sample in a 4-byte
+/// container.  The correct ALSA device-config name in CamillaDSP 4.1 is
+/// `S24_4_LE`; CamillaDSP maps this internally to `BinarySampleFormat::S24_4_RJ_LE`.
+/// Using `S24_4_RJ_LE` directly in the ALSA capture/playback block is invalid
+/// and produces a schema error at runtime.
 ///
 /// Values within the valid `snd_pcm_format_t` range but without a CamillaDSP
 /// counterpart return `Ok(None)`. Genuinely unknown values return an error.
 pub fn alsa_format_to_camilladsp(value: i32) -> AppResult<Option<&'static str>> {
     let mapped = match value {
         2 => Some("S16_LE"),
-        6 => Some("S24_4_RJ_LE"),
+        6 => Some("S24_4_LE"),
         10 => Some("S32_LE"),
         14 => Some("F32_LE"),
         16 => Some("F64_LE"),
@@ -270,9 +271,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_mapping_matches_python_reference_controller() {
+    fn format_mapping_produces_camilladsp_alsa_config_names() {
         assert_eq!(alsa_format_to_camilladsp(2).unwrap(), Some("S16_LE"));
-        assert_eq!(alsa_format_to_camilladsp(6).unwrap(), Some("S24_4_RJ_LE"));
+        assert_eq!(alsa_format_to_camilladsp(6).unwrap(), Some("S24_4_LE"));
         assert_eq!(alsa_format_to_camilladsp(10).unwrap(), Some("S32_LE"));
         assert_eq!(alsa_format_to_camilladsp(14).unwrap(), Some("F32_LE"));
         assert_eq!(alsa_format_to_camilladsp(16).unwrap(), Some("F64_LE"));
