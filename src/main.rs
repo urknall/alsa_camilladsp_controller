@@ -125,7 +125,7 @@ fn run_main() -> AppResult<()> {
             let wave = wave_from_args(&args);
             let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
             let mut client = CamillaWs::connect(&args.host, args.port)?;
-            let _ = client.query("SetConfig", Some(JsonValue::String(adapted)))?;
+            client.query("SetConfig", Some(JsonValue::String(adapted)))?;
             println!("CamillaDSP config applied via SetConfig");
             client.close();
             Ok(())
