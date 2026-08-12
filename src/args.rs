@@ -23,8 +23,12 @@ pub struct Args {
     pub config_path: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
     pub playback_device: Option<String>,
-    /// Output file path for `--make-bypass` (stdout when absent).
+    /// Output file path for `--make-bypass` and `--make-statefile` (stdout when absent for bypass).
     pub output: Option<PathBuf>,
+    /// Config path value written into the statefile by `--make-statefile`.
+    pub statefile_config_path: Option<String>,
+    /// Path to the existing statefile to read mute/volume from (`--existing-state`).
+    pub existing_state: Option<PathBuf>,
 }
 
 /// Operating mode selected by the user.
@@ -50,8 +54,8 @@ pub enum Mode {
     MakeBypass,
     /// Query `GetConfigFilePath` over WebSocket and print the result.
     WsGetConfigPath,
-    /// Adapt YAML once and send it to CamillaDSP via `SetConfig`, exit.
-    WsApply,
+    /// Write a CamillaDSP statefile (first install or reinstall preserving mute/volume).
+    MakeStatefile,
 }
 
 impl Mode {
@@ -67,7 +71,7 @@ impl Mode {
             Self::GetStateFragment => "--get-state-fragment",
             Self::MakeBypass => "--make-bypass",
             Self::WsGetConfigPath => "--ws-get-config-path",
-            Self::WsApply => "--ws-apply",
+            Self::MakeStatefile => "--make-statefile",
         }
     }
 }
@@ -87,6 +91,8 @@ impl Default for Args {
             config_path: None,
             playback_device: None,
             output: None,
+            statefile_config_path: None,
+            existing_state: None,
         }
     }
 }
@@ -108,7 +114,7 @@ Usage:\n\
   picoredsp-controller --get-state-fragment STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\
   picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\
-  picoredsp-controller --ws-apply --adapt PATH [--rate R --format F --channels N] [--host HOST] [--port PORT]\n\n\
+  picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
@@ -127,9 +133,11 @@ Options:\n\
       --get-state-fragment STATEFILE  Print validated mute/volume YAML from a CamillaDSP statefile\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
-      --output FILE             Output file for --make-bypass (default: stdout)\n\
+      --output FILE             Output file for --make-bypass (default: stdout) or --make-statefile\n\
       --ws-get-config-path      Query GetConfigFilePath from CamillaDSP via WebSocket\n\
-      --ws-apply                Adapt YAML and send it to CamillaDSP via SetConfig, then exit\n\
+      --make-statefile          Write a CamillaDSP statefile (first install or reinstall)\n\
+      --config-path PATH        config_path value to embed in the new statefile (--make-statefile)\n\
+      --existing-state FILE     Existing statefile to preserve mute/volume from (--make-statefile)\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version"
     );
@@ -242,14 +250,20 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 }
                 args.mode = Mode::WsGetConfigPath;
             }
-            "--ws-apply" => {
+            "--make-statefile" => {
                 if args.mode != Mode::Run {
                     return Err(app_error(format!(
-                        "conflicting mode flags: {} and --ws-apply",
+                        "conflicting mode flags: {} and --make-statefile",
                         args.mode.name()
                     )));
                 }
-                args.mode = Mode::WsApply;
+                args.mode = Mode::MakeStatefile;
+            }
+            "--config-path" => {
+                args.statefile_config_path = Some(next_value("--config-path")?);
+            }
+            "--existing-state" => {
+                args.existing_state = Some(PathBuf::from(next_value("--existing-state")?));
             }
             "--playback-device" => {
                 args.playback_device = Some(next_value("--playback-device")?);
@@ -297,7 +311,7 @@ pub fn parse_args() -> AppResult<Option<Args>> {
 
     if matches!(
         args.mode,
-        Mode::Run | Mode::WsValidate | Mode::AdaptCheck | Mode::WsApply
+        Mode::Run | Mode::WsValidate | Mode::AdaptCheck
     ) && args.adapt.is_none()
     {
         return Err(app_error("this mode requires --adapt PATH"));
@@ -310,8 +324,28 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             "--playback-device is only valid with --make-bypass",
         ));
     }
-    if args.output.is_some() && args.mode != Mode::MakeBypass {
-        return Err(app_error("--output is only valid with --make-bypass"));
+    if args.output.is_some() && !matches!(args.mode, Mode::MakeBypass | Mode::MakeStatefile) {
+        return Err(app_error(
+            "--output is only valid with --make-bypass or --make-statefile",
+        ));
+    }
+    if args.mode == Mode::MakeStatefile {
+        if args.statefile_config_path.is_none() {
+            return Err(app_error("--make-statefile requires --config-path PATH"));
+        }
+        if args.output.is_none() {
+            return Err(app_error("--make-statefile requires --output FILE"));
+        }
+    }
+    if args.statefile_config_path.is_some() && args.mode != Mode::MakeStatefile {
+        return Err(app_error(
+            "--config-path is only valid with --make-statefile",
+        ));
+    }
+    if args.existing_state.is_some() && args.mode != Mode::MakeStatefile {
+        return Err(app_error(
+            "--existing-state is only valid with --make-statefile",
+        ));
     }
     if matches!(
         args.mode,

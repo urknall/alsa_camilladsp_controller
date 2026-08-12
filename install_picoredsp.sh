@@ -721,38 +721,22 @@ if $EXISTING_INSTALL; then
     fi
 fi
 
-_stage_state_fragment="mute:
-- false
-- false
-- false
-- false
-- false
-
-volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0"
-
 if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
-    if ! _extracted_state_fragment=$(
-        "${RUST_RUNTIME_BIN}" --get-state-fragment "${STATEFILE}"
-    ); then
+    if ! "${RUST_RUNTIME_BIN}" --make-statefile \
+            --config-path "${_new_active_target}" \
+            --existing-state "${STATEFILE}" \
+            --output "${STAGE_STATEFILE}"; then
         echo "ERROR: Existing CamillaDSP statefile is invalid or cannot be parsed."
         echo "  File: ${STATEFILE}"
         echo "Refusing to silently reset saved volume/mute state to defaults."
         echo "Remove or repair the statefile before reinstalling."
         exit 1
     fi
-    _stage_state_fragment="${_extracted_state_fragment}"
+else
+    "${RUST_RUNTIME_BIN}" --make-statefile \
+        --config-path "${_new_active_target}" \
+        --output "${STAGE_STATEFILE}"
 fi
-
-cat > "${STAGE_STATEFILE}" <<EOF
-config_path: ${_new_active_target}
-
-${_stage_state_fragment}
-EOF
 
 ln -sfn "${STAGE_BYPASS_CONFIG}" "${STAGE_ACTIVE_CONFIG_LINK}"
 printf '%s\n' "${PLAYBACK_DEVICE}" > "${STAGE_PLAYBACK_DEVICE_FILE}"
@@ -1200,6 +1184,7 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/camilladsp-supervisor.log 2>&1
 _log=/tmp/camilladsp-supervisor.log
 while :
 do
@@ -1222,7 +1207,7 @@ do
 
     sleep 2
 done
-' >> /tmp/camilladsp-supervisor.log 2>&1 &
+' &
 
 ###############################################################################
 # Wait for CamillaDSP websocket
@@ -1254,19 +1239,21 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/picoredsp-logtrim.log 2>&1
 while :
 do
     /usr/local/bin/picoredsp-trim-log /tmp/picoredsp-controller.log
     /usr/local/bin/picoredsp-trim-log /tmp/camillagui-backend.log
     sleep 60
 done
-' >> /tmp/picoredsp-logtrim.log 2>&1 &
+' &
 
 ###############################################################################
 # Controller supervisor (includes startup bootstrap SetConfig)
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/picoredsp-controller.log 2>&1
 _log=/tmp/picoredsp-controller.log
 while :
 do
@@ -1286,13 +1273,14 @@ do
 
     sleep 2
 done
-' >> /tmp/picoredsp-controller.log 2>&1 &
+' &
 
 ###############################################################################
 # CamillaGUI supervisor
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/camillagui-backend.log 2>&1
 _log=/tmp/camillagui-backend.log
 while :
 do
@@ -1307,7 +1295,7 @@ do
 
     sleep 2
 done
-' >> /tmp/camillagui-backend.log 2>&1 &
+' &
 
 exit 0
 EOF

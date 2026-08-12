@@ -9,6 +9,7 @@ mod wave;
 
 use adapt::{
     adapt_config, get_config_path, get_playback_device, get_state_fragment, make_bypass_config,
+    make_statefile,
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Mode};
@@ -120,16 +121,19 @@ fn run_main() -> AppResult<()> {
             Ok(())
         }
 
-        Mode::WsApply => {
-            let wave = wave_from_args(&args);
-            let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
-            let mut client = CamillaWs::connect(&args.host, args.port)?;
-            // The `?` propagates any CamillaDSP error response (the query
-            // function turns error payloads into `Err`).  The success
-            // payload for SetConfig is always null, so discarding it is safe.
-            let _ = client.query("SetConfig", Some(JsonValue::String(adapted)))?;
-            println!("CamillaDSP config applied via SetConfig");
-            client.close();
+        Mode::MakeStatefile => {
+            let config_path = args
+                .statefile_config_path
+                .as_deref()
+                .expect("validated: --make-statefile requires --config-path");
+            let output = args
+                .output
+                .as_deref()
+                .expect("validated: --make-statefile requires --output");
+            let yaml = make_statefile(config_path, args.existing_state.as_deref())?;
+            std::fs::write(output, &yaml).map_err(|err| {
+                app_error(format!("unable to write {}: {err}", output.display()))
+            })?;
             Ok(())
         }
 
@@ -138,6 +142,20 @@ fn run_main() -> AppResult<()> {
             controller.run(initial)
         }
     }
+}
+
+/// Adapt a CamillaDSP YAML config and send it via `SetConfig`.
+///
+/// This is the programmatic equivalent of what the removed `--ws-apply` CLI
+/// mode did.  It is kept as an internal helper so other code paths can apply
+/// a config over WebSocket without going through the controller state-machine.
+pub(crate) fn ws_apply(path: &std::path::Path, wave: &WaveFormat, host: &str, port: u16) -> AppResult<()> {
+    let adapted = adapt_config(path, wave)?;
+    let mut client = CamillaWs::connect(host, port)?;
+    // The success payload for SetConfig is always null; discarding it is safe.
+    let _ = client.query("SetConfig", Some(JsonValue::String(adapted)))?;
+    client.close();
+    Ok(())
 }
 
 /// Build a `WaveFormat` from the CLI initial-value flags.

@@ -62,9 +62,9 @@ chmod +x install_picoredsp.sh
 The installer performs these steps in order:
 
 1. Tests `snd-aloop` availability.
-2. Detects the physical DAC selected in Squeezelite Settings.
-3. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
-4. Probes the snd-aloop ALSA controls with the downloaded binary.
+2. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
+3. Probes the snd-aloop ALSA controls with the downloaded binary.
+4. Detects the physical DAC selected in Squeezelite Settings.
 5. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.
 6. Generates default/bypass/null configs and ALSA PCM definitions.
 7. Validates all staged configs with `camilladsp --check`.
