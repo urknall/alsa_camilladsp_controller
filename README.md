@@ -121,6 +121,19 @@ Do not manually use **Apply** just to initialize DSP while playback is stopped.
 The controller automatically loads and adapts the configuration when playback
 becomes active.
 
+
+## Migrating legacy custom configs
+
+Older piCorePlayer/CamillaDSP configs often use a different transport model
+(e.g. `capture.type: Stdin`, fixed capture/playback formats, and fixed transport
+parameters in the YAML). The current piCoreDSP setup routes audio through
+`snd-aloop` and treats the YAML as a persistent **DSP baseline** while the Rust
+controller adapts live stream parameters in memory.
+
+For the complete old-vs-new flow, field-by-field migration rules, a recommended
+`devices:` block, CamillaGUI active-file semantics, and the `pcp backup` workflow,
+see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
+
 ## Controller modules
 
 | Module | Contents |
