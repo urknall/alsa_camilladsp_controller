@@ -120,19 +120,6 @@ fn run_main() -> AppResult<()> {
             Ok(())
         }
 
-        Mode::WsApply => {
-            let wave = wave_from_args(&args);
-            let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
-            let mut client = CamillaWs::connect(&args.host, args.port)?;
-            // The `?` propagates any CamillaDSP error response (the query
-            // function turns error payloads into `Err`).  The success
-            // payload for SetConfig is always null, so discarding it is safe.
-            let _ = client.query("SetConfig", Some(JsonValue::String(adapted)))?;
-            println!("CamillaDSP config applied via SetConfig");
-            client.close();
-            Ok(())
-        }
-
         Mode::Run => {
             let (controller, initial) = Controller::new(&args)?;
             controller.run(initial)

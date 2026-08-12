@@ -1200,6 +1200,7 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/camilladsp-supervisor.log 2>&1
 _log=/tmp/camilladsp-supervisor.log
 while :
 do
@@ -1222,7 +1223,7 @@ do
 
     sleep 2
 done
-' >> /tmp/camilladsp-supervisor.log 2>&1 &
+' &
 
 ###############################################################################
 # Wait for CamillaDSP websocket
@@ -1254,19 +1255,21 @@ fi
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/picoredsp-logtrim.log 2>&1
 while :
 do
     /usr/local/bin/picoredsp-trim-log /tmp/picoredsp-controller.log
     /usr/local/bin/picoredsp-trim-log /tmp/camillagui-backend.log
     sleep 60
 done
-' >> /tmp/picoredsp-logtrim.log 2>&1 &
+' &
 
 ###############################################################################
 # Controller supervisor (includes startup bootstrap SetConfig)
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/picoredsp-controller.log 2>&1
 _log=/tmp/picoredsp-controller.log
 while :
 do
@@ -1286,13 +1289,14 @@ do
 
     sleep 2
 done
-' >> /tmp/picoredsp-controller.log 2>&1 &
+' &
 
 ###############################################################################
 # CamillaGUI supervisor
 ###############################################################################
 
 sudo -u tc sh -c '
+exec >> /tmp/camillagui-backend.log 2>&1
 _log=/tmp/camillagui-backend.log
 while :
 do
@@ -1307,7 +1311,7 @@ do
 
     sleep 2
 done
-' >> /tmp/camillagui-backend.log 2>&1 &
+' &
 
 exit 0
 EOF
