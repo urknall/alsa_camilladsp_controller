@@ -758,6 +758,8 @@ mod tests {
     struct MockClient {
         responses: VecDeque<Result<Option<JsonValue>, WsError>>,
         sent_configs: Vec<String>,
+        /// Number of times a Stop command was issued.
+        stop_count: u32,
     }
 
     impl MockClient {
@@ -765,6 +767,7 @@ mod tests {
             Self {
                 responses: responses.into(),
                 sent_configs: Vec::new(),
+                stop_count: 0,
             }
         }
         fn ok() -> Result<Option<JsonValue>, WsError> {
@@ -789,6 +792,9 @@ mod tests {
                 if let Some(JsonValue::String(ref cfg)) = argument {
                     self.sent_configs.push(cfg.clone());
                 }
+            }
+            if command == "Stop" {
+                self.stop_count += 1;
             }
             self.responses
                 .pop_front()
@@ -1608,7 +1614,10 @@ mod tests {
         // Tick 2: within 2 s deadline → no second Stop.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        // Mock queue still has one response; no panic means no Stop was sent.
+        assert_eq!(
+            ctrl.client.stop_count, 1,
+            "no second Stop within deadline"
+        );
 
         // Back-date the guard so the deadline appears expired.
         ctrl.idle_stop_since =
@@ -1617,6 +1626,7 @@ mod tests {
         // Tick 3: deadline expired → Stop re-sent.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
+        assert_eq!(ctrl.client.stop_count, 2, "Stop must be re-sent after deadline");
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1687,8 +1697,10 @@ mod tests {
         let inactive_snap = MockListener::inactive();
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        // If a second Stop had been attempted the mock queue would be empty
-        // and the test would have panicked above.
+        assert_eq!(
+            ctrl.client.stop_count, 1,
+            "no extra Stop must be sent within the guard window"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
