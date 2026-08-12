@@ -48,6 +48,12 @@ pub fn make_statefile(config_path: &str, existing_state_path: Option<&Path>) -> 
             })?;
             let sf: StateFile = serde_yaml_ng::from_str(&raw)
                 .map_err(|err| app_error(format!("invalid statefile {}: {err}", path.display())))?;
+            if sf.volume.iter().any(|value| !value.is_finite()) {
+                return Err(app_error(format!(
+                    "invalid statefile {}: volume values must be finite",
+                    path.display()
+                )));
+            }
             (sf.mute, sf.volume)
         }
         None => ([false; 5], [0.0_f32; 5]),
@@ -316,10 +322,29 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
     devices.insert(yaml_key("playback"), YamlValue::Mapping(playback));
 
     let description = format!(
-        "Default piCoreDSP pass-through configuration.\n\
+        "Default piCoreDSP pass-through baseline configuration.\n\n\
+         This YAML file is the persistent baseline configuration. It does not\n\
+         necessarily contain the parameters currently used by CamillaDSP.\n\n\
          Audio is captured from snd-aloop and played to the piCorePlayer output\n\
          that was selected before installation: {playback_device}\n\n\
-         Add filters/mixers in CamillaGUI or duplicate this config for DSP work.\n"
+         piCoreDSP differs from the upstream controller setup by monitoring\n\
+         snd-aloop with the Rust picoredsp-controller. When playback becomes\n\
+         active, the controller reads the live stream parameters and adapts the\n\
+         CamillaDSP configuration in memory to the current sample rate and,\n\
+         where applicable, capture format and channel count.\n\n\
+         Therefore values shown in this YAML or in the CamillaGUI config\n\
+         editor, such as samplerate: 44100, may differ from the live values\n\
+         shown in CamillaGUI's status area. The live status values are\n\
+         authoritative for the stream currently playing.\n\n\
+         Runtime-adapted values are not written back to this file.\n\n\
+         Save DSP/filter changes in CamillaGUI if they must survive a\n\
+         sample-rate or format change or a reboot. Prefer Apply and Save for\n\
+         persistent changes.\n\n\
+         On piCorePlayer, run \"pcp backup\" before rebooting after\n\
+         configuration changes.\n\n\
+         Do not manually Apply a configuration merely to initialize DSP while\n\
+         playback is stopped. The controller automatically loads and adapts the\n\
+         configuration when playback becomes active.\n"
     );
 
     let mut root = Mapping::new();
@@ -744,6 +769,10 @@ mod tests {
             Some("hw:Loopback,0,0")
         );
         assert!(parsed["title"].as_str().is_some());
+        assert!(parsed["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("persistent baseline configuration"));
     }
 
     #[test]
@@ -993,6 +1022,42 @@ mod tests {
         fs::write(&sf, "{ not valid yaml: [").unwrap();
         let result = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf));
         assert!(result.is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_nan_volume_is_error() {
+        let dir = test_dir("make-state-nan-volume");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/Bypass.yml\n\
+             mute:\n- false\n- false\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- .nan\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+        let err = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("volume values must be finite"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_infinite_volume_is_error() {
+        let dir = test_dir("make-state-inf-volume");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "config_path: /mnt/camilladsp/Bypass.yml\n\
+             mute:\n- false\n- false\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- .inf\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+        let err = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&sf))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("volume values must be finite"));
         fs::remove_dir_all(dir).unwrap();
     }
 

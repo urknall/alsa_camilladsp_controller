@@ -302,6 +302,16 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 );
                 // Re-read the loopback snapshot for a fresh format/channels.
                 let current = self.listener.read_snapshot()?;
+                if !current.active {
+                    log(
+                        LogLevel::Info,
+                        self.log_level,
+                        "Capture format changed, but source is no longer active; waiting for playback",
+                    );
+                    self.retry.reset();
+                    self.pending_since = None;
+                    return Ok(());
+                }
                 let mut effective = current.wave.with_fallback(&self.fallback_wave);
                 if effective.sample_rate.unwrap_or(0) == 0 && reported_rate > 0 {
                     effective.sample_rate = Some(reported_rate);
@@ -1268,6 +1278,79 @@ mod tests {
         assert!(
             ctrl.client.sent_configs[0].contains("samplerate: 48000"),
             "first playback must adapt to the live source sample rate"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn capture_format_change_with_inactive_fresh_snapshot_skips_restart() {
+        let dir = test_dir("capture-fmt-change-inactive");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let stale_inactive_snapshot = DeviceSnapshot {
+            active: false,
+            wave: WaveFormat {
+                sample_rate: Some(48000),
+                sample_format: Some("S32_LE".to_owned()),
+                channels: Some(2),
+            },
+        };
+        let client = MockClient::new(vec![]);
+        let listener = MockListener::new(vec![stale_inactive_snapshot.clone()]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        ctrl.handle_stop_reason(
+            StopReason::CaptureFormatChange(48000),
+            &stale_inactive_snapshot,
+        )
+        .unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "no SetConfig when the fresh snapshot is inactive"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn capture_format_change_with_active_snapshot_uses_reported_rate_fallback() {
+        let dir = test_dir("capture-fmt-change-reported-rate");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let fresh_active_snapshot = DeviceSnapshot {
+            active: true,
+            wave: WaveFormat {
+                sample_rate: None,
+                sample_format: Some("S32_LE".to_owned()),
+                channels: Some(2),
+            },
+        };
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop
+            MockClient::ok(), // SetConfig
+        ]);
+        let listener = MockListener::new(vec![fresh_active_snapshot.clone()]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        ctrl.handle_stop_reason(
+            StopReason::CaptureFormatChange(96000),
+            &fresh_active_snapshot,
+        )
+        .unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 1);
+        assert!(
+            ctrl.client.sent_configs[0].contains("samplerate: 96000"),
+            "reported capture rate should be used when the fresh snapshot rate is unknown"
         );
 
         fs::remove_dir_all(dir).unwrap();

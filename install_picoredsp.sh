@@ -701,9 +701,19 @@ processors: {}
 
 title: 'Null'
 description: |
-  Diagnostic-only configuration.
+  Diagnostic-only piCoreDSP configuration.
   Audio is captured from snd-aloop and intentionally discarded.
   Do not select this configuration when testing audible output.
+
+  This YAML is a persistent baseline configuration. The picoredsp-controller
+  adapts the CamillaDSP runtime configuration in memory to the active stream.
+  Values in the config editor can therefore differ from the current live
+  values shown in CamillaGUI's status area.
+
+  Runtime-adapted values are not written back to this file.
+
+  Save persistent DSP/config changes in CamillaGUI and run "pcp backup"
+  before rebooting piCorePlayer after configuration changes.
 EOF
 
 # The statefile contains FINAL runtime paths even though it is staged here.

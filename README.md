@@ -87,6 +87,32 @@ config.
 **Recommendation:** always click **Save** (or **Apply and Save**) in CamillaGUI
 before relying on a config change to survive a playback format switch or reboot.
 
+## Baseline config vs. live runtime config
+
+On piCoreDSP, the saved YAML files such as `Bypass.yml` are the persistent
+baseline configuration and user-editable source files.
+
+The Rust `picoredsp-controller` monitors `snd-aloop`. When playback becomes
+active, it reads the live stream parameters and adapts the CamillaDSP
+configuration in memory to the current sample rate and, where applicable,
+capture format and channel count.
+
+Because of that split, the CamillaGUI config editor can show a saved baseline
+value such as `samplerate: 44100` while CamillaGUI's live status area correctly
+shows `48 kHz` for the stream currently playing. The live status values are the
+authoritative runtime values.
+
+Those runtime-adapted values are not written back to the YAML file
+automatically. Save DSP or config changes in CamillaGUI if they must survive a
+sample-rate or format change or a reboot, and prefer **Apply and Save** for
+persistent changes.
+
+On piCorePlayer, run `pcp backup` before rebooting after configuration changes.
+
+Do not manually use **Apply** just to initialize DSP while playback is stopped.
+The controller automatically loads and adapts the configuration when playback
+becomes active.
+
 ## Controller modules
 
 | Module | Contents |
