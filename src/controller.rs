@@ -1464,7 +1464,10 @@ mod tests {
         // First tick: idle invariant fires → sends Stop.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        assert!(ctrl.idle_stop_since.is_some(), "guard must be set after first Stop");
+        assert!(
+            ctrl.idle_stop_since.is_some(),
+            "guard must be set after first Stop"
+        );
         assert_eq!(
             ctrl.client.sent_configs.len(),
             0,
@@ -1614,19 +1617,18 @@ mod tests {
         // Tick 2: within 2 s deadline → no second Stop.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        assert_eq!(
-            ctrl.client.stop_count, 1,
-            "no second Stop within deadline"
-        );
+        assert_eq!(ctrl.client.stop_count, 1, "no second Stop within deadline");
 
         // Back-date the guard so the deadline appears expired.
-        ctrl.idle_stop_since =
-            Some(Instant::now() - Duration::from_secs(IDLE_STOP_RETRY_SECS + 1));
+        ctrl.idle_stop_since = Some(Instant::now() - Duration::from_secs(IDLE_STOP_RETRY_SECS + 1));
 
         // Tick 3: deadline expired → Stop re-sent.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        assert_eq!(ctrl.client.stop_count, 2, "Stop must be re-sent after deadline");
+        assert_eq!(
+            ctrl.client.stop_count, 2,
+            "Stop must be re-sent after deadline"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
