@@ -486,6 +486,8 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                             snapshot.wave
                         ),
                     );
+                    // Empty wave suppresses rate/format/channel adaptation so
+                    // bootstrap applies the stored config as-is.
                     self.current_wave = WaveFormat::default();
                 }
                 self.start_cdsp()?;
