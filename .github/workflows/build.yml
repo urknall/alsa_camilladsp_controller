@@ -118,11 +118,26 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked
 
+  # ─── Installer shell syntax checks ────────────────────────────────────────
+  installer_shell_syntax:
+    name: Installer shell syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate installer script syntax (sh and dash)
+        run: |
+          sh -n install_picoredsp.sh
+          dash -n install_picoredsp.sh
+
   # ─── Cross-compile release binaries ──────────────────────────────────────
   build:
     name: Build (${{ matrix.binary_suffix }})
     runs-on: ubuntu-latest
-    needs: [fmt, clippy, msrv, test]
+    needs: [fmt, clippy, msrv, test, installer_shell_syntax]
     permissions:
       contents: read
 

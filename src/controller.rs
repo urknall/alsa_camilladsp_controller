@@ -452,6 +452,65 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         self.handle_stop_reason(reason, snapshot)
     }
 
+    /// Perform a one-time bootstrap on controller startup.
+    ///
+    /// When CamillaDSP starts with `--wait --no_config`, the processing state
+    /// is `Inactive` until a config is loaded.  Bootstrap immediately applies
+    /// the active config once, using the initial ALSA snapshot so the very
+    /// first config already matches a currently running source.
+    fn bootstrap_initial_config(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
+        let state = parse_processing_state(self.client.query("GetState", None)?)?;
+        match state {
+            ProcessingState::Inactive => {
+                self.current_wave = snapshot.wave.with_fallback(&self.fallback_wave);
+                self.retry.reset();
+                self.pending_since = None;
+                if snapshot.active {
+                    log(
+                        LogLevel::Info,
+                        self.log_level,
+                        format!(
+                            "Bootstrapping initial config for active source ({})",
+                            self.current_wave
+                        ),
+                    );
+                } else {
+                    log(
+                        LogLevel::Info,
+                        self.log_level,
+                        format!(
+                            "Bootstrapping initial config for inactive source ({})",
+                            self.current_wave
+                        ),
+                    );
+                }
+                self.start_cdsp()?;
+            }
+            ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
+                log(
+                    LogLevel::Debug,
+                    self.log_level,
+                    "Skipping bootstrap because CamillaDSP is already active",
+                );
+            }
+            ProcessingState::Starting => {
+                log(
+                    LogLevel::Debug,
+                    self.log_level,
+                    "Skipping bootstrap while CamillaDSP is already starting",
+                );
+            }
+            ProcessingState::Unknown(value) => {
+                log(
+                    LogLevel::Warning,
+                    self.log_level,
+                    format!("Unknown CamillaDSP processing state during bootstrap: {value}"),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Run the main control loop until an unrecoverable error occurs.
     ///
     /// Loop structure (matches the Python reference):
@@ -467,6 +526,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
             self.log_level,
             "Starting ALSA loopback controller",
         );
+        self.bootstrap_initial_config(&previous)?;
         loop {
             // ── Config fingerprint check (issue 10) ──────────────────────
             let fp = ConfigFingerprint::sample(&self.adapt_path);
@@ -1095,6 +1155,64 @@ mod tests {
             ctrl.client.sent_configs.len(),
             0,
             "no restart when source is inactive"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Boot bootstrap: when CamillaDSP is Inactive and source is inactive, the
+    /// controller still applies the active config once.
+    #[test]
+    fn bootstrap_applies_once_for_inactive_source() {
+        let dir = test_dir("bootstrap-inactive");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::state("Inactive"), // GetState (bootstrap)
+            MockClient::ok(),              // SetConfig
+        ]);
+        let listener = MockListener::new(vec![]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        let inactive_snap = MockListener::inactive();
+        ctrl.bootstrap_initial_config(&inactive_snap).unwrap();
+
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            1,
+            "bootstrap should apply config once for inactive source"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Boot bootstrap: when CamillaDSP is Inactive and source already runs, the
+    /// first SetConfig must use the live ALSA format immediately.
+    #[test]
+    fn bootstrap_uses_live_wave_for_active_source() {
+        let dir = test_dir("bootstrap-active");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::state("Inactive"), // GetState (bootstrap)
+            MockClient::ok(),              // SetConfig
+        ]);
+        let listener = MockListener::new(vec![]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        let active_snap = MockListener::active_with_rate(96000);
+        ctrl.bootstrap_initial_config(&active_snap).unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 1);
+        assert!(
+            ctrl.client.sent_configs[0].contains("samplerate: 96000"),
+            "bootstrap must adapt to the running source sample rate"
         );
 
         fs::remove_dir_all(dir).unwrap();
