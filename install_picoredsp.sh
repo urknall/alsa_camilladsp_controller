@@ -709,6 +709,18 @@ EOF
 # The statefile contains FINAL runtime paths even though it is staged here.
 # On reinstall, preserve any existing volume/mute values so a user's current
 # speaker levels are not silently reset to 0 dB.
+#
+# Determine the active config that will be used after commit. On first install
+# it is Bypass. On reinstall it may remain on a user-selected custom config.
+_new_active_target="${BYPASS_CONFIG}"
+if $EXISTING_INSTALL; then
+    _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
+    if [ -f "${_old_active}" ] && \
+       echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
+        _new_active_target="${_old_active}"
+    fi
+fi
+
 _stage_state_fragment="mute:
 - false
 - false
@@ -737,7 +749,7 @@ if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
 fi
 
 cat > "${STAGE_STATEFILE}" <<EOF
-config_path: ${BYPASS_CONFIG}
+config_path: ${_new_active_target}
 
 ${_stage_state_fragment}
 EOF
@@ -1238,28 +1250,20 @@ if [ "${i}" -ge 30 ]; then
 fi
 
 ###############################################################################
-# Apply initial DSP config
+# Periodic log trimmer (bounds long-running logs even without restarts)
 ###############################################################################
 
-# Load the active config into CamillaDSP immediately at boot so audio routing
-# is active before the first ALSA event arrives and without requiring the user
-# to click "Apply DSP" in CamillaGUI.  The controller loop will re-adapt and
-# reload the config automatically whenever audio actually starts playing.
-if sudo -u tc "${CONTROLLER}" \
-    --ws-apply \
-    --adapt "${ACTIVE_CONFIG}" \
-    --host 127.0.0.1 \
-    --port 1234 \
-    >> "${STARTUP_LOG}" 2>&1
-then
-    echo "$(date): Initial DSP config applied" >> "${STARTUP_LOG}"
-else
-    echo "$(date): WARNING: Initial DSP config apply failed (controller will retry)" \
-        >> "${STARTUP_LOG}"
-fi
+sudo -u tc sh -c '
+while :
+do
+    /usr/local/bin/picoredsp-trim-log /tmp/picoredsp-controller.log
+    /usr/local/bin/picoredsp-trim-log /tmp/camillagui-backend.log
+    sleep 60
+done
+' >> /tmp/picoredsp-logtrim.log 2>&1 &
 
 ###############################################################################
-# Controller supervisor
+# Controller supervisor (includes startup bootstrap SetConfig)
 ###############################################################################
 
 sudo -u tc sh -c '
@@ -1350,18 +1354,8 @@ if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] ||
     exit 1
 fi
 
-# Determine the active config that will be used after the commit.  On a first
-# install this is always Bypass.  On reinstall it may be a custom config that
-# the user had previously selected.  Validate it HERE, before COMMIT_STARTED,
+# Validate the already selected post-commit active target before COMMIT_STARTED
 # so a broken preserved config aborts cleanly without requiring a rollback.
-_new_active_target="${BYPASS_CONFIG}"
-if $EXISTING_INSTALL; then
-    _old_active=$(readlink -f "${ACTIVE_CONFIG_LINK}" 2>/dev/null || true)
-    if [ -f "${_old_active}" ] && \
-       echo "${_old_active}" | grep -q "^${CONFIG_DIR}/"; then
-        _new_active_target="${_old_active}"
-    fi
-fi
 
 if [ "${_new_active_target}" != "${BYPASS_CONFIG}" ]; then
     echo "Validating preserved active config: ${_new_active_target}"
@@ -1493,7 +1487,7 @@ echo "Reinstall recovers the physical output from CamillaDSP/Bypass/last-known s
 echo
 echo "Useful logs:"
 echo "  /tmp/picoredsp-startup.log"
-echo "  /tmp/camilladsp.log"
+echo "  /tmp/camilladsp_rCURRENT.log"
 echo "  /tmp/camilladsp-supervisor.log"
 echo "  /tmp/picoredsp-controller.log"
 echo "  /tmp/camillagui-backend.log"
