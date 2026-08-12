@@ -261,7 +261,7 @@ jobs:
       - name: Create or update rolling installer release
         uses: softprops/action-gh-release@v3
         env:
-          NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+          NODE_OPTIONS: --use-system-ca
         with:
           tag_name: installer-latest
           target_commitish: ${{ github.sha }}
@@ -312,7 +312,7 @@ jobs:
       - name: Create release and attach binaries
         uses: softprops/action-gh-release@v3
         env:
-          NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+          NODE_OPTIONS: --use-system-ca
         with:
           files: |
             picoredsp-controller-aarch64
