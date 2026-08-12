@@ -12,7 +12,7 @@ const CAMILLA_STATE_CHANNELS: usize = 5;
 /// Typed representation of a CamillaDSP statefile, used for both reading an
 /// existing statefile and writing a newly generated one.
 ///
-/// Using fixed-length arrays `[bool; 5]` and `[f64; 5]` means serde
+/// Using fixed-length arrays `[bool; 5]` and `[f32; 5]` means serde
 /// automatically enforces both element type and exact length (5) without any
 /// manual validation loop.  `serde_yaml_ng::to_string` handles all necessary
 /// YAML quoting for `config_path`, including filenames that contain spaces,
@@ -24,7 +24,7 @@ const CAMILLA_STATE_CHANNELS: usize = 5;
 pub struct StateFile {
     pub config_path: Option<String>,
     pub mute: [bool; 5],
-    pub volume: [f64; 5],
+    pub volume: [f32; 5],
 }
 
 /// Create a CamillaDSP statefile YAML string.
@@ -50,7 +50,7 @@ pub fn make_statefile(config_path: &str, existing_state_path: Option<&Path>) -> 
                 .map_err(|err| app_error(format!("invalid statefile {}: {err}", path.display())))?;
             (sf.mute, sf.volume)
         }
-        None => ([false; 5], [0.0_f64; 5]),
+        None => ([false; 5], [0.0_f32; 5]),
     };
 
     let sf = StateFile {
@@ -868,7 +868,7 @@ mod tests {
             Some("/mnt/camilladsp/Bypass.yml")
         );
         assert_eq!(sf.mute, [false; 5]);
-        assert_eq!(sf.volume, [0.0_f64; 5]);
+        assert_eq!(sf.volume, [0.0_f32; 5]);
     }
 
     #[test]
@@ -876,7 +876,7 @@ mod tests {
         let dir = test_dir("make-state-reinstall");
         let old_sf = dir.join("old_state.yml");
         let original_mute = [true, false, true, false, true];
-        let original_volume = [-10.0_f64, -5.0, 0.0, 1.5, -20.5];
+        let original_volume = [-10.0_f32, -5.0, 0.0, 1.5, -20.5];
         let original_path = "/mnt/camilladsp/My DSP.yml";
         let existing = StateFile {
             config_path: Some(original_path.to_owned()),
@@ -902,7 +902,7 @@ mod tests {
         let old_sf = dir.join("state.yml");
         let original_path = "/mnt/camilladsp/Bypass.yml";
         let original_mute = [false, true, false, false, true];
-        let original_volume = [0.0_f64, -3.0, -6.0, -9.0, -12.0];
+        let original_volume = [0.0_f32, -3.0, -6.0, -9.0, -12.0];
         let existing = StateFile {
             config_path: Some(original_path.to_owned()),
             mute: original_mute,
@@ -938,7 +938,7 @@ mod tests {
         let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(loaded.config_path.as_deref(), Some(new_path));
         assert_eq!(loaded.mute, [false; 5]);
-        assert_eq!(loaded.volume, [0.0_f64; 5]);
+        assert_eq!(loaded.volume, [0.0_f32; 5]);
         fs::remove_dir_all(dir).unwrap();
     }
 

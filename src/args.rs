@@ -344,6 +344,20 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             "--existing-state is only valid with --make-statefile",
         ));
     }
+    if args.mode == Mode::MakeStatefile {
+        if args.adapt.is_some() {
+            return Err(app_error("--adapt is not valid with --make-statefile"));
+        }
+        if args.initial_rate.is_some() {
+            return Err(app_error("--rate is not valid with --make-statefile"));
+        }
+        if args.initial_format.is_some() {
+            return Err(app_error("--format is not valid with --make-statefile"));
+        }
+        if args.initial_channels.is_some() {
+            return Err(app_error("--channels is not valid with --make-statefile"));
+        }
+    }
     if matches!(
         args.mode,
         Mode::GetPlaybackDevice | Mode::GetConfigPath | Mode::GetStateFragment

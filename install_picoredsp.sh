@@ -1249,7 +1249,7 @@ done
 ' &
 
 ###############################################################################
-# Controller supervisor (includes startup bootstrap SetConfig)
+# Controller supervisor (loads config when playback becomes active)
 ###############################################################################
 
 sudo -u tc sh -c '
