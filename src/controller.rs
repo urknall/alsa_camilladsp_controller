@@ -455,17 +455,20 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
     /// Perform a one-time bootstrap on controller startup.
     ///
     /// When CamillaDSP starts with `--wait --no_config`, the processing state
-    /// is `Inactive` until a config is loaded.  Bootstrap immediately applies
-    /// the active config once, using the initial ALSA snapshot so the very
-    /// first config already matches a currently running source.
+    /// is `Inactive` until a config is loaded.
+    ///
+    /// Bootstrap behavior is split by source state:
+    /// * active=true  → adapt with live ALSA wave format before SetConfig.
+    /// * active=false → apply stored config without rate/format/channel
+    ///   adaptation, so no stale ALSA values can leak into startup config.
     fn bootstrap_initial_config(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
         let state = parse_processing_state(self.client.query("GetState", None)?)?;
         match state {
             ProcessingState::Inactive => {
-                self.current_wave = snapshot.wave.with_fallback(&self.fallback_wave);
                 self.retry.reset();
                 self.pending_since = None;
                 if snapshot.active {
+                    self.current_wave = snapshot.wave.with_fallback(&self.fallback_wave);
                     log(
                         LogLevel::Info,
                         self.log_level,
@@ -479,10 +482,11 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                         LogLevel::Info,
                         self.log_level,
                         format!(
-                            "Bootstrapping initial config for inactive source ({})",
-                            self.current_wave
+                            "Bootstrapping stored config for inactive source ({})",
+                            snapshot.wave
                         ),
                     );
+                    self.current_wave = WaveFormat::default();
                 }
                 self.start_cdsp()?;
             }
@@ -1161,7 +1165,7 @@ mod tests {
     }
 
     /// Boot bootstrap: when CamillaDSP is Inactive and source is inactive, the
-    /// controller still applies the active config once.
+    /// controller still applies the active config once, without adaptation.
     #[test]
     fn bootstrap_applies_once_for_inactive_source() {
         let dir = test_dir("bootstrap-inactive");
@@ -1177,13 +1181,25 @@ mod tests {
         let listener = MockListener::new(vec![]);
         let mut ctrl = make_controller(client, listener, active.clone());
 
-        let inactive_snap = MockListener::inactive();
+        let inactive_snap = DeviceSnapshot {
+            active: false,
+            // Stale wave values from a previous stream must be ignored.
+            wave: WaveFormat {
+                sample_rate: Some(96000),
+                sample_format: Some("S24_3LE".to_owned()),
+                channels: Some(6),
+            },
+        };
         ctrl.bootstrap_initial_config(&inactive_snap).unwrap();
 
         assert_eq!(
             ctrl.client.sent_configs.len(),
             1,
             "bootstrap should apply config once for inactive source"
+        );
+        assert!(
+            ctrl.client.sent_configs[0].contains("samplerate: 44100"),
+            "inactive bootstrap must not adapt samplerate from stale ALSA values"
         );
 
         fs::remove_dir_all(dir).unwrap();
