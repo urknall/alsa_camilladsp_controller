@@ -271,19 +271,6 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         self.start_cdsp_with_wave(&wave)
     }
 
-    /// Start CamillaDSP without injecting rate/format/channel values.
-    ///
-    /// This passes a `WaveFormat` with all fields set to `None` so
-    /// `adapt_config` preserves those fields from the stored config.
-    fn start_cdsp_unadapted(&mut self) -> AppResult<()> {
-        let no_adapt_wave = WaveFormat {
-            sample_rate: None,
-            sample_format: None,
-            channels: None,
-        };
-        self.start_cdsp_with_wave(&no_adapt_wave)
-    }
-
     fn handle_started(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
         self.current_wave = snapshot.wave.with_fallback(&self.fallback_wave);
         log(
@@ -477,8 +464,8 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
     ///
     /// Bootstrap behavior is split by source state:
     /// * active=true  → adapt with live ALSA wave format before SetConfig.
-    /// * active=false → apply stored config without rate/format/channel
-    ///   adaptation, so no stale ALSA values can leak into startup config.
+    /// * active=false → do not send SetConfig; wait for first active playback
+    ///   stream so snd-aloop capture is not opened before the player.
     fn bootstrap_initial_config(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
         let state = parse_processing_state(self.client.query("GetState", None)?)?;
         match state {
@@ -500,12 +487,8 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     log(
                         LogLevel::Info,
                         self.log_level,
-                        format!(
-                            "Bootstrapping stored config for inactive source ({})",
-                            snapshot.wave
-                        ),
+                        "Source inactive at startup — waiting for playback before loading CamillaDSP config",
                     );
-                    self.start_cdsp_unadapted()?;
                 }
             }
             ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
@@ -1183,19 +1166,16 @@ mod tests {
     }
 
     /// Boot bootstrap: when CamillaDSP is Inactive and source is inactive, the
-    /// controller still applies the active config once, without adaptation.
+    /// controller must not load any config yet.
     #[test]
-    fn bootstrap_applies_once_for_inactive_source() {
+    fn bootstrap_does_not_open_capture_for_inactive_source() {
         let dir = test_dir("bootstrap-inactive");
         let config = dir.join("config.yml");
         let active = dir.join("active.yml");
         fs::write(&config, minimal_config("hw:X,0")).unwrap();
         symlink(&config, &active).unwrap();
 
-        let client = MockClient::new(vec![
-            MockClient::state("Inactive"), // GetState (bootstrap)
-            MockClient::ok(),              // SetConfig
-        ]);
+        let client = MockClient::new(vec![MockClient::state("Inactive")]); // GetState (bootstrap)
         let listener = MockListener::new(vec![]);
         let mut ctrl = make_controller(client, listener, active.clone());
 
@@ -1212,20 +1192,8 @@ mod tests {
 
         assert_eq!(
             ctrl.client.sent_configs.len(),
-            1,
-            "bootstrap should apply config once for inactive source"
-        );
-        assert!(
-            ctrl.client.sent_configs[0].contains("samplerate: 44100"),
-            "inactive bootstrap must not adapt samplerate from stale ALSA values"
-        );
-        assert!(
-            !ctrl.client.sent_configs[0].contains("S24_3LE"),
-            "inactive bootstrap must not adapt capture format from stale ALSA values"
-        );
-        assert!(
-            !ctrl.client.sent_configs[0].contains("channels: 6"),
-            "inactive bootstrap must not adapt channels from stale ALSA values"
+            0,
+            "inactive startup must not SetConfig because CamillaDSP must not open the loopback before the player"
         );
 
         fs::remove_dir_all(dir).unwrap();
@@ -1255,6 +1223,51 @@ mod tests {
         assert!(
             ctrl.client.sent_configs[0].contains("samplerate: 96000"),
             "bootstrap must adapt to the running source sample rate"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// First-playback path: startup inactive must not configure CamillaDSP
+    /// until the source becomes active, then SetConfig must use live ALSA rate.
+    #[test]
+    fn inactive_startup_then_first_playback_applies_live_wave() {
+        let dir = test_dir("bootstrap-inactive-then-active");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::state("Inactive"), // GetState (bootstrap)
+            MockClient::ok(),              // Stop
+            MockClient::ok(),              // SetConfig
+        ]);
+        let listener = MockListener::new(vec![]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        let inactive_snap = MockListener::inactive();
+        ctrl.bootstrap_initial_config(&inactive_snap).unwrap();
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "bootstrap must not load config while source is inactive"
+        );
+
+        let active_snap = DeviceSnapshot {
+            active: true,
+            wave: WaveFormat {
+                sample_rate: Some(48000),
+                sample_format: Some("S16_LE".to_owned()),
+                channels: Some(2),
+            },
+        };
+        ctrl.handle_started(&active_snap).unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 1);
+        assert!(
+            ctrl.client.sent_configs[0].contains("samplerate: 48000"),
+            "first playback must adapt to the live source sample rate"
         );
 
         fs::remove_dir_all(dir).unwrap();

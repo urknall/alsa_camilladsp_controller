@@ -1235,28 +1235,6 @@ if [ "${i}" -ge 30 ]; then
 fi
 
 ###############################################################################
-# Apply initial DSP config
-###############################################################################
-
-# Load the active config into CamillaDSP immediately at boot so audio routing
-# is active before the first ALSA event arrives and without requiring the user
-# to wait for the controller bootstrap path to succeed first. The controller
-# loop will still re-adapt and reload the config automatically whenever audio
-# actually starts playing.
-if sudo -u tc "${CONTROLLER}" \
-    --ws-apply \
-    --adapt "${ACTIVE_CONFIG}" \
-    --host 127.0.0.1 \
-    --port 1234 \
-    >> "${STARTUP_LOG}" 2>&1
-then
-    echo "$(date): Initial DSP config applied" >> "${STARTUP_LOG}"
-else
-    echo "$(date): WARNING: Initial DSP config apply failed (controller will retry)" \
-        >> "${STARTUP_LOG}"
-fi
-
-###############################################################################
 # Periodic log trimmer (bounds long-running logs even without restarts)
 ###############################################################################
 
