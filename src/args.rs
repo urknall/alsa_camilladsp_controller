@@ -54,8 +54,6 @@ pub enum Mode {
     MakeBypass,
     /// Query `GetConfigFilePath` over WebSocket and print the result.
     WsGetConfigPath,
-    /// Adapt YAML once and send it to CamillaDSP via `SetConfig`, exit.
-    WsApply,
     /// Write a CamillaDSP statefile (first install or reinstall preserving mute/volume).
     MakeStatefile,
 }
@@ -73,7 +71,6 @@ impl Mode {
             Self::GetStateFragment => "--get-state-fragment",
             Self::MakeBypass => "--make-bypass",
             Self::WsGetConfigPath => "--ws-get-config-path",
-            Self::WsApply => "--ws-apply",
             Self::MakeStatefile => "--make-statefile",
         }
     }
@@ -117,7 +114,6 @@ Usage:\n\
   picoredsp-controller --get-state-fragment STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\
   picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\
-  picoredsp-controller --ws-apply --adapt PATH [--rate R --format F --channels N] [--host HOST] [--port PORT]\n\
   picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
@@ -139,7 +135,6 @@ Options:\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
       --output FILE             Output file for --make-bypass (default: stdout) or --make-statefile\n\
       --ws-get-config-path      Query GetConfigFilePath from CamillaDSP via WebSocket\n\
-      --ws-apply                Adapt YAML and send it to CamillaDSP via SetConfig, then exit\n\
       --make-statefile          Write a CamillaDSP statefile (first install or reinstall)\n\
       --config-path PATH        config_path value to embed in the new statefile (--make-statefile)\n\
       --existing-state FILE     Existing statefile to preserve mute/volume from (--make-statefile)\n\
@@ -255,15 +250,6 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 }
                 args.mode = Mode::WsGetConfigPath;
             }
-            "--ws-apply" => {
-                if args.mode != Mode::Run {
-                    return Err(app_error(format!(
-                        "conflicting mode flags: {} and --ws-apply",
-                        args.mode.name()
-                    )));
-                }
-                args.mode = Mode::WsApply;
-            }
             "--make-statefile" => {
                 if args.mode != Mode::Run {
                     return Err(app_error(format!(
@@ -325,7 +311,7 @@ pub fn parse_args() -> AppResult<Option<Args>> {
 
     if matches!(
         args.mode,
-        Mode::Run | Mode::WsValidate | Mode::AdaptCheck | Mode::WsApply
+        Mode::Run | Mode::WsValidate | Mode::AdaptCheck
     ) && args.adapt.is_none()
     {
         return Err(app_error("this mode requires --adapt PATH"));

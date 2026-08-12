@@ -121,16 +121,6 @@ fn run_main() -> AppResult<()> {
             Ok(())
         }
 
-        Mode::WsApply => {
-            let wave = wave_from_args(&args);
-            let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
-            let mut client = CamillaWs::connect(&args.host, args.port)?;
-            client.query("SetConfig", Some(JsonValue::String(adapted)))?;
-            println!("CamillaDSP config applied via SetConfig");
-            client.close();
-            Ok(())
-        }
-
         Mode::MakeStatefile => {
             let config_path = args
                 .statefile_config_path
