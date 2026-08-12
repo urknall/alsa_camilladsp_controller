@@ -652,6 +652,11 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 } else if current.active {
                     self.check_starting_deadline()?;
                 }
+                // If !current.active && idle_stop_sent: Stop was already sent;
+                // do not invoke check_starting_deadline here because that helper
+                // would eventually call start_cdsp(), which must not happen while
+                // the source is inactive.  CamillaDSP is expected to react to the
+                // Stop and transition to Inactive within the next tick.
             }
             ProcessingState::Inactive => {
                 self.process_inactive_state(current)?;
