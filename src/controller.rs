@@ -1491,7 +1491,10 @@ mod tests {
         };
         ctrl.handle_started(&active_snap).unwrap();
 
-        assert!(!ctrl.idle_stop_sent, "flag must be cleared on source active");
+        assert!(
+            !ctrl.idle_stop_sent,
+            "flag must be cleared on source active"
+        );
         assert_eq!(ctrl.client.sent_configs.len(), 1);
         assert!(
             ctrl.client.sent_configs[0].contains("samplerate: 48000"),
