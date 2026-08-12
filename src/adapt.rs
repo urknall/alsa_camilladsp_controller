@@ -863,7 +863,10 @@ mod tests {
     fn make_statefile_first_install_produces_defaults() {
         let yaml = make_statefile("/mnt/camilladsp/Bypass.yml", None).unwrap();
         let sf: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
-        assert_eq!(sf.config_path.as_deref(), Some("/mnt/camilladsp/Bypass.yml"));
+        assert_eq!(
+            sf.config_path.as_deref(),
+            Some("/mnt/camilladsp/Bypass.yml")
+        );
         assert_eq!(sf.mute, [false; 5]);
         assert_eq!(sf.volume, [0.0_f64; 5]);
     }
