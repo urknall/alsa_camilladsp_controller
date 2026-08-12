@@ -769,12 +769,10 @@ mod tests {
             Some("hw:Loopback,0,0")
         );
         assert!(parsed["title"].as_str().is_some());
-        assert!(
-            parsed["description"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("persistent baseline configuration")
-        );
+        assert!(parsed["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("persistent baseline configuration"));
     }
 
     #[test]
