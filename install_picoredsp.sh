@@ -1247,7 +1247,7 @@ fi
 # reload the config automatically whenever audio actually starts playing.
 if sudo -u tc "${CONTROLLER}" \
     --ws-apply \
-    --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
+    --adapt "${ACTIVE_CONFIG}" \
     --host 127.0.0.1 \
     --port 1234 \
     >> "${STARTUP_LOG}" 2>&1
