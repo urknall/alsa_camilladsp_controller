@@ -27,6 +27,12 @@ const PENDING_DEADLINE_SECS: u64 = 10;
 /// transitions through `Starting` in milliseconds; a multi-second hang
 /// indicates a wedged process that will never recover on its own.
 const STARTING_DEADLINE_SECS: u64 = 30;
+/// After sending an idle `Stop` (source inactive, CamillaDSP still running),
+/// wait at least this many seconds before re-sending the stop.  This guards
+/// against a GUI `SetConfig` racing with an in-flight stop and leaving
+/// CamillaDSP permanently running while the source stays inactive, without
+/// causing Stop flooding every 200 ms.
+const IDLE_STOP_RETRY_SECS: u64 = 2;
 
 // ─── Retry/backoff state ───────────────────────────────────────────────────
 
@@ -150,11 +156,14 @@ pub struct Controller<D, C> {
     /// [`PENDING_DEADLINE_SECS`], the pending state is cleared and the normal
     /// backoff/retry path takes over.
     pending_since: Option<Instant>,
-    /// Set to `true` after the controller has sent a single `Stop` to enforce
-    /// the idle invariant (source inactive, CamillaDSP still running).  Guards
-    /// against repeating the stop every 200 ms while the source remains
-    /// inactive.  Cleared whenever the source becomes active.
-    idle_stop_sent: bool,
+    /// Timestamp of the last `Stop` sent to enforce the idle invariant (source
+    /// inactive, CamillaDSP still running/starting).  `None` means no stop has
+    /// been sent yet in the current idle period.
+    ///
+    /// A stop is re-sent after [`IDLE_STOP_RETRY_SECS`] seconds to recover
+    /// from a GUI-triggered `SetConfig` that races with an in-flight stop.
+    /// Cleared when CamillaDSP reaches `Inactive` or the source becomes active.
+    idle_stop_since: Option<Instant>,
     /// Fingerprint of the active config at the last check.
     config_fp: ConfigFingerprint,
     log_level: LogLevel,
@@ -166,6 +175,32 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
     fn stop_cdsp(&mut self) -> AppResult<()> {
         log(LogLevel::Info, self.log_level, "Stopping CamillaDSP");
         self.client.query("Stop", None)?;
+        Ok(())
+    }
+
+    /// Enforce the idle invariant: source is inactive but CamillaDSP is still
+    /// running (e.g. started externally via CamillaGUI Apply while playback
+    /// was stopped).
+    ///
+    /// Sends a `Stop` immediately on the first call in an idle period, then
+    /// rate-limits re-sends to once every [`IDLE_STOP_RETRY_SECS`] seconds so
+    /// that a `SetConfig` that races with the in-flight stop cannot permanently
+    /// avert the invariant without causing Stop flooding on every loop tick.
+    fn enforce_idle_invariant(&mut self) -> AppResult<()> {
+        let should_stop = match self.idle_stop_since {
+            None => true,
+            Some(since) => since.elapsed() >= Duration::from_secs(IDLE_STOP_RETRY_SECS),
+        };
+        if should_stop {
+            log(
+                LogLevel::Info,
+                self.log_level,
+                "Source inactive but CamillaDSP is running — enforcing idle invariant (Stop)",
+            );
+            self.stop_cdsp()?;
+            self.idle_stop_since = Some(Instant::now());
+            self.pending_since = None;
+        }
         Ok(())
     }
 
@@ -286,7 +321,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         // Fresh ALSA start: clear retry/pending/idle state and apply current config.
         self.retry.reset();
         self.pending_since = None;
-        self.idle_stop_sent = false;
+        self.idle_stop_since = None;
         self.stop_cdsp()?;
         self.start_cdsp()
     }
@@ -508,18 +543,26 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 }
             }
             ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
-                log(
-                    LogLevel::Debug,
-                    self.log_level,
-                    "Skipping bootstrap because CamillaDSP is already active",
-                );
+                if !snapshot.active {
+                    self.enforce_idle_invariant()?;
+                } else {
+                    log(
+                        LogLevel::Debug,
+                        self.log_level,
+                        "Skipping bootstrap because CamillaDSP is already active",
+                    );
+                }
             }
             ProcessingState::Starting => {
-                log(
-                    LogLevel::Debug,
-                    self.log_level,
-                    "Skipping bootstrap while CamillaDSP is already starting",
-                );
+                if !snapshot.active {
+                    self.enforce_idle_invariant()?;
+                } else {
+                    log(
+                        LogLevel::Debug,
+                        self.log_level,
+                        "Skipping bootstrap while CamillaDSP is already starting",
+                    );
+                }
             }
             ProcessingState::Unknown(value) => {
                 log(
@@ -580,6 +623,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
             } else if previous.active && !current.active {
                 log(LogLevel::Info, self.log_level, "Device stopped");
                 self.stop_cdsp()?;
+                self.idle_stop_since = Some(Instant::now());
                 // Reset retry so the next start attempt is immediate.
                 self.retry.reset();
                 self.pending_since = None;
@@ -617,20 +661,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         match state {
             ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
                 if !current.active {
-                    // Idle invariant: source is inactive but CamillaDSP is
-                    // still running (e.g. started externally via CamillaGUI
-                    // Apply while playback was stopped).  Send exactly one
-                    // Stop; the flag prevents re-sending on every loop tick.
-                    if !self.idle_stop_sent {
-                        log(
-                            LogLevel::Info,
-                            self.log_level,
-                            "Source inactive but CamillaDSP is running — enforcing idle invariant (Stop)",
-                        );
-                        self.stop_cdsp()?;
-                        self.idle_stop_sent = true;
-                        self.pending_since = None;
-                    }
+                    self.enforce_idle_invariant()?;
                 } else {
                     // Confirmed success — reset retry and pending.
                     if self.pending_since.is_some() || self.retry.consecutive > 0 {
@@ -640,25 +671,18 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 }
             }
             ProcessingState::Starting => {
-                if !current.active && !self.idle_stop_sent {
-                    log(
-                        LogLevel::Info,
-                        self.log_level,
-                        "Source inactive but CamillaDSP is starting — enforcing idle invariant (Stop)",
-                    );
-                    self.stop_cdsp()?;
-                    self.idle_stop_sent = true;
-                    self.pending_since = None;
-                } else if current.active {
+                if !current.active {
+                    self.enforce_idle_invariant()?;
+                } else {
                     self.check_starting_deadline()?;
                 }
-                // If !current.active && idle_stop_sent: Stop was already sent;
-                // do not invoke check_starting_deadline here because that helper
-                // would eventually call start_cdsp(), which must not happen while
-                // the source is inactive.  CamillaDSP is expected to react to the
-                // Stop and transition to Inactive within the next tick.
+                // If !current.active: enforce_idle_invariant handles the stop.
+                // Do not invoke check_starting_deadline when inactive because that
+                // helper would eventually call start_cdsp(), which must not happen
+                // while the source is inactive.
             }
             ProcessingState::Inactive => {
+                self.idle_stop_since = None;
                 self.process_inactive_state(current)?;
             }
             ProcessingState::Unknown(value) => {
@@ -703,7 +727,7 @@ impl Controller<AlsaLoopbackListener, CamillaWs> {
             current_wave,
             retry: RetryState::new(),
             pending_since: None,
-            idle_stop_sent: false,
+            idle_stop_since: None,
             config_fp,
             log_level: args.log_level,
         };
@@ -856,7 +880,7 @@ mod tests {
             adapt_path: adapt_path.clone(),
             retry: RetryState::new(),
             pending_since: None,
-            idle_stop_sent: false,
+            idle_stop_since: None,
             config_fp: ConfigFingerprint::absent(),
             log_level: LogLevel::Error,
         }
@@ -1434,7 +1458,7 @@ mod tests {
         // First tick: idle invariant fires → sends Stop.
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        assert!(ctrl.idle_stop_sent, "flag must be set after first Stop");
+        assert!(ctrl.idle_stop_since.is_some(), "guard must be set after first Stop");
         assert_eq!(
             ctrl.client.sent_configs.len(),
             0,
@@ -1478,7 +1502,7 @@ mod tests {
         let inactive_snap = MockListener::inactive();
         ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
             .unwrap();
-        assert!(ctrl.idle_stop_sent);
+        assert!(ctrl.idle_stop_since.is_some());
 
         // Source becomes active at 48000 / S16_LE / 2.
         let active_snap = DeviceSnapshot {
@@ -1492,14 +1516,179 @@ mod tests {
         ctrl.handle_started(&active_snap).unwrap();
 
         assert!(
-            !ctrl.idle_stop_sent,
-            "flag must be cleared on source active"
+            ctrl.idle_stop_since.is_none(),
+            "guard must be cleared on source active"
         );
         assert_eq!(ctrl.client.sent_configs.len(), 1);
         assert!(
             ctrl.client.sent_configs[0].contains("samplerate: 48000"),
             "SetConfig must use the live 48000 Hz rate"
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// P2 idle guard — guard resets after CamillaDSP becomes Inactive.
+    ///
+    /// Sequence:
+    ///   Running / inactive  →  Stop #1, guard armed
+    ///   Inactive / inactive →  guard cleared
+    ///   Running / inactive  →  Stop #2 (invariant enforced again)
+    #[test]
+    fn idle_stop_guard_resets_after_inactive() {
+        let dir = test_dir("idle-guard-reset");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(),                // Stop #1 (first Running tick)
+            MockClient::stop_reason("None"), // GetStopReason (Inactive tick, source inactive)
+            MockClient::ok(),                // Stop #2 (second Running tick)
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+        let inactive_snap = MockListener::inactive();
+
+        // Tick 1: Running + inactive → Stop, guard armed.
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+        assert!(
+            ctrl.idle_stop_since.is_some(),
+            "guard must be armed after first Stop"
+        );
+
+        // Tick 2: Inactive + inactive → guard cleared.
+        ctrl.handle_processing_state(ProcessingState::Inactive, &inactive_snap)
+            .unwrap();
+        assert!(
+            ctrl.idle_stop_since.is_none(),
+            "guard must be cleared when CamillaDSP reaches Inactive"
+        );
+
+        // Tick 3: Running + inactive again → Stop #2 must be sent.
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+        assert!(
+            ctrl.idle_stop_since.is_some(),
+            "guard must be re-armed after second Stop"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// P2 idle guard — stop is retried after the deadline expires.
+    ///
+    /// Sequence:
+    ///   Running / inactive  →  Stop, guard = now
+    ///   Running / inactive within 2 s →  no Stop (rate-limited)
+    ///   Manually back-date guard by 3 s
+    ///   Running / inactive  →  Stop again (deadline expired)
+    #[test]
+    fn idle_stop_is_retried_if_cdsp_remains_running() {
+        let dir = test_dir("idle-retry");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop #1 (first tick)
+            // No response consumed on second tick (within deadline).
+            MockClient::ok(), // Stop #2 (after deadline)
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+        let inactive_snap = MockListener::inactive();
+
+        // Tick 1: stop is sent, guard armed.
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+        assert!(ctrl.idle_stop_since.is_some());
+
+        // Tick 2: within 2 s deadline → no second Stop.
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+        // Mock queue still has one response; no panic means no Stop was sent.
+
+        // Back-date the guard so the deadline appears expired.
+        ctrl.idle_stop_since =
+            Some(Instant::now() - Duration::from_secs(IDLE_STOP_RETRY_SECS + 1));
+
+        // Tick 3: deadline expired → Stop re-sent.
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// P2 bootstrap — when the controller starts while source is inactive but
+    /// CamillaDSP is already Running, bootstrap must immediately Stop it.
+    #[test]
+    fn bootstrap_stops_running_cdsp_when_source_is_inactive() {
+        let dir = test_dir("bootstrap-running-inactive");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::state("Running"), // GetState (bootstrap)
+            MockClient::ok(),             // Stop (idle enforcement)
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+        let inactive_snap = MockListener::inactive();
+
+        ctrl.bootstrap_initial_config(&inactive_snap).unwrap();
+
+        assert!(
+            ctrl.idle_stop_since.is_some(),
+            "idle guard must be armed after bootstrap Stop"
+        );
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "no SetConfig during bootstrap idle enforcement"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// P2 normal stop — after the ALSA device stops, the idle guard is armed so
+    /// that a racing GUI SetConfig cannot leave CamillaDSP running unimpeded
+    /// on the very next loop tick.
+    #[test]
+    fn normal_source_stop_arms_idle_stop_guard() {
+        let dir = test_dir("normal-stop-arms-guard");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        // Mock provides one Stop response for the normal device-stop path.
+        // No second Stop response is queued; if enforce_idle_invariant were to
+        // fire immediately the mock would return an error and the test panics.
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop — normal device stop
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        // Simulate the normal-stop path in run(): stop_cdsp + arm guard.
+        ctrl.stop_cdsp().unwrap();
+        ctrl.idle_stop_since = Some(Instant::now());
+        ctrl.retry.reset();
+        ctrl.pending_since = None;
+
+        assert!(
+            ctrl.idle_stop_since.is_some(),
+            "guard must be armed after normal device stop"
+        );
+
+        // A Running tick arriving within 2 s must NOT send another Stop.
+        let inactive_snap = MockListener::inactive();
+        ctrl.handle_processing_state(ProcessingState::Running, &inactive_snap)
+            .unwrap();
+        // If a second Stop had been attempted the mock queue would be empty
+        // and the test would have panicked above.
 
         fs::remove_dir_all(dir).unwrap();
     }
