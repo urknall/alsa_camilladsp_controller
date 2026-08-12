@@ -1,10 +1,20 @@
 use crate::error::{app_error, AppResult};
 use crate::wave::WaveFormat;
+use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const CAMILLA_STATE_CHANNELS: usize = 5;
+const DEFAULT_STATE_MUTE: [bool; CAMILLA_STATE_CHANNELS] = [false; CAMILLA_STATE_CHANNELS];
+const DEFAULT_STATE_VOLUME: [f64; CAMILLA_STATE_CHANNELS] = [0.0; CAMILLA_STATE_CHANNELS];
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct StateFile {
+    config_path: Option<String>,
+    mute: [bool; CAMILLA_STATE_CHANNELS],
+    volume: [f64; CAMILLA_STATE_CHANNELS],
+}
 
 // ─── YAML helpers ──────────────────────────────────────────────────────────
 
@@ -152,20 +162,24 @@ fn get_state_sequence<'a>(root: &'a YamlValue, key: &str) -> AppResult<&'a [Yaml
     Ok(seq)
 }
 
-fn validated_mute_block(root: &YamlValue) -> AppResult<YamlValue> {
+fn validated_mute_values(root: &YamlValue) -> AppResult<[bool; CAMILLA_STATE_CHANNELS]> {
     let mute = get_state_sequence(root, "mute")?
         .iter()
         .enumerate()
         .map(|(idx, value)| {
-            value.as_bool().map(YamlValue::Bool).ok_or_else(|| {
+            value.as_bool().ok_or_else(|| {
                 app_error(format!("statefile 'mute[{}]' must be a boolean", idx + 1))
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
-    Ok(YamlValue::Sequence(mute))
+    mute.try_into().map_err(|_| {
+        app_error(format!(
+            "statefile 'mute' must contain exactly {CAMILLA_STATE_CHANNELS} values"
+        ))
+    })
 }
 
-fn validated_volume_block(root: &YamlValue) -> AppResult<YamlValue> {
+fn validated_volume_values(root: &YamlValue) -> AppResult<[f64; CAMILLA_STATE_CHANNELS]> {
     let volume = get_state_sequence(root, "volume")?
         .iter()
         .enumerate()
@@ -181,18 +195,17 @@ fn validated_volume_block(root: &YamlValue) -> AppResult<YamlValue> {
                         idx + 1
                     ))
                 })?;
-            Ok(YamlValue::from(number))
+            Ok(number)
         })
         .collect::<AppResult<Vec<_>>>()?;
-    Ok(YamlValue::Sequence(volume))
+    volume.try_into().map_err(|_| {
+        app_error(format!(
+            "statefile 'volume' must contain exactly {CAMILLA_STATE_CHANNELS} values"
+        ))
+    })
 }
 
-/// Read a CamillaDSP statefile and return a normalized YAML fragment
-/// containing validated `mute` and `volume` blocks.
-///
-/// This replaces the installer's last AWK-based YAML parsing. Both arrays must
-/// exist, contain exactly five entries, and have the expected scalar types.
-pub fn get_state_fragment(path: &Path) -> AppResult<String> {
+fn parse_statefile(path: &Path) -> AppResult<StateFile> {
     let raw = fs::read_to_string(path).map_err(|err| {
         app_error(format!(
             "unable to read statefile {}: {err}",
@@ -201,10 +214,32 @@ pub fn get_state_fragment(path: &Path) -> AppResult<String> {
     })?;
     let root: YamlValue = serde_yaml_ng::from_str(&raw)
         .map_err(|err| app_error(format!("invalid YAML in {}: {err}", path.display())))?;
+    Ok(StateFile {
+        config_path: root
+            .get("config_path")
+            .and_then(YamlValue::as_str)
+            .map(str::to_owned),
+        mute: validated_mute_values(&root)?,
+        volume: validated_volume_values(&root)?,
+    })
+}
 
+/// Read a CamillaDSP statefile and return a normalized YAML fragment
+/// containing validated `mute` and `volume` blocks.
+///
+/// This replaces the installer's last AWK-based YAML parsing. Both arrays must
+/// exist, contain exactly five entries, and have the expected scalar types.
+pub fn get_state_fragment(path: &Path) -> AppResult<String> {
     let mut fragment = Mapping::new();
-    fragment.insert(yaml_key("mute"), validated_mute_block(&root)?);
-    fragment.insert(yaml_key("volume"), validated_volume_block(&root)?);
+    let state = parse_statefile(path)?;
+    fragment.insert(
+        yaml_key("mute"),
+        YamlValue::Sequence(state.mute.into_iter().map(YamlValue::Bool).collect()),
+    );
+    fragment.insert(
+        yaml_key("volume"),
+        YamlValue::Sequence(state.volume.into_iter().map(YamlValue::from).collect()),
+    );
     let yaml = serde_yaml_ng::to_string(&YamlValue::Mapping(fragment))?;
     Ok(yaml.strip_prefix("---\n").unwrap_or(&yaml).to_owned())
 }
@@ -277,6 +312,27 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
     root.insert(yaml_key("description"), YamlValue::String(description));
 
     Ok(serde_yaml_ng::to_string(&YamlValue::Mapping(root))?)
+}
+
+/// Write a CamillaDSP statefile to a YAML string.
+///
+/// The complete statefile is serialized from one Rust data structure so that
+/// `config_path`, `mute`, and `volume` cannot drift apart or be partly
+/// assembled as raw YAML text. When an existing statefile is provided, its
+/// `mute` and `volume` values must validate successfully or the caller gets an
+/// error instead of silently falling back to defaults.
+pub fn make_statefile(config_path: &str, existing_state: Option<&Path>) -> AppResult<String> {
+    let mut state = if let Some(path) = existing_state {
+        parse_statefile(path)?
+    } else {
+        StateFile {
+            config_path: None,
+            mute: DEFAULT_STATE_MUTE,
+            volume: DEFAULT_STATE_VOLUME,
+        }
+    };
+    state.config_path = Some(config_path.to_owned());
+    Ok(serde_yaml_ng::to_string(&state)?)
 }
 
 // ─── Config adaptation ─────────────────────────────────────────────────────
@@ -800,5 +856,91 @@ mod tests {
         assert!(err.contains("exactly 5 values"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_roundtrips_yaml_relevant_config_paths() {
+        let paths = [
+            "/mnt/camilladsp/My DSP #1.yml",
+            "/mnt/camilladsp/My: DSP.yml",
+            "/mnt/camilladsp/\"quoted\".yml",
+            "/mnt/camilladsp/[room].yml",
+            "/mnt/camilladsp/{room}.yml",
+            "/mnt/camilladsp/-room.yml",
+            "/mnt/camilladsp/room's dsp.yml",
+            r#"/mnt/camilladsp/back\slash.yml"#,
+        ];
+
+        for path in paths {
+            let yaml = make_statefile(path, None).unwrap();
+            let parsed: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert_eq!(parsed.config_path.as_deref(), Some(path));
+            assert_eq!(parsed.mute, DEFAULT_STATE_MUTE);
+            assert_eq!(parsed.volume, DEFAULT_STATE_VOLUME);
+        }
+    }
+
+    #[test]
+    fn make_statefile_reuses_existing_mute_and_volume() {
+        let dir = test_dir("statefile-existing");
+        let existing = dir.join("state.yml");
+        fs::write(
+            &existing,
+            "config_path: /mnt/camilladsp/Old.yml\n\
+             mute:\n\
+             - false\n\
+             - true\n\
+             - false\n\
+             - true\n\
+             - false\n\
+             volume:\n\
+             - -20.0\n\
+             - -10.0\n\
+             - 0.0\n\
+             - 1.5\n\
+             - 3.0\n",
+        )
+        .unwrap();
+
+        let yaml = make_statefile("/mnt/camilladsp/My DSP #1.yml", Some(&existing)).unwrap();
+        let parsed: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed.config_path.as_deref(),
+            Some("/mnt/camilladsp/My DSP #1.yml")
+        );
+        assert_eq!(parsed.mute, [false, true, false, true, false]);
+        assert_eq!(parsed.volume, [-20.0, -10.0, 0.0, 1.5, 3.0]);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_rejects_invalid_existing_state() {
+        let dir = test_dir("statefile-invalid-existing");
+        let existing = dir.join("state.yml");
+        fs::write(
+            &existing,
+            "mute:\n- false\n- false\nvolume:\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+
+        let err = make_statefile("/mnt/camilladsp/Bypass.yml", Some(&existing))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exactly 5 values"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_uses_defaults_without_existing_state() {
+        let yaml = make_statefile("/mnt/camilladsp/Bypass.yml", None).unwrap();
+        let parsed: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            parsed.config_path.as_deref(),
+            Some("/mnt/camilladsp/Bypass.yml")
+        );
+        assert_eq!(parsed.mute, DEFAULT_STATE_MUTE);
+        assert_eq!(parsed.volume, DEFAULT_STATE_VOLUME);
     }
 }

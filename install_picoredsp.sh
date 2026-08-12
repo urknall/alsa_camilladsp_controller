@@ -721,38 +721,27 @@ if $EXISTING_INSTALL; then
     fi
 fi
 
-_stage_state_fragment="mute:
-- false
-- false
-- false
-- false
-- false
-
-volume:
-- 0.0
-- 0.0
-- 0.0
-- 0.0
-- 0.0"
-
 if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
-    if ! _extracted_state_fragment=$(
-        "${RUST_RUNTIME_BIN}" --get-state-fragment "${STATEFILE}"
-    ); then
+    if ! "${RUST_RUNTIME_BIN}" \
+        --make-statefile \
+        --config-path "${_new_active_target}" \
+        --existing-state "${STATEFILE}" \
+        --output "${STAGE_STATEFILE}"; then
         echo "ERROR: Existing CamillaDSP statefile is invalid or cannot be parsed."
         echo "  File: ${STATEFILE}"
         echo "Refusing to silently reset saved volume/mute state to defaults."
         echo "Remove or repair the statefile before reinstalling."
         exit 1
     fi
-    _stage_state_fragment="${_extracted_state_fragment}"
+else
+    "${RUST_RUNTIME_BIN}" \
+        --make-statefile \
+        --config-path "${_new_active_target}" \
+        --output "${STAGE_STATEFILE}" || {
+        echo "ERROR: Failed to generate CamillaDSP statefile."
+        exit 1
+    }
 fi
-
-cat > "${STAGE_STATEFILE}" <<EOF
-config_path: ${_new_active_target}
-
-${_stage_state_fragment}
-EOF
 
 ln -sfn "${STAGE_BYPASS_CONFIG}" "${STAGE_ACTIVE_CONFIG_LINK}"
 printf '%s\n' "${PLAYBACK_DEVICE}" > "${STAGE_PLAYBACK_DEVICE_FILE}"

@@ -9,6 +9,7 @@ mod wave;
 
 use adapt::{
     adapt_config, get_config_path, get_playback_device, get_state_fragment, make_bypass_config,
+    make_statefile,
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Mode};
@@ -99,6 +100,19 @@ fn run_main() -> AppResult<()> {
         Mode::MakeBypass => {
             let device = args.playback_device.as_deref().expect("validated");
             let yaml = make_bypass_config(device)?;
+            if let Some(output) = args.output.as_deref() {
+                std::fs::write(output, &yaml).map_err(|err| {
+                    app_error(format!("unable to write {}: {err}", output.display()))
+                })?;
+            } else {
+                print!("{yaml}");
+            }
+            Ok(())
+        }
+
+        Mode::MakeStatefile => {
+            let config_path = args.statefile_config_path.as_deref().expect("validated");
+            let yaml = make_statefile(config_path, args.existing_state.as_deref())?;
             if let Some(output) = args.output.as_deref() {
                 std::fs::write(output, &yaml).map_err(|err| {
                     app_error(format!("unable to write {}: {err}", output.display()))

@@ -21,9 +21,13 @@ pub struct Args {
     pub mode: Mode,
     /// CamillaDSP YAML config/statefile path supplied to `--get-playback-device`/`--get-config-path`.
     pub config_path: Option<PathBuf>,
+    /// Final runtime config path string supplied to `--make-statefile --config-path`.
+    pub statefile_config_path: Option<String>,
+    /// Existing CamillaDSP statefile supplied to `--make-statefile --existing-state`.
+    pub existing_state: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
     pub playback_device: Option<String>,
-    /// Output file path for `--make-bypass` (stdout when absent).
+    /// Output file path for statefile/config writers (stdout when absent).
     pub output: Option<PathBuf>,
 }
 
@@ -48,6 +52,8 @@ pub enum Mode {
     GetStateFragment,
     /// Write a piCoreDSP bypass CamillaDSP config with the given playback device.
     MakeBypass,
+    /// Write a CamillaDSP statefile with validated mute/volume values.
+    MakeStatefile,
     /// Query `GetConfigFilePath` over WebSocket and print the result.
     WsGetConfigPath,
     /// Adapt YAML once and send it to CamillaDSP via `SetConfig`, exit.
@@ -66,6 +72,7 @@ impl Mode {
             Self::GetConfigPath => "--get-config-path",
             Self::GetStateFragment => "--get-state-fragment",
             Self::MakeBypass => "--make-bypass",
+            Self::MakeStatefile => "--make-statefile",
             Self::WsGetConfigPath => "--ws-get-config-path",
             Self::WsApply => "--ws-apply",
         }
@@ -85,6 +92,8 @@ impl Default for Args {
             log_level: LogLevel::Info,
             mode: Mode::Run,
             config_path: None,
+            statefile_config_path: None,
+            existing_state: None,
             playback_device: None,
             output: None,
         }
@@ -107,6 +116,7 @@ Usage:\n\
   picoredsp-controller --get-config-path STATEFILE\n\
   picoredsp-controller --get-state-fragment STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\
+  picoredsp-controller --make-statefile --config-path PATH [--existing-state FILE] [--output FILE]\n\
   picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\
   picoredsp-controller --ws-apply --adapt PATH [--rate R --format F --channels N] [--host HOST] [--port PORT]\n\n\
 Options:\n\
@@ -126,8 +136,11 @@ Options:\n\
       --get-config-path STATEFILE Print config_path from a CamillaDSP statefile\n\
       --get-state-fragment STATEFILE  Print validated mute/volume YAML from a CamillaDSP statefile\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
+      --make-statefile         Write a CamillaDSP statefile\n\
+      --config-path PATH       Final config_path for --make-statefile\n\
+      --existing-state FILE    Existing statefile to validate/reuse for --make-statefile\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
-      --output FILE             Output file for --make-bypass (default: stdout)\n\
+      --output FILE             Output file for --make-bypass/--make-statefile (default: stdout)\n\
       --ws-get-config-path      Query GetConfigFilePath from CamillaDSP via WebSocket\n\
       --ws-apply                Adapt YAML and send it to CamillaDSP via SetConfig, then exit\n\
   -h, --help                    Show this help\n\
@@ -233,6 +246,15 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 }
                 args.mode = Mode::MakeBypass;
             }
+            "--make-statefile" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --make-statefile",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::MakeStatefile;
+            }
             "--ws-get-config-path" => {
                 if args.mode != Mode::Run {
                     return Err(app_error(format!(
@@ -253,6 +275,12 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             }
             "--playback-device" => {
                 args.playback_device = Some(next_value("--playback-device")?);
+            }
+            "--config-path" => {
+                args.statefile_config_path = Some(next_value("--config-path")?);
+            }
+            "--existing-state" => {
+                args.existing_state = Some(PathBuf::from(next_value("--existing-state")?));
             }
             "--output" => {
                 args.output = Some(PathBuf::from(next_value("--output")?));
@@ -305,17 +333,35 @@ pub fn parse_args() -> AppResult<Option<Args>> {
     if args.mode == Mode::MakeBypass && args.playback_device.is_none() {
         return Err(app_error("--make-bypass requires --playback-device DEVICE"));
     }
+    if args.mode == Mode::MakeStatefile && args.statefile_config_path.is_none() {
+        return Err(app_error("--make-statefile requires --config-path PATH"));
+    }
     if args.playback_device.is_some() && args.mode != Mode::MakeBypass {
         return Err(app_error(
             "--playback-device is only valid with --make-bypass",
         ));
     }
-    if args.output.is_some() && args.mode != Mode::MakeBypass {
-        return Err(app_error("--output is only valid with --make-bypass"));
+    if args.statefile_config_path.is_some() && args.mode != Mode::MakeStatefile {
+        return Err(app_error(
+            "--config-path is only valid with --make-statefile",
+        ));
+    }
+    if args.existing_state.is_some() && args.mode != Mode::MakeStatefile {
+        return Err(app_error(
+            "--existing-state is only valid with --make-statefile",
+        ));
+    }
+    if args.output.is_some() && !matches!(args.mode, Mode::MakeBypass | Mode::MakeStatefile) {
+        return Err(app_error(
+            "--output is only valid with --make-bypass or --make-statefile",
+        ));
     }
     if matches!(
         args.mode,
-        Mode::GetPlaybackDevice | Mode::GetConfigPath | Mode::GetStateFragment
+        Mode::GetPlaybackDevice
+            | Mode::GetConfigPath
+            | Mode::GetStateFragment
+            | Mode::MakeStatefile
     ) {
         if args.adapt.is_some() {
             return Err(app_error(format!(
