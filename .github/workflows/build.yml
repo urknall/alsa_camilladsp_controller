@@ -261,6 +261,7 @@ jobs:
       - name: Create or update rolling installer release
         uses: softprops/action-gh-release@v3
         env:
+          NODE_OPTIONS: --use-system-ca
           NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
         with:
           tag_name: installer-latest
@@ -312,6 +313,7 @@ jobs:
       - name: Create release and attach binaries
         uses: softprops/action-gh-release@v3
         env:
+          NODE_OPTIONS: --use-system-ca
           NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
         with:
           files: |
