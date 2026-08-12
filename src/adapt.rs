@@ -43,9 +43,8 @@ pub fn make_statefile(config_path: &str, existing_state_path: Option<&Path>) -> 
                     path.display()
                 ))
             })?;
-            let sf: StateFile = serde_yaml_ng::from_str(&raw).map_err(|err| {
-                app_error(format!("invalid statefile {}: {err}", path.display()))
-            })?;
+            let sf: StateFile = serde_yaml_ng::from_str(&raw)
+                .map_err(|err| app_error(format!("invalid statefile {}: {err}", path.display())))?;
             (sf.mute, sf.volume)
         }
         None => ([false; 5], [0.0_f64; 5]),

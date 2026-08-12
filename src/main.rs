@@ -131,9 +131,8 @@ fn run_main() -> AppResult<()> {
                 .as_deref()
                 .expect("validated: --make-statefile requires --output");
             let yaml = make_statefile(config_path, args.existing_state.as_deref())?;
-            std::fs::write(output, &yaml).map_err(|err| {
-                app_error(format!("unable to write {}: {err}", output.display()))
-            })?;
+            std::fs::write(output, &yaml)
+                .map_err(|err| app_error(format!("unable to write {}: {err}", output.display())))?;
             Ok(())
         }
 
@@ -149,7 +148,12 @@ fn run_main() -> AppResult<()> {
 /// This is the programmatic equivalent of what the removed `--ws-apply` CLI
 /// mode did.  It is kept as an internal helper so other code paths can apply
 /// a config over WebSocket without going through the controller state-machine.
-pub(crate) fn ws_apply(path: &std::path::Path, wave: &WaveFormat, host: &str, port: u16) -> AppResult<()> {
+pub(crate) fn ws_apply(
+    path: &std::path::Path,
+    wave: &WaveFormat,
+    host: &str,
+    port: u16,
+) -> AppResult<()> {
     let adapted = adapt_config(path, wave)?;
     let mut client = CamillaWs::connect(host, port)?;
     // The success payload for SetConfig is always null; discarding it is safe.
