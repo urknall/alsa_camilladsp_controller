@@ -749,7 +749,7 @@ if $EXISTING_INSTALL && [ -f "${STATEFILE}" ]; then
 fi
 
 cat > "${STAGE_STATEFILE}" <<EOF
-config_path: ${_new_active_target}
+config_path: "${_new_active_target}"
 
 ${_stage_state_fragment}
 EOF
