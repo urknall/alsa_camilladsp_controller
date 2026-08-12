@@ -17,9 +17,12 @@ const CAMILLA_STATE_CHANNELS: usize = 5;
 /// manual validation loop.  `serde_yaml_ng::to_string` handles all necessary
 /// YAML quoting for `config_path`, including filenames that contain spaces,
 /// colons, brackets, or other YAML-significant characters.
+///
+/// `config_path` is `Option<String>` because CamillaDSP 4.1.3 writes `null`
+/// when it is started with `--no_config` (the controller's normal boot path).
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct StateFile {
-    pub config_path: String,
+    pub config_path: Option<String>,
     pub mute: [bool; 5],
     pub volume: [f64; 5],
 }
@@ -51,7 +54,7 @@ pub fn make_statefile(config_path: &str, existing_state_path: Option<&Path>) -> 
     };
 
     let sf = StateFile {
-        config_path: config_path.to_owned(),
+        config_path: Some(config_path.to_owned()),
         mute,
         volume,
     };
@@ -860,7 +863,7 @@ mod tests {
     fn make_statefile_first_install_produces_defaults() {
         let yaml = make_statefile("/mnt/camilladsp/Bypass.yml", None).unwrap();
         let sf: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
-        assert_eq!(sf.config_path, "/mnt/camilladsp/Bypass.yml");
+        assert_eq!(sf.config_path.as_deref(), Some("/mnt/camilladsp/Bypass.yml"));
         assert_eq!(sf.mute, [false; 5]);
         assert_eq!(sf.volume, [0.0_f64; 5]);
     }
@@ -873,7 +876,7 @@ mod tests {
         let original_volume = [-10.0_f64, -5.0, 0.0, 1.5, -20.5];
         let original_path = "/mnt/camilladsp/My DSP.yml";
         let existing = StateFile {
-            config_path: original_path.to_owned(),
+            config_path: Some(original_path.to_owned()),
             mute: original_mute,
             volume: original_volume,
         };
@@ -883,7 +886,7 @@ mod tests {
         let yaml = make_statefile(new_config_path, Some(&old_sf)).unwrap();
         let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
 
-        assert_eq!(loaded.config_path, new_config_path);
+        assert_eq!(loaded.config_path.as_deref(), Some(new_config_path));
         assert_eq!(loaded.mute, original_mute);
         assert_eq!(loaded.volume, original_volume);
 
@@ -898,7 +901,7 @@ mod tests {
         let original_mute = [false, true, false, false, true];
         let original_volume = [0.0_f64, -3.0, -6.0, -9.0, -12.0];
         let existing = StateFile {
-            config_path: original_path.to_owned(),
+            config_path: Some(original_path.to_owned()),
             mute: original_mute,
             volume: original_volume,
         };
@@ -907,10 +910,32 @@ mod tests {
         let yaml = make_statefile(original_path, Some(&old_sf)).unwrap();
         let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
 
-        assert_eq!(loaded.config_path, original_path);
+        assert_eq!(loaded.config_path.as_deref(), Some(original_path));
         assert_eq!(loaded.mute, original_mute);
         assert_eq!(loaded.volume, original_volume);
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn make_statefile_existing_state_null_config_path_is_accepted() {
+        // CamillaDSP writes config_path: null after --no_config boot.
+        // make_statefile must parse such a statefile without error.
+        let dir = test_dir("make-state-null-config");
+        let sf = dir.join("state.yml");
+        fs::write(
+            &sf,
+            "config_path: null\n\
+             mute:\n- false\n- false\n- false\n- false\n- false\n\
+             volume:\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n- 0.0\n",
+        )
+        .unwrap();
+        let new_path = "/mnt/camilladsp/Bypass.yml";
+        let yaml = make_statefile(new_path, Some(&sf)).unwrap();
+        let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(loaded.config_path.as_deref(), Some(new_path));
+        assert_eq!(loaded.mute, [false; 5]);
+        assert_eq!(loaded.volume, [0.0_f64; 5]);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -988,7 +1013,8 @@ mod tests {
             let yaml = make_statefile(&path, None).unwrap();
             let loaded: StateFile = serde_yaml_ng::from_str(&yaml).unwrap();
             assert_eq!(
-                loaded.config_path, path,
+                loaded.config_path.as_deref(),
+                Some(path.as_str()),
                 "round-trip failed for config_path: {path}"
             );
         }
