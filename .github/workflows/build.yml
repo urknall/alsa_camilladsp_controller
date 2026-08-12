@@ -262,7 +262,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         env:
           NODE_OPTIONS: --use-system-ca
-          NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
         with:
           tag_name: installer-latest
           target_commitish: ${{ github.sha }}
@@ -314,7 +313,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         env:
           NODE_OPTIONS: --use-system-ca
-          NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
         with:
           files: |
             picoredsp-controller-aarch64
