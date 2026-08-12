@@ -172,7 +172,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
     /// CamillaDSP, without relying on any cached state (fix for issue 1).
     ///
     /// If the retry backoff is active, the call is a no-op and returns `Ok`.
-    fn start_cdsp(&mut self) -> AppResult<()> {
+    fn start_cdsp_with_wave(&mut self, wave: &WaveFormat) -> AppResult<()> {
         if !self.retry.should_attempt() {
             log(
                 LogLevel::Debug,
@@ -183,7 +183,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
         }
 
         // Re-read and adapt the current active config file.
-        let config = match adapt_config(&self.adapt_path, &self.current_wave) {
+        let config = match adapt_config(&self.adapt_path, wave) {
             Ok(c) => c,
             Err(err) => {
                 log(
@@ -264,6 +264,24 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
             }
             Err(err) => Err(Box::new(err)),
         }
+    }
+
+    fn start_cdsp(&mut self) -> AppResult<()> {
+        let wave = self.current_wave.clone();
+        self.start_cdsp_with_wave(&wave)
+    }
+
+    /// Start CamillaDSP without injecting rate/format/channel values.
+    ///
+    /// This passes a `WaveFormat` with all fields set to `None` so
+    /// `adapt_config` preserves those fields from the stored config.
+    fn start_cdsp_unadapted(&mut self) -> AppResult<()> {
+        let no_adapt_wave = WaveFormat {
+            sample_rate: None,
+            sample_format: None,
+            channels: None,
+        };
+        self.start_cdsp_with_wave(&no_adapt_wave)
     }
 
     fn handle_started(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
@@ -477,6 +495,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                             self.current_wave
                         ),
                     );
+                    self.start_cdsp()?;
                 } else {
                     log(
                         LogLevel::Info,
@@ -486,11 +505,8 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                             snapshot.wave
                         ),
                     );
-                    // Empty wave suppresses rate/format/channel adaptation so
-                    // bootstrap applies the stored config as-is.
-                    self.current_wave = WaveFormat::default();
+                    self.start_cdsp_unadapted()?;
                 }
-                self.start_cdsp()?;
             }
             ProcessingState::Running | ProcessingState::Paused | ProcessingState::Stalled => {
                 log(
@@ -1202,6 +1218,14 @@ mod tests {
         assert!(
             ctrl.client.sent_configs[0].contains("samplerate: 44100"),
             "inactive bootstrap must not adapt samplerate from stale ALSA values"
+        );
+        assert!(
+            !ctrl.client.sent_configs[0].contains("S24_3LE"),
+            "inactive bootstrap must not adapt capture format from stale ALSA values"
+        );
+        assert!(
+            !ctrl.client.sent_configs[0].contains("channels: 6"),
+            "inactive bootstrap must not adapt channels from stale ALSA values"
         );
 
         fs::remove_dir_all(dir).unwrap();
