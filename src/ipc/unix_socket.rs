@@ -1,13 +1,15 @@
 //! AF_UNIX socket listener for the piCoreDSP IPC channel.
 //!
-//! This implements the controller-side transport for Gate 6:
+//! This implements the controller-side transport for Gates 6 and 8:
 //! - local AF_UNIX stream socket endpoint
 //! - HELLO version negotiation
 //! - bounded frame decode with timeout + disconnect handling
 //! - READY / ERROR replies
+//! - READY with pipe write-end delivered via SCM_RIGHTS (Gate 8)
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::io::RawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -168,6 +170,38 @@ impl IpcConnection {
         self.send_message(&PluginMessage::Ready { version })
     }
 
+    /// Send READY and deliver `pipe_write_fd` to the plugin via `SCM_RIGHTS`.
+    ///
+    /// The plugin receives the fd as the write end of the stdin pipe.  It will
+    /// write raw PCM directly into this fd; the fd is passed as ancillary data
+    /// attached to a 1-byte dummy payload on the same `sendmsg` call that
+    /// follows the plain 2-byte READY frame.
+    ///
+    /// Wire sequence:
+    /// 1. Send 2-byte READY frame (`[0x04, version]`) via `write_all`.
+    /// 2. Send a 1-byte dummy payload with the fd as `SCM_RIGHTS` ancillary
+    ///    data via `sendmsg`.
+    ///
+    /// The C plugin's `pcdsp_ipc_recv_ready(conn, &pipe_fd, &err)` handles
+    /// both steps on the receive side.
+    pub fn send_ready_with_pipe_fd(&mut self, pipe_write_fd: RawFd) -> Result<(), ProtocolError> {
+        use std::os::unix::io::AsRawFd;
+
+        let version = self
+            .negotiated_version
+            .ok_or(ProtocolError::HandshakeNotComplete)?;
+
+        // Step 1: send the plain READY frame.
+        self.send_message(&PluginMessage::Ready { version })?;
+
+        // Step 2: send the pipe fd via SCM_RIGHTS as a follow-up sendmsg.
+        self.stream
+            .set_write_timeout(Some(self.config.io_timeout))
+            .map_err(ProtocolError::from)?;
+
+        send_fd_via_scm_rights(self.stream.as_raw_fd(), pipe_write_fd).map_err(ProtocolError::from)
+    }
+
     pub fn send_error(&mut self, code: ErrorCode) -> Result<(), ProtocolError> {
         let version = self
             .negotiated_version
@@ -187,6 +221,66 @@ impl IpcConnection {
             .set_write_timeout(Some(self.config.io_timeout))
             .map_err(ProtocolError::from)?;
         self.stream.write_all(&encoded).map_err(ProtocolError::from)
+    }
+}
+
+/// Send `fd` to the peer over `socket_fd` using `SCM_RIGHTS` ancillary data.
+///
+/// A 1-byte dummy payload is required by the kernel — ancillary-only messages
+/// are silently dropped on some kernels.  The C plugin's `recvmsg` path
+/// expects exactly this layout.
+///
+/// # Safety
+/// `socket_fd` must be an open, connected `AF_UNIX` socket.  `fd` must be an
+/// open file descriptor owned by the calling process.
+fn send_fd_via_scm_rights(socket_fd: RawFd, fd: RawFd) -> io::Result<()> {
+    // Build the control-message buffer: CMSG_SPACE(sizeof(int)) bytes.
+    let cmsg_space =
+        unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as usize;
+    let mut cmsg_buf: Vec<u8> = vec![0u8; cmsg_space];
+
+    let dummy: u8 = 0;
+    let mut iov = libc::iovec {
+        iov_base: &dummy as *const u8 as *mut libc::c_void,
+        iov_len: 1,
+    };
+
+    let mut mh = libc::msghdr {
+        msg_name: std::ptr::null_mut(),
+        msg_namelen: 0,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: cmsg_buf.as_mut_ptr() as *mut libc::c_void,
+        msg_controllen: cmsg_buf.len() as _,
+        msg_flags: 0,
+    };
+
+    // SAFETY: cmsg_buf is properly sized and aligned for a cmsghdr.
+    let cm = unsafe { libc::CMSG_FIRSTHDR(&mh) };
+    if cm.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "CMSG_FIRSTHDR returned null",
+        ));
+    }
+    unsafe {
+        (*cm).cmsg_level = libc::SOL_SOCKET;
+        (*cm).cmsg_type = libc::SCM_RIGHTS;
+        (*cm).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
+        let data_ptr = libc::CMSG_DATA(cm) as *mut libc::c_int;
+        data_ptr.write_unaligned(fd);
+    }
+
+    loop {
+        // SAFETY: mh, iov, and cmsg_buf are valid for the duration of sendmsg.
+        let n = unsafe { libc::sendmsg(socket_fd, &mh, libc::MSG_NOSIGNAL) };
+        if n >= 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
     }
 }
 
@@ -360,5 +454,132 @@ mod tests {
         let err = conn.recv_plugin_message().unwrap_err();
         assert!(matches!(err, ProtocolError::UnknownMessageType(0x7f)));
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn send_ready_with_pipe_fd_delivers_fd_via_scm_rights() {
+        use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+
+        let path = test_socket_path("scm-rights");
+        let server = IpcServer::bind(&path, IpcServerConfig::default()).unwrap();
+
+        // Create a pipe; the write-end will be passed via SCM_RIGHTS.
+        let mut pipe_fds = [0i32; 2];
+        assert_eq!(
+            unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        let pipe_read = unsafe { OwnedFd::from_raw_fd(pipe_fds[0]) };
+        let pipe_write_fd = pipe_fds[1]; // passed via SCM_RIGHTS; kept as raw
+
+        let client_path = path.clone();
+        let handle = thread::spawn(move || {
+            let mut client = UnixStream::connect(client_path).unwrap();
+
+            // HELLO handshake.
+            client
+                .write_all(&PluginMessage::Hello { version: 1 }.encode())
+                .unwrap();
+            let mut hello_reply = [0u8; 2];
+            client.read_exact(&mut hello_reply).unwrap();
+
+            // Send START.
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+
+            // Receive plain READY frame (2 bytes).
+            let mut ready_frame = [0u8; 2];
+            client.read_exact(&mut ready_frame).unwrap();
+            assert_eq!(ready_frame[0], 0x04); // READY type tag
+
+            // Receive the SCM_RIGHTS follow-up via recvmsg.
+            let cmsg_space =
+                unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as usize;
+            let mut cmsg_buf = vec![0u8; cmsg_space];
+            let mut dummy_byte = 0u8;
+            let mut iov = libc::iovec {
+                iov_base: &mut dummy_byte as *mut u8 as *mut libc::c_void,
+                iov_len: 1,
+            };
+            let mut mh = libc::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: &mut iov,
+                msg_iovlen: 1,
+                msg_control: cmsg_buf.as_mut_ptr() as *mut libc::c_void,
+                msg_controllen: cmsg_buf.len() as _,
+                msg_flags: 0,
+            };
+            let n = unsafe { libc::recvmsg(client.as_raw_fd(), &mut mh, 0) };
+            assert!(
+                n >= 0,
+                "recvmsg failed: {}",
+                std::io::Error::last_os_error()
+            );
+
+            let mut received_fd: libc::c_int = -1;
+            let cm = unsafe { libc::CMSG_FIRSTHDR(&mh) };
+            if !cm.is_null() {
+                unsafe {
+                    if (*cm).cmsg_level == libc::SOL_SOCKET && (*cm).cmsg_type == libc::SCM_RIGHTS {
+                        std::ptr::copy_nonoverlapping(
+                            libc::CMSG_DATA(cm),
+                            &mut received_fd as *mut libc::c_int as *mut u8,
+                            std::mem::size_of::<libc::c_int>(),
+                        );
+                    }
+                }
+            }
+            assert!(
+                received_fd >= 0,
+                "did not receive a valid fd via SCM_RIGHTS"
+            );
+
+            // Write through the received fd and verify it appears on our pipe_read.
+            let payload = b"gate8";
+            let written = unsafe {
+                libc::write(
+                    received_fd,
+                    payload.as_ptr() as *const libc::c_void,
+                    payload.len(),
+                )
+            };
+            assert_eq!(written as usize, payload.len());
+            unsafe { libc::close(received_fd) };
+
+            received_fd
+        });
+
+        let mut conn = server.accept().unwrap();
+        conn.perform_hello_handshake().unwrap();
+        let _ = conn.recv_plugin_message().unwrap(); // START
+
+        conn.send_ready_with_pipe_fd(pipe_write_fd).unwrap();
+        // Close the server-side copy of pipe_write_fd.
+        unsafe { libc::close(pipe_write_fd) };
+
+        let received_fd = handle.join().unwrap();
+        assert!(received_fd >= 0);
+
+        // Verify data flows through the pipe.
+        let mut buf = [0u8; 5];
+        let n = unsafe {
+            libc::read(
+                pipe_read.as_raw_fd(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                5,
+            )
+        };
+        assert_eq!(n, 5);
+        assert_eq!(&buf, b"gate8");
     }
 }

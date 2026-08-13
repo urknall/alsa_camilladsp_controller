@@ -23,6 +23,8 @@ pub struct Args {
     pub backend: Backend,
     /// AF_UNIX socket path for the ioplug IPC channel.
     pub socket_path: Option<PathBuf>,
+    /// Path to the `camilladsp` binary (required with `--backend ioplug`).
+    pub camilladsp_binary: Option<PathBuf>,
     /// CamillaDSP YAML config/statefile path supplied to `--get-playback-device`/`--get-config-path`.
     pub config_path: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
@@ -108,6 +110,7 @@ impl Default for Args {
             existing_state: None,
             backend: Backend::Aloop,
             socket_path: None,
+            camilladsp_binary: None,
         }
     }
 }
@@ -156,7 +159,8 @@ Options:\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version\n\
       --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
-      --socket-path PATH        AF_UNIX socket path for ioplug IPC (required with --backend ioplug)"
+      --socket-path PATH        AF_UNIX socket path for ioplug IPC (required with --backend ioplug)\n\
+      --camilladsp PATH         Path to camilladsp binary (required with --backend ioplug)"
     );
 }
 
@@ -336,6 +340,9 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             }
             "--socket-path" => {
                 args.socket_path = Some(PathBuf::from(next_value("--socket-path")?));
+            }
+            "--camilladsp" => {
+                args.camilladsp_binary = Some(PathBuf::from(next_value("--camilladsp")?));
             }
             other => return Err(app_error(format!("unknown argument: {other}"))),
         }

@@ -180,6 +180,7 @@ name = "picoredsp-controller"
 version = "0.2.0"
 dependencies = [
  "alsa",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml_ng",

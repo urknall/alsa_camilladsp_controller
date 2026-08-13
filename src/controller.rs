@@ -2,6 +2,7 @@ use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
 use crate::backend::ioplug::IoplugBackend;
 use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
+use crate::camilladsp::supervisor::StdinSupervisor;
 use crate::camilladsp::websocket::CamillaWs;
 use crate::core::adaptation::adapt_config_for_backend;
 use crate::core::adaptation::RuntimeBackend;
@@ -44,12 +45,15 @@ pub fn new_aloop_controller(args: &Args) -> AppResult<(AloopController, DeviceSn
     ))
 }
 
-/// Run the ioplug controller loop (Gate 7).
+/// Run the ioplug controller loop (Gate 8).
 ///
-/// Accepts plugin connections in a loop, performs the START/READY handshake,
-/// adapts the CamillaDSP config for the negotiated stream parameters, and
-/// sends READY to the plugin.  CamillaDSP process management is added in
-/// Gate 8 / Gate 9.
+/// For each stream:
+/// 1. Wait for the plugin to connect and send START.
+/// 2. Adapt the CamillaDSP config for the negotiated stream parameters.
+/// 3. Spawn CamillaDSP with the pipe read-end as stdin.
+/// 4. Send READY to the plugin, delivering the pipe write-end via SCM_RIGHTS.
+/// 5. Monitor the stream; wait for STOP or plugin disconnect.
+/// 6. Close our copy of the pipe write-end → CamillaDSP sees EOF → exits.
 pub fn run_ioplug(args: &Args) -> AppResult<()> {
     let socket_path = args
         .socket_path
@@ -59,16 +63,22 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         .adapt
         .clone()
         .ok_or_else(|| app_error("--adapt is required in controller mode"))?;
+    let camilladsp_binary = args
+        .camilladsp_binary
+        .clone()
+        .ok_or_else(|| app_error("--camilladsp is required for --backend ioplug"))?;
     let log_level = args.log_level;
 
     let mut backend = IoplugBackend::new(&socket_path, log_level)?;
+    let mut supervisor = StdinSupervisor::new(&camilladsp_binary, &adapt_path, log_level);
 
     log(
         LogLevel::Info,
         log_level,
         format!(
-            "ioplug controller started; socket={}",
-            socket_path.display()
+            "ioplug controller started; socket={} camilladsp={}",
+            socket_path.display(),
+            camilladsp_binary.display(),
         ),
     );
 
@@ -101,23 +111,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
 
         // ── Adapt the baseline config ──────────────────────────────────
         match adapt_config_for_backend(&adapt_path, &wave, RuntimeBackend::Ioplug) {
-            Ok(_adapted) => {
-                // Config validated.  Send READY.
-                // Gate 8 will spawn CamillaDSP here with stdin pipe.
-                if let Err(err) = backend.send_ready_to_plugin() {
-                    log(
-                        LogLevel::Error,
-                        log_level,
-                        format!("ioplug: failed to send READY: {err}"),
-                    );
-                    continue;
-                }
-                log(
-                    LogLevel::Info,
-                    log_level,
-                    "ioplug: stream active — waiting for STOP",
-                );
-            }
+            Ok(_adapted) => {}
             Err(err) => {
                 log(
                     LogLevel::Error,
@@ -129,14 +123,63 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             }
         }
 
-        // ── Wait for STOP ──────────────────────────────────────────────
+        // ── Spawn CamillaDSP with the pipe as stdin ────────────────────
+        let pipe_write_fd = match supervisor.start_stream() {
+            Ok(fd) => fd,
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    log_level,
+                    format!("ioplug: failed to spawn CamillaDSP: {err}"),
+                );
+                backend.send_error_to_plugin(ErrorCode::Internal);
+                continue;
+            }
+        };
+
+        // ── Send READY + pipe write-end to the plugin ─────────────────
+        if let Err(err) = backend.send_ready_with_fd_to_plugin(pipe_write_fd) {
+            log(
+                LogLevel::Error,
+                log_level,
+                format!("ioplug: failed to send READY+fd: {err}"),
+            );
+            supervisor.stop_stream();
+            continue;
+        }
+
+        log(
+            LogLevel::Info,
+            log_level,
+            "ioplug: stream active — waiting for STOP",
+        );
+
+        // ── Monitor stream health and wait for STOP ────────────────────
         loop {
             use crate::backend::ControllerBackend;
+
+            // Check if CamillaDSP died unexpectedly.
+            if !supervisor.is_running() {
+                log(
+                    LogLevel::Error,
+                    log_level,
+                    "ioplug: CamillaDSP exited unexpectedly",
+                );
+                // Drop back to Idle; the plugin will get a write error on its
+                // pipe fd and should report EPIPE to the ALSA layer.
+                break;
+            }
+
             match backend.poll_event(200)? {
                 Some(crate::backend::StreamEvent::Stopped) => break,
                 _ => continue,
             }
         }
+
         log(LogLevel::Info, log_level, "ioplug: stream stopped");
+
+        // ── Shut down CamillaDSP ───────────────────────────────────────
+        // Closing our write-end sends EOF once the plugin also closes its copy.
+        supervisor.stop_stream();
     }
 }

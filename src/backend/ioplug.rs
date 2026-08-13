@@ -7,6 +7,7 @@ use crate::core::errors::{app_error, AppResult};
 use crate::core::logging::{log, LogLevel};
 use crate::ipc::protocol::{ErrorCode, PluginMessage, ProtocolError};
 use crate::ipc::unix_socket::{IpcConnection, IpcServer, IpcServerConfig};
+use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -84,6 +85,36 @@ impl IoplugBackend {
                 self.state = other;
                 Err(app_error(
                     "send_ready_to_plugin called but backend is not in AwaitingAck state",
+                ))
+            }
+        }
+    }
+
+    /// Send READY to the plugin and deliver `pipe_write_fd` via SCM_RIGHTS.
+    ///
+    /// This is the Gate 8 variant of `send_ready_to_plugin`: the plugin will
+    /// receive the pipe write-end and write raw PCM into it directly, without
+    /// Rust being in the data path.
+    ///
+    /// Transitions the backend from `AwaitingAck` → `Active`.
+    pub fn send_ready_with_fd_to_plugin(&mut self, pipe_write_fd: RawFd) -> AppResult<()> {
+        let prev = std::mem::replace(&mut self.state, IoplugState::Idle);
+        match prev {
+            IoplugState::AwaitingAck { mut conn, snapshot } => {
+                conn.send_ready_with_pipe_fd(pipe_write_fd)
+                    .map_err(|e| app_error(format!("IPC send READY+fd: {e}")))?;
+                log(
+                    LogLevel::Info,
+                    self.log_level,
+                    format!("ioplug: sent READY with pipe_fd={pipe_write_fd} to plugin"),
+                );
+                self.state = IoplugState::Active { conn, snapshot };
+                Ok(())
+            }
+            other => {
+                self.state = other;
+                Err(app_error(
+                    "send_ready_with_fd_to_plugin called but backend is not in AwaitingAck state",
                 ))
             }
         }

@@ -1,31 +1,37 @@
 /*
- * picoredsp-ioplug — ALSA ioplug PCM plugin (Gate 7 START/READY handshake)
+ * picoredsp-ioplug — ALSA ioplug PCM plugin (Gate 8 stdin pipe transport)
  *
  * Architecture overview
  * ---------------------
- * This file implements the ALSA ioplug callback table.  Up to Gate 6 the
- * plugin acted as a null sink: it accepted PCM from the application, wrote
- * it into an internal ring buffer, and a background worker thread drained
- * the ring buffer at the nominal sample rate (discarding the data).
+ * This file implements the ALSA ioplug callback table.
  *
- * Gate 7 adds the START / READY handshake:
- *
+ * Gate 7 added the START / READY handshake:
  *   ✓ hw_params connects to the Rust controller socket
  *   ✓ plugin sends HELLO (version negotiation)
  *   ✓ plugin sends START(rate, format, channels)
  *   ✓ plugin waits for READY (or ERROR) before allowing PCM transfer
  *   ✓ stop sends STOP to the controller
  *
- * Invariant (Gate 7): no PCM is released to the null-sink worker until
- * the controller has acknowledged the matching configuration via READY.
- * The worker itself is the null-sink drain; Gate 8 will replace it with
- * a pipe write-end that feeds CamillaDSP stdin directly.
+ * Gate 8 adds the stdin pipe transport:
+ *   ✓ Rust controller creates a pipe, spawns CamillaDSP with read-end as stdin
+ *   ✓ Rust sends READY with the pipe write-end via SCM_RIGHTS
+ *   ✓ plugin receives the write-end fd in pcdsp_ipc_recv_ready()
+ *   ✓ worker thread drains the ring buffer by writing to the pipe fd
+ *   ✓ on STOP / disconnect the plugin closes the fd, Rust also closes its copy
+ *   ✓ CamillaDSP sees EOF on stdin and shuts down
+ *
+ * Data path (Gate 8):
+ *   Application → ALSA mmap area → pcdsp_transfer() → ring buffer
+ *   worker thread → reads ring buffer → writes to pipe_fd
+ *   pipe_fd → kernel pipe → CamillaDSP stdin → DSP → DAC
+ *
+ * Rust is never in the PCM data path.
  *
  * Thread safety
  * -------------
  * ALSA calls start/stop/transfer/pointer/pause inside its own mutex.
  * The worker thread must not call back into the ioplug API; it only
- * reads from the ring buffer and updates its own drain position.
+ * reads from the ring buffer and writes to the pipe fd.
  *
  * Eventfd-based poll
  * ------------------
@@ -107,6 +113,9 @@ typedef struct pcdsp_pcm {
 
     /* IPC connection to the Rust controller */
     pcdsp_ipc_conn_t    conn;
+    /* Write end of the stdin pipe received from the Rust controller via
+     * SCM_RIGHTS in the READY message.  -1 when no pipe is active. */
+    int                 pipe_fd;
     /* AF_UNIX socket path (from ALSA config or default) */
     char                socket_path[108]; /* UNIX_PATH_MAX */
 } pcdsp_pcm_t;
@@ -114,12 +123,24 @@ typedef struct pcdsp_pcm {
 #define io_to_pcdsp(io_ptr) ((pcdsp_pcm_t *)(io_ptr))
 
 /* -----------------------------------------------------------------------
- * Worker thread — null-sink drain
+ * Worker thread — pipe writer (Gate 8) with null-sink fallback
  *
- * Paces at the nominal sample rate using nanosleep.  Each time it drains
- * one period worth of frames it posts to the eventfd so the application's
- * poll() returns writable.
+ * When `pipe_fd >= 0` (Gate 8): reads one period's worth of frames from the
+ * ring buffer and writes them directly into the CamillaDSP stdin pipe.
+ * No rate-pacing sleep is needed — the pipe's blocking semantics naturally
+ * pace consumption to CamillaDSP's read rate.
+ *
+ * When `pipe_fd < 0` (fallback): discards frames at the nominal sample rate
+ * using nanosleep (original null-sink behaviour, preserved for unit tests and
+ * the case where no controller is connected).
+ *
+ * After each period the eventfd is signalled so the application's poll()
+ * returns writable.
  * ---------------------------------------------------------------------- */
+
+/* Chunk size for the ring-buffer → pipe copy loop.
+ * 128 frames × 16 bytes/frame (max: 8ch × S32) = 2 KB stack buffer. */
+#define PIPE_CHUNK_FRAMES 128u
 
 static void *worker_thread(void *arg)
 {
@@ -144,30 +165,70 @@ static void *worker_thread(void *arg)
             continue;
         }
 
-        /* Drain one period from the ring buffer (discard in null-sink). */
-        size_t drained = pcdsp_rb_drop(&pcdsp->rb, pcdsp->period_size);
-        if (drained == 0)
-            continue;
+        int pipe_fd = pcdsp->pipe_fd;
+        if (pipe_fd >= 0) {
+            /*
+             * Gate 8: drain one period from the ring buffer and write it
+             * directly into the CamillaDSP stdin pipe.
+             *
+             * We use a small stack buffer and loop so that we never need
+             * to heap-allocate here.
+             */
+            uint8_t tmp[PIPE_CHUNK_FRAMES * 16]; /* 16 = max frame_bytes (8ch × S32) */
 
-        /* Advance hw_ptr. */
-        atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)drained,
-                                  memory_order_release);
+            size_t frames_left = pcdsp->period_size;
+            while (frames_left > 0) {
+                size_t chunk = frames_left < PIPE_CHUNK_FRAMES
+                               ? frames_left : PIPE_CHUNK_FRAMES;
+                size_t got = pcdsp_rb_read(&pcdsp->rb, tmp, chunk);
+                if (got == 0)
+                    break;
+
+                size_t  byte_count = got * pcdsp->frame_bytes;
+                ssize_t written    = 0;
+                while ((size_t)written < byte_count) {
+                    ssize_t n = write(pipe_fd,
+                                      tmp + written,
+                                      byte_count - (size_t)written);
+                    if (n < 0) {
+                        if (errno == EINTR)
+                            continue;
+                        /* EPIPE / other error: CamillaDSP has gone.
+                         * Stop the worker so pcdsp_pointer() reports XRUN. */
+                        atomic_store_explicit(&pcdsp->worker_running,
+                                             false, memory_order_release);
+                        goto done;
+                    }
+                    written += n;
+                }
+
+                atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)got,
+                                          memory_order_release);
+                frames_left -= got;
+            }
+        } else {
+            /* Fallback (no pipe): null-sink drain with nominal-rate pacing. */
+            size_t drained = pcdsp_rb_drop(&pcdsp->rb, pcdsp->period_size);
+            if (drained == 0)
+                continue;
+            atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)drained,
+                                      memory_order_release);
+
+            /* Pace to the nominal rate. */
+            unsigned long rate2     = pcdsp->io.rate;
+            unsigned long period_ns = rate2 ? 1000000000UL * (unsigned long)pcdsp->period_size / rate2 : 0UL;
+            struct timespec ts = { .tv_sec  = (time_t)(period_ns / 1000000000UL),
+                                   .tv_nsec = (long)(period_ns % 1000000000UL) };
+            nanosleep(&ts, NULL);
+        }
 
         /* Signal poll fd — one period of space is newly available. */
         uint64_t val = 1;
         if (write(pcdsp->event_fd, &val, sizeof(val)) < 0 && errno != EAGAIN) {
             /* Non-fatal; the application will catch up via pointer(). */
         }
-
-        /* Pace to the nominal rate.
-         * Multiply before dividing to avoid integer truncation. */
-        unsigned long rate2     = pcdsp->io.rate;
-        unsigned long period_ns = rate2 ? 1000000000UL * (unsigned long)pcdsp->period_size / rate2 : 0UL;
-        struct timespec ts = { .tv_sec  = (time_t)(period_ns / 1000000000UL),
-                               .tv_nsec = (long)(period_ns % 1000000000UL) };
-        nanosleep(&ts, NULL);
     }
-
+done:
     return NULL;
 }
 
@@ -201,6 +262,13 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
     /* Gate 7: notify the controller that the stream is ending. */
     if (pcdsp->conn.fd >= 0)
         pcdsp_ipc_send_stop(&pcdsp->conn);
+
+    /* Gate 8: close the pipe write-end so CamillaDSP sees EOF once Rust
+     * also closes its copy. */
+    if (pcdsp->pipe_fd >= 0) {
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+    }
 
     /* Only join if the worker was actually started. */
     bool was_running = atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire);
@@ -305,6 +373,12 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
      */
     pcdsp_ipc_close(&pcdsp->conn);
 
+    /* Close any pipe fd from a previous stream before starting a new one. */
+    if (pcdsp->pipe_fd >= 0) {
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+    }
+
     int ipc_rc = pcdsp_ipc_connect(
         &pcdsp->conn,
         pcdsp->socket_path[0] ? pcdsp->socket_path : NULL);
@@ -326,9 +400,9 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
     }
 
     pcdsp_error_code_t err_code = PCDSP_ERR_OK;
-    /* Gate 7: pass NULL for pipe_fd — no SCM_RIGHTS follow-up expected.
-     * Gate 8 will pass &pcdsp->pipe_fd to receive the stdin pipe write-end. */
-    ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, NULL, &err_code);
+    /* Gate 8: pass &pcdsp->pipe_fd to receive the pipe write-end via
+     * SCM_RIGHTS.  The controller sends it alongside the READY message. */
+    ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, &pcdsp->pipe_fd, &err_code);
     if (ipc_rc < 0) {
         if (ipc_rc == -EPROTO)
             SNDERR("picoredsp: controller rejected stream (error code %d)", (int)err_code);
@@ -405,6 +479,12 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
     pcdsp_rb_free(&pcdsp->rb);
     pcdsp_ipc_close(&pcdsp->conn);
 
+    /* Gate 8: close the pipe write-end if still open. */
+    if (pcdsp->pipe_fd >= 0) {
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+    }
+
     if (pcdsp->event_fd >= 0) {
         close(pcdsp->event_fd);
         pcdsp->event_fd = -1;
@@ -462,7 +542,7 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 static void pcdsp_dump(snd_pcm_ioplug_t *io, snd_output_t *out)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
-    snd_output_printf(out, "piCoreDSP ioplug (Gate 7 START/READY handshake)\n");
+    snd_output_printf(out, "piCoreDSP ioplug (Gate 8 stdin pipe transport)\n");
     snd_output_printf(out, "  rate: %u Hz, channels: %u, format: %s\n",
                       io->rate, io->channels,
                       snd_pcm_format_name(io->format));
@@ -523,6 +603,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
 
     pcdsp->conn.fd                 = -1;
     pcdsp->conn.negotiated_version = 0;
+    pcdsp->pipe_fd                 = -1;
 
     atomic_init(&pcdsp->worker_running, false);
     atomic_init(&pcdsp->paused,         false);
