@@ -66,6 +66,27 @@ impl IpcServer {
         Ok(IpcConnection::new(stream, self.config.clone()))
     }
 
+    /// Try to accept a connection without blocking.  Returns `Ok(Some(_))` when a
+    /// client is waiting, `Ok(None)` when none is available.
+    pub fn try_accept(&self) -> AppResult<Option<IpcConnection>> {
+        self.listener
+            .set_nonblocking(true)
+            .map_err(|err| app_error(format!("IPC set_nonblocking failed: {err}")))?;
+        let result = loop {
+            match self.listener.accept() {
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                other => break other,
+            }
+        };
+        // Restore blocking mode regardless of outcome.
+        let _ = self.listener.set_nonblocking(false);
+        match result {
+            Ok((stream, _)) => Ok(Some(IpcConnection::new(stream, self.config.clone()))),
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(err) => Err(app_error(format!("IPC accept failed: {err}"))),
+        }
+    }
+
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -271,6 +292,10 @@ mod tests {
         .unwrap();
 
         let client_path = path.clone();
+        // Use a channel so the client keeps the socket open until we have
+        // confirmed the timeout result, avoiding a race between the client
+        // exiting (which would give Disconnected) and the timeout firing.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let handle = thread::spawn(move || {
             let mut client = UnixStream::connect(client_path).unwrap();
             client
@@ -278,13 +303,17 @@ mod tests {
                 .unwrap();
             let mut hello_reply = [0u8; 2];
             client.read_exact(&mut hello_reply).unwrap();
+            // Keep the connection alive until the server test is finished.
+            done_rx.recv().ok();
         });
 
         let mut conn = server.accept().unwrap();
         conn.perform_hello_handshake().unwrap();
         let err = conn.recv_plugin_message().unwrap_err();
-        assert!(matches!(err, ProtocolError::Timeout));
+        // Signal client to exit before asserting so the handle can be joined.
+        done_tx.send(()).ok();
         handle.join().unwrap();
+        assert!(matches!(err, ProtocolError::Timeout));
     }
 
     #[test]

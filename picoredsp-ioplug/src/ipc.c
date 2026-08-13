@@ -207,14 +207,24 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     if (type_byte != PCDSP_MSG_READY)
         return -EPROTO;
 
-    /* READY: one version byte in the fixed part, then fd via SCM_RIGHTS.
-     * We peek one byte for version already consumed — read remaining byte. */
+    /* Read the version byte that follows the type byte. */
     uint8_t ver_byte;
     rc = recv_all(conn->fd, &ver_byte, 1, PCDSP_IPC_IO_TIMEOUT_MS);
     if (rc < 0)
         return rc;
 
-    /* Now receive the ancillary fd attached to an empty follow-up message. */
+    /*
+     * Gate 7: if the caller does not need a pipe fd (pipe_fd == NULL), the
+     * Rust controller sends a plain 2-byte READY with no SCM_RIGHTS follow-up.
+     * Skip the recvmsg step entirely.
+     *
+     * Gate 8 will pass pipe_fd != NULL to receive the write end of the stdin
+     * pipe from the controller via SCM_RIGHTS.
+     */
+    if (!pipe_fd)
+        return 0;
+
+    /* Gate 8+: receive the pipe write-end fd attached as ancillary data. */
     char    dummy;
     int     rfd = -1;
     char    cmsgbuf[CMSG_SPACE(sizeof(int))];
@@ -254,9 +264,6 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     if (rfd < 0)
         return -EPROTO;
 
-    if (pipe_fd)
-        *pipe_fd = rfd;
-    else
-        close(rfd);
+    *pipe_fd = rfd;
     return 0;
 }

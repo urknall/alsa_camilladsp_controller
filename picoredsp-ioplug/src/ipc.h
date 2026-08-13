@@ -166,7 +166,10 @@ int pcdsp_ipc_send_stop(pcdsp_ipc_conn_t *conn);
 /*
  * pcdsp_ipc_recv_ready — wait for a READY or ERROR response.
  *
- * On READY: sets *pipe_fd to the received write-end fd (from SCM_RIGHTS).
+ * On READY with pipe_fd != NULL (Gate 8+): sets *pipe_fd to the received
+ * write-end fd (from SCM_RIGHTS).
+ * On READY with pipe_fd == NULL (Gate 7): returns success immediately after
+ * receiving the READY message; no SCM_RIGHTS follow-up is expected.
  * On ERROR: sets *error_code to the reason, returns -EPROTO.
  * Returns 0 on success (READY), negative errno on failure.
  */

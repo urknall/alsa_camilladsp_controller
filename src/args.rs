@@ -19,6 +19,10 @@ pub struct Args {
     pub initial_channels: Option<u32>,
     pub log_level: LogLevel,
     pub mode: Mode,
+    /// Stream-detection / PCM-transport backend.
+    pub backend: Backend,
+    /// AF_UNIX socket path for the ioplug IPC channel.
+    pub socket_path: Option<PathBuf>,
     /// CamillaDSP YAML config/statefile path supplied to `--get-playback-device`/`--get-config-path`.
     pub config_path: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
@@ -29,6 +33,15 @@ pub struct Args {
     pub statefile_config_path: Option<String>,
     /// Path to the existing statefile to read mute/volume from (`--existing-state`).
     pub existing_state: Option<PathBuf>,
+}
+
+/// Stream-detection and PCM-transport backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Backend {
+    /// snd-aloop loopback device (stable, default).
+    Aloop,
+    /// ALSA ioplug direct-connect (experimental).
+    Ioplug,
 }
 
 /// Operating mode selected by the user.
@@ -93,6 +106,8 @@ impl Default for Args {
             output: None,
             statefile_config_path: None,
             existing_state: None,
+            backend: Backend::Aloop,
+            socket_path: None,
         }
     }
 }
@@ -139,7 +154,9 @@ Options:\n\
       --config-path PATH        config_path value to embed in the new statefile (--make-statefile)\n\
       --existing-state FILE     Existing statefile to preserve mute/volume from (--make-statefile)\n\
   -h, --help                    Show this help\n\
-  -V, --version                 Show version"
+  -V, --version                 Show version\n\
+      --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
+      --socket-path PATH        AF_UNIX socket path for ioplug IPC (required with --backend ioplug)"
     );
 }
 
@@ -304,6 +321,21 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             }
             "-l" | "--log-level" => {
                 args.log_level = LogLevel::parse(&next_value("--log-level")?)?;
+            }
+            "--backend" => {
+                let v = next_value("--backend")?;
+                args.backend = match v.as_str() {
+                    "aloop" => Backend::Aloop,
+                    "ioplug" => Backend::Ioplug,
+                    other => {
+                        return Err(app_error(format!(
+                            "--backend must be 'aloop' or 'ioplug', got '{other}'"
+                        )))
+                    }
+                };
+            }
+            "--socket-path" => {
+                args.socket_path = Some(PathBuf::from(next_value("--socket-path")?));
             }
             other => return Err(app_error(format!("unknown argument: {other}"))),
         }

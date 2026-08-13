@@ -163,11 +163,11 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M7: Implement START / READY handshake**
 
-- [ ] Plugin sends `START(rate, format, channels)` after `hw_params` negotiation
-- [ ] Rust controller receives `START`, reads active baseline, validates, adapts runtime config, prepares CamillaDSP
-- [ ] Rust controller sends `READY`
-- [ ] Plugin releases PCM to CamillaDSP only after receiving `READY`
-- [ ] Invariant enforced: no PCM transferred before `READY`
+- [x] Plugin sends `START(rate, format, channels)` after `hw_params` negotiation
+- [x] Rust controller receives `START`, reads active baseline, validates, adapts runtime config, prepares CamillaDSP
+- [x] Rust controller sends `READY`
+- [x] Plugin releases PCM to CamillaDSP only after receiving `READY`
+- [x] Invariant enforced: no PCM transferred before `READY`
 
 ---
 

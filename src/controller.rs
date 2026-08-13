@@ -1,10 +1,15 @@
 use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
+use crate::backend::ioplug::IoplugBackend;
 use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::camilladsp::websocket::CamillaWs;
+use crate::core::adaptation::adapt_config_for_backend;
+use crate::core::adaptation::RuntimeBackend;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};
+use crate::core::logging::{log, LogLevel};
 pub use crate::core::state_machine::Controller;
+use crate::ipc::protocol::ErrorCode;
 
 pub type AloopController = Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs>;
 
@@ -37,4 +42,101 @@ pub fn new_aloop_controller(args: &Args) -> AppResult<(AloopController, DeviceSn
         ),
         initial,
     ))
+}
+
+/// Run the ioplug controller loop (Gate 7).
+///
+/// Accepts plugin connections in a loop, performs the START/READY handshake,
+/// adapts the CamillaDSP config for the negotiated stream parameters, and
+/// sends READY to the plugin.  CamillaDSP process management is added in
+/// Gate 8 / Gate 9.
+pub fn run_ioplug(args: &Args) -> AppResult<()> {
+    let socket_path = args
+        .socket_path
+        .clone()
+        .ok_or_else(|| app_error("--socket-path is required for --backend ioplug"))?;
+    let adapt_path = args
+        .adapt
+        .clone()
+        .ok_or_else(|| app_error("--adapt is required in controller mode"))?;
+    let log_level = args.log_level;
+
+    let mut backend = IoplugBackend::new(&socket_path, log_level)?;
+
+    log(
+        LogLevel::Info,
+        log_level,
+        format!(
+            "ioplug controller started; socket={}",
+            socket_path.display()
+        ),
+    );
+
+    loop {
+        // ── Wait for a plugin to connect and send START ────────────────
+        let wave = loop {
+            use crate::backend::ControllerBackend;
+            match backend.poll_event(200)? {
+                Some(crate::backend::StreamEvent::Started(params)) => {
+                    break WaveFormat {
+                        sample_rate: Some(params.rate),
+                        sample_format: Some(params.format),
+                        channels: Some(params.channels),
+                    };
+                }
+                _ => continue,
+            }
+        };
+
+        log(
+            LogLevel::Info,
+            log_level,
+            format!(
+                "ioplug: adapting config for rate={} format={} channels={}",
+                wave.sample_rate.unwrap_or(0),
+                wave.sample_format.as_deref().unwrap_or("?"),
+                wave.channels.unwrap_or(0),
+            ),
+        );
+
+        // ── Adapt the baseline config ──────────────────────────────────
+        match adapt_config_for_backend(&adapt_path, &wave, RuntimeBackend::Ioplug) {
+            Ok(_adapted) => {
+                // Config validated.  Send READY.
+                // Gate 8 will spawn CamillaDSP here with stdin pipe.
+                if let Err(err) = backend.send_ready_to_plugin() {
+                    log(
+                        LogLevel::Error,
+                        log_level,
+                        format!("ioplug: failed to send READY: {err}"),
+                    );
+                    continue;
+                }
+                log(
+                    LogLevel::Info,
+                    log_level,
+                    "ioplug: stream active — waiting for STOP",
+                );
+            }
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    log_level,
+                    format!("ioplug: config adaptation failed: {err}"),
+                );
+                backend.send_error_to_plugin(ErrorCode::Config);
+                continue;
+            }
+        }
+
+        // ── Wait for STOP ──────────────────────────────────────────────
+        loop {
+            use crate::backend::ControllerBackend;
+            match backend.poll_event(200)? {
+                Some(crate::backend::StreamEvent::Stopped) => break,
+                _ => continue,
+            }
+        }
+        log(LogLevel::Info, log_level, "ioplug: stream stopped");
+    }
 }

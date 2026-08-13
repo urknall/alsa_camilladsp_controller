@@ -1,31 +1,25 @@
 /*
- * picoredsp-ioplug — ALSA ioplug for piCoreDSP
- *
- * pcm.c — ALSA ioplug PCM plugin (Gate 4 / M4 null-sink prototype)
+ * picoredsp-ioplug — ALSA ioplug PCM plugin (Gate 7 START/READY handshake)
  *
  * Architecture overview
  * ---------------------
- * This file implements the ALSA ioplug callback table.  In this prototype
- * the plugin acts as a null sink: it accepts PCM from the application,
- * writes it into an internal ring buffer, and a background worker thread
- * drains the ring buffer at the nominal sample rate (discarding the data).
- * No IPC to the Rust controller and no CamillaDSP involvement yet.
+ * This file implements the ALSA ioplug callback table.  Up to Gate 6 the
+ * plugin acted as a null sink: it accepted PCM from the application, wrote
+ * it into an internal ring buffer, and a background worker thread drained
+ * the ring buffer at the nominal sample rate (discarding the data).
  *
- * This keeps Gate 4 / Milestone M4 focused exclusively on ALSA correctness:
+ * Gate 7 adds the START / READY handshake:
  *
- *   ✓ load as ALSA PCM
- *   ✓ hw_params negotiation
- *   ✓ receive PCM (transfer callback)
- *   ✓ correct hw_ptr maintenance
- *   ✓ period handling
- *   ✓ poll state reporting (eventfd)
- *   ✓ XRUN detection
- *   ✓ pause / resume
- *   ✓ drain / drop
- *   ✓ close / cleanup
+ *   ✓ hw_params connects to the Rust controller socket
+ *   ✓ plugin sends HELLO (version negotiation)
+ *   ✓ plugin sends START(rate, format, channels)
+ *   ✓ plugin waits for READY (or ERROR) before allowing PCM transfer
+ *   ✓ stop sends STOP to the controller
  *
- * Gate 6 (IPC), Gate 7 (START/READY handshake), and Gate 8 (pipe fd
- * handoff) will replace the null-sink worker with the real data path.
+ * Invariant (Gate 7): no PCM is released to the null-sink worker until
+ * the controller has acknowledged the matching configuration via READY.
+ * The worker itself is the null-sink drain; Gate 8 will replace it with
+ * a pipe write-end that feeds CamillaDSP stdin directly.
  *
  * Thread safety
  * -------------
@@ -111,8 +105,10 @@ typedef struct pcdsp_pcm {
     _Atomic(bool)       worker_running;
     _Atomic(bool)       paused;
 
-    /* IPC connection (unused in M4 null-sink prototype) */
+    /* IPC connection to the Rust controller */
     pcdsp_ipc_conn_t    conn;
+    /* AF_UNIX socket path (from ALSA config or default) */
+    char                socket_path[108]; /* UNIX_PATH_MAX */
 } pcdsp_pcm_t;
 
 #define io_to_pcdsp(io_ptr) ((pcdsp_pcm_t *)(io_ptr))
@@ -201,6 +197,10 @@ static int pcdsp_start(snd_pcm_ioplug_t *io)
 static int pcdsp_stop(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Gate 7: notify the controller that the stream is ending. */
+    if (pcdsp->conn.fd >= 0)
+        pcdsp_ipc_send_stop(&pcdsp->conn);
 
     /* Only join if the worker was actually started. */
     bool was_running = atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire);
@@ -293,6 +293,51 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 
     pcdsp_timer_init(&pcdsp->timer, io->rate);
     atomic_store_explicit(&pcdsp->hw_frames, 0, memory_order_release);
+
+    /*
+     * Gate 7: START / READY handshake.
+     *
+     * Now that ALSA has negotiated exact stream parameters, connect to the
+     * Rust controller, send HELLO + START, and wait for READY (or ERROR).
+     * hw_params fails if the controller is unavailable or rejects the config.
+     *
+     * Invariant: no PCM must be transferred before READY is received.
+     */
+    pcdsp_ipc_close(&pcdsp->conn);
+
+    int ipc_rc = pcdsp_ipc_connect(
+        &pcdsp->conn,
+        pcdsp->socket_path[0] ? pcdsp->socket_path : NULL);
+    if (ipc_rc < 0) {
+        SNDERR("picoredsp: controller unavailable (%d): %s",
+               -ipc_rc, strerror(-ipc_rc));
+        return ipc_rc;
+    }
+
+    ipc_rc = pcdsp_ipc_send_start(
+        &pcdsp->conn,
+        (uint32_t)io->rate,
+        (uint8_t)io->format,
+        (uint8_t)io->channels);
+    if (ipc_rc < 0) {
+        SNDERR("picoredsp: failed to send START (%d)", -ipc_rc);
+        pcdsp_ipc_close(&pcdsp->conn);
+        return ipc_rc;
+    }
+
+    pcdsp_error_code_t err_code = PCDSP_ERR_OK;
+    /* Gate 7: pass NULL for pipe_fd — no SCM_RIGHTS follow-up expected.
+     * Gate 8 will pass &pcdsp->pipe_fd to receive the stdin pipe write-end. */
+    ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, NULL, &err_code);
+    if (ipc_rc < 0) {
+        if (ipc_rc == -EPROTO)
+            SNDERR("picoredsp: controller rejected stream (error code %d)", (int)err_code);
+        else
+            SNDERR("picoredsp: failed waiting for READY (%d): %s",
+                   -ipc_rc, strerror(-ipc_rc));
+        pcdsp_ipc_close(&pcdsp->conn);
+        return -EINVAL;
+    }
 
     return 0;
 }
@@ -416,10 +461,14 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 
 static void pcdsp_dump(snd_pcm_ioplug_t *io, snd_output_t *out)
 {
-    snd_output_printf(out, "piCoreDSP ioplug (null-sink prototype)\n");
+    pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+    snd_output_printf(out, "piCoreDSP ioplug (Gate 7 START/READY handshake)\n");
     snd_output_printf(out, "  rate: %u Hz, channels: %u, format: %s\n",
                       io->rate, io->channels,
                       snd_pcm_format_name(io->format));
+    snd_output_printf(out, "  socket: %s\n",
+                      pcdsp->socket_path[0] ? pcdsp->socket_path
+                                            : PCDSP_IPC_DEFAULT_SOCKET_PATH);
 }
 
 /* -----------------------------------------------------------------------
@@ -499,8 +548,10 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
         SNDERR("picoredsp: unknown config key '%s'", id);
     }
 
-    /* socket_path is stored in pcdsp for Gate 6 IPC; unused in M4. */
-    (void)socket_path;
+    /* Store socket path for IPC (Gate 7+). */
+    if (socket_path)
+        strncpy(pcdsp->socket_path, socket_path, sizeof(pcdsp->socket_path) - 1);
+    /* else socket_path[0] == '\0' (zero-initialised by calloc) → use default */
 
     pcdsp->io.version      = SND_PCM_IOPLUG_VERSION;
     pcdsp->io.name         = "piCoreDSP ioplug";

@@ -17,9 +17,9 @@ use adapt::{
     make_statefile,
 };
 use alsa_listener::AlsaLoopbackListener;
-use args::{parse_args, Args, Mode};
+use args::{parse_args, Args, Backend, Mode};
 use camilla_ws::{CamillaClient, CamillaWs};
-use controller::new_aloop_controller;
+use controller::{new_aloop_controller, run_ioplug};
 use error::{app_error, AppResult};
 use serde_json::Value as JsonValue;
 use wave::WaveFormat;
@@ -141,10 +141,13 @@ fn run_main() -> AppResult<()> {
             Ok(())
         }
 
-        Mode::Run => {
-            let (controller, initial) = new_aloop_controller(&args)?;
-            controller.run(initial)
-        }
+        Mode::Run => match args.backend {
+            Backend::Aloop => {
+                let (controller, initial) = new_aloop_controller(&args)?;
+                controller.run(initial)
+            }
+            Backend::Ioplug => run_ioplug(&args),
+        },
     }
 }
 
