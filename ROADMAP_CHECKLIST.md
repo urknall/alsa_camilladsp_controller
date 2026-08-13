@@ -18,8 +18,8 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] Stop / start
   - [x] GUI Apply and Save
   - [x] Active-config selection
-  - [ ] PCP backup
-  - [ ] Reboot persistence
+  - [x] PCP backup
+  - [x] Reboot persistence
   - [x] Controller restart
   - [x] CamillaDSP restart
   - [x] Transient WebSocket failure

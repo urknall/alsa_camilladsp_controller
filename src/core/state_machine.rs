@@ -978,6 +978,65 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Gate 0 acceptance: persisted active-config file contents survive a
+    /// controller restart/reboot and are only applied after playback becomes
+    /// active.
+    #[test]
+    fn acceptance_reboot_persistence_applies_saved_config_after_restart() {
+        let dir = test_dir("acceptance-reboot-persistence");
+        let config = dir.join("RoomCorrection.yml");
+        let active = dir.join("active_config.yml");
+
+        fs::write(&config, minimal_config("hw:CardA,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let mut before_restart = make_controller(
+            MockClient::new(vec![MockClient::ok(), MockClient::ok()]),
+            MockListener::new(vec![]),
+            active.clone(),
+        );
+        before_restart
+            .handle_started(&MockListener::active_with_rate(44100))
+            .unwrap();
+        assert_eq!(before_restart.client.sent_configs.len(), 1);
+        assert!(
+            before_restart.client.sent_configs[0].contains("hw:CardA,0"),
+            "first run should apply the pre-restart saved config"
+        );
+
+        fs::write(&config, minimal_config("hw:CardB,0")).unwrap();
+
+        let mut after_restart = make_controller(
+            MockClient::new(vec![
+                MockClient::state("Inactive"), // bootstrap state on restart
+                MockClient::ok(),              // Stop on first playback
+                MockClient::ok(),              // SetConfig on first playback
+            ]),
+            MockListener::new(vec![]),
+            active.clone(),
+        );
+
+        after_restart
+            .bootstrap_initial_config(&MockListener::inactive())
+            .unwrap();
+        assert_eq!(
+            after_restart.client.sent_configs.len(),
+            0,
+            "restart while source is inactive must remain idle"
+        );
+
+        after_restart
+            .handle_started(&MockListener::active_with_rate(44100))
+            .unwrap();
+        assert_eq!(after_restart.client.sent_configs.len(), 1);
+        assert!(
+            after_restart.client.sent_configs[0].contains("hw:CardB,0"),
+            "post-restart playback should use persisted saved config"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Issue 5 & 6: After SetConfig succeeds (pending=true), a subsequent
     /// Inactive + StopReason=None must NOT issue a second SetConfig.
     #[test]

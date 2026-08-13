@@ -777,6 +777,10 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("persistent baseline configuration"));
+        assert!(parsed["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("pcp backup"));
     }
 
     #[test]
