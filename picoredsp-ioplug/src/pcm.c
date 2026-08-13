@@ -138,9 +138,10 @@ static void *worker_thread(void *arg)
 
         size_t avail = pcdsp_rb_read_avail(&pcdsp->rb);
         if (avail < pcdsp->period_size) {
-            /* Sleep for half a period to avoid busy-wait. */
-            unsigned long sleep_ns = 500000000UL / (pcdsp->io.rate ? pcdsp->io.rate : 48000)
-                                     * (unsigned long)pcdsp->period_size;
+            /* Sleep for half a period to avoid busy-wait.
+             * Multiply before dividing to avoid integer truncation. */
+            unsigned long rate     = pcdsp->io.rate ? pcdsp->io.rate : 48000;
+            unsigned long sleep_ns = 500000000UL * (unsigned long)pcdsp->period_size / rate;
             struct timespec ts = { .tv_sec  = (time_t)(sleep_ns / 1000000000UL),
                                    .tv_nsec = (long)(sleep_ns % 1000000000UL) };
             nanosleep(&ts, NULL);
@@ -162,9 +163,10 @@ static void *worker_thread(void *arg)
             /* Non-fatal; the application will catch up via pointer(). */
         }
 
-        /* Pace to the nominal rate. */
-        unsigned long period_ns = 1000000000UL / pcdsp->io.rate
-                                  * (unsigned long)pcdsp->period_size;
+        /* Pace to the nominal rate.
+         * Multiply before dividing to avoid integer truncation. */
+        unsigned long rate2     = pcdsp->io.rate;
+        unsigned long period_ns = rate2 ? 1000000000UL * (unsigned long)pcdsp->period_size / rate2 : 0UL;
         struct timespec ts = { .tv_sec  = (time_t)(period_ns / 1000000000UL),
                                .tv_nsec = (long)(period_ns % 1000000000UL) };
         nanosleep(&ts, NULL);
@@ -200,15 +202,20 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
+    /* Only join if the worker was actually started. */
+    bool was_running = atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire);
+
     atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
     atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
     pcdsp_timer_stop(&pcdsp->timer);
 
-    /* Wake the worker so it sees the flag. */
-    uint64_t val = 1;
-    (void)write(pcdsp->event_fd, &val, sizeof(val));
+    if (was_running) {
+        /* Wake the worker so it sees the flag. */
+        uint64_t val = 1;
+        (void)write(pcdsp->event_fd, &val, sizeof(val));
 
-    pthread_join(pcdsp->worker, NULL);
+        pthread_join(pcdsp->worker, NULL);
+    }
 
     /* Drain eventfd. */
     uint64_t dummy;
@@ -315,8 +322,11 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* Null sink: wait until the ring buffer is empty. */
+    /* Null sink: wait until the ring buffer is empty.
+     * Exit early if the worker stops (no consumer → buffer will never drain). */
     while (pcdsp_rb_read_avail(&pcdsp->rb) > 0) {
+        if (!atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire))
+            break;
         struct timespec ts = { .tv_nsec = 1000000 };
         nanosleep(&ts, NULL);
     }

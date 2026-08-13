@@ -77,9 +77,13 @@ uint64_t pcdsp_timer_elapsed_frames(const pcdsp_stream_timer_t *t)
     if (now < t->start_ns)
         return 0;
 
-    /* frames = (elapsed_ns * rate) / 1e9 */
-    uint64_t elapsed_ns = now - t->start_ns;
-    /* Use 128-bit intermediate arithmetic where available, otherwise split. */
-    return elapsed_ns / (1000000000ULL / t->rate)
-           + (elapsed_ns % (1000000000ULL / t->rate)) * t->rate / 1000000000ULL;
+    /* frames = elapsed_ns * rate / 1e9
+     * Split into seconds and sub-second parts to avoid overflow and drift:
+     *   whole_seconds * rate + (sub_ns * rate / 1_000_000_000)
+     * sub_ns < 1e9 and rate ≤ 192000, so sub_ns * rate < 1.92e14 which
+     * fits comfortably in uint64_t. */
+    uint64_t elapsed_ns   = now - t->start_ns;
+    uint64_t whole_secs   = elapsed_ns / 1000000000ULL;
+    uint64_t sub_ns       = elapsed_ns % 1000000000ULL;
+    return whole_secs * t->rate + sub_ns * t->rate / 1000000000ULL;
 }
