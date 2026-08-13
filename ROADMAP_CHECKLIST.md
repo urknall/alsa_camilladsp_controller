@@ -53,9 +53,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M3: Establish identical behaviour / regression tests**
 
-- [ ] Run the complete Gate 0 acceptance suite against the refactored code
-- [ ] Add automated regression tests covering the same scenarios
-- [ ] All tests green
+- [x] Run the complete Gate 0 acceptance suite against the refactored code
+- [x] Add automated regression tests covering the same scenarios
+- [x] All tests green
 
 ---
 
