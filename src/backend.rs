@@ -1,8 +1,31 @@
-use crate::core::errors::{app_error, AppResult};
 use crate::core::config::{DeviceSnapshot, WaveFormat};
+use crate::core::errors::{app_error, AppResult};
 
 pub mod aloop;
 pub mod ioplug;
+
+/// Identifies where stream parameters are detected for a backend.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamDetector {
+    AloopHctl,
+    IoplugIpc,
+}
+
+/// Identifies how PCM reaches CamillaDSP for a backend.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioTransport {
+    AlsaCapture,
+    StdinPipe,
+}
+
+/// Explicit backend profile tying detector and transport together.
+#[allow(dead_code)]
+pub trait BackendProfile {
+    fn detector(&self) -> StreamDetector;
+    fn transport(&self) -> AudioTransport;
+}
 
 /// Backend-neutral stream parameters used by the controller core.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,6 +66,7 @@ pub enum StreamEvent {
 }
 
 /// Event source abstraction for aloop/ioplug stream detectors.
+#[allow(dead_code)]
 pub trait StreamBackend {
     fn next_event(&mut self) -> AppResult<StreamEvent>;
 }

@@ -1,5 +1,5 @@
-use crate::core::errors::{app_error, AppResult};
 use crate::core::config::WaveFormat;
+use crate::core::errors::{app_error, AppResult};
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::{Mapping, Value as YamlValue};
 use std::fs;

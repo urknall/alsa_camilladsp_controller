@@ -1,6 +1,6 @@
+use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};
 use crate::core::logging::{log, LogLevel};
-use crate::core::config::{DeviceSnapshot, WaveFormat};
 use alsa::ctl::ElemIface;
 use alsa::hctl::HCtl;
 

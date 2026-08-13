@@ -39,6 +39,14 @@ When implementing any new feature or fixing a bug, you **must** write detailed t
 
 Tests are a required deliverable for every implementation task — a feature is not complete without them.
 
+## Rust Formatting, Clippy, and Test Failures
+
+After implementing new code, always:
+
+1. Run Rust formatting checks and apply formatting fixes (`cargo fmt`).
+2. Run Clippy checks and auto-correct issues when possible (`cargo clippy --fix`), then resolve any remaining warnings/errors.
+3. If any tests fail, fix the issues and re-run formatting, Clippy, and tests until all checks pass.
+
 ## Verification Before Marking Done
 
 A checklist item in `ROADMAP_CHECKLIST.md` must **not** be marked as done until:

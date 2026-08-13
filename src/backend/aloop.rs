@@ -1,7 +1,10 @@
+use crate::backend::{
+    detect_stream_event, AudioTransport, BackendProfile, ControllerBackend, StreamBackend,
+    StreamDetector, StreamEvent,
+};
 use crate::camilladsp::alsa_capture::DeviceListener;
-use crate::backend::{detect_stream_event, ControllerBackend, StreamBackend, StreamEvent};
-use crate::core::errors::AppResult;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
+use crate::core::errors::AppResult;
 use std::thread;
 use std::time::Duration;
 
@@ -9,6 +12,7 @@ use std::time::Duration;
 const ALSA_DEBOUNCE_MS: u64 = 50;
 /// Tiny guard delay used by `next_event()` to avoid a busy-spin if an
 /// implementation returns immediate no-event polls repeatedly.
+#[allow(dead_code)]
 const NO_EVENT_SPIN_GUARD_MS: u64 = 1;
 
 /// Stream backend adapter that turns HCTL snapshots into backend-neutral events.
@@ -72,6 +76,16 @@ impl<D: DeviceListener> ControllerBackend for AloopBackend<D> {
 
     fn read_snapshot(&self) -> AppResult<DeviceSnapshot> {
         AloopBackend::read_snapshot(self)
+    }
+}
+
+impl<D: DeviceListener> BackendProfile for AloopBackend<D> {
+    fn detector(&self) -> StreamDetector {
+        StreamDetector::AloopHctl
+    }
+
+    fn transport(&self) -> AudioTransport {
+        AudioTransport::AlsaCapture
     }
 }
 
@@ -181,5 +195,15 @@ mod tests {
                 channels: 2,
             })
         );
+    }
+
+    #[test]
+    fn profile_reports_aloop_detector_and_alsa_transport() {
+        let initial = MockListener::inactive();
+        let listener = MockListener::new(vec![], vec![]);
+        let backend = AloopBackend::new(listener, initial, WaveFormat::default());
+
+        assert_eq!(backend.detector(), StreamDetector::AloopHctl);
+        assert_eq!(backend.transport(), AudioTransport::AlsaCapture);
     }
 }
