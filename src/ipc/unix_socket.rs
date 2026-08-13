@@ -245,7 +245,7 @@ fn send_fd_via_scm_rights(socket_fd: RawFd, fd: RawFd) -> io::Result<()> {
         iov_len: 1,
     };
 
-    let mut mh = libc::msghdr {
+    let mh = libc::msghdr {
         msg_name: std::ptr::null_mut(),
         msg_namelen: 0,
         msg_iov: &mut iov,

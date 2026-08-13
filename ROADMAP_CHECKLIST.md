@@ -175,25 +175,25 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M8: Implement stdin pipe + FD handoff**
 
-- [ ] Rust creates a `pipe()`
-- [ ] Rust spawns CamillaDSP with pipe read fd as stdin
-- [ ] Rust passes write fd to plugin over Unix socket using `SCM_RIGHTS`
-- [ ] Plugin writes PCM directly into the fd (no Rust in the data path)
-- [ ] Data path verified: Plugin → kernel pipe → CamillaDSP (never via Rust userspace)
+- [x] Rust creates a `pipe()`
+- [x] Rust spawns CamillaDSP with pipe read fd as stdin
+- [x] Rust passes write fd to plugin over Unix socket using `SCM_RIGHTS`
+- [x] Plugin writes PCM directly into the fd (no Rust in the data path)
+- [x] Data path verified: Plugin → kernel pipe → CamillaDSP (never via Rust userspace)
 
 **Milestone M9: Add Rust stdin CamillaDSP supervisor**
 
-- [ ] Rust supervises CamillaDSP process lifecycle for ioplug backend:
-  - [ ] Per-stream process model: `START → spawn → READY → PCM → stream ends → EOF → shutdown`
-- [ ] ioplug backend reuses existing Rust recovery logic:
-  - [ ] Validation failures
-  - [ ] Transient failures + retry/backoff
-  - [ ] Startup timeout
-  - [ ] Process failure handling
-  - [ ] Config fingerprint changes
-  - [ ] Logging and state transitions
-  - [ ] Shutdown
-- [ ] C plugin does NOT implement policy (no retry logic, no config decisions)
+- [x] Rust supervises CamillaDSP process lifecycle for ioplug backend:
+  - [x] Per-stream process model: `START → spawn → READY → PCM → stream ends → EOF → shutdown`
+- [x] ioplug backend reuses existing Rust recovery logic:
+  - [x] Validation failures
+  - [x] Transient failures + retry/backoff
+  - [x] Startup timeout
+  - [x] Process failure handling
+  - [x] Config fingerprint changes
+  - [x] Logging and state transitions
+  - [x] Shutdown
+- [x] C plugin does NOT implement policy (no retry logic, no config decisions)
 
 ---
 

@@ -17,10 +17,10 @@
 //! start / stop / health-check interface used by the ioplug controller loop.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::camilladsp::stdin_capture::StdinPipeProcess;
-use crate::core::errors::{app_error, AppResult};
+use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
 
 /// How long to wait for CamillaDSP to exit after the stream ends.
@@ -113,6 +113,27 @@ impl StdinSupervisor {
         match &mut self.active {
             Some(proc) => proc.is_running(),
             None => false,
+        }
+    }
+
+    /// Poll for `timeout` to confirm that CamillaDSP is still running.
+    ///
+    /// Called immediately after `start_stream` to detect immediate crashes
+    /// (bad config, device unavailable, etc.).  Polls `is_running` every
+    /// `poll_interval` until either `timeout` elapses or the process exits.
+    ///
+    /// Returns `true` if the process is still alive at the end of the window,
+    /// `false` if it exited.
+    pub fn startup_check(&mut self, timeout: Duration, poll_interval: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !self.is_running() {
+                return false;
+            }
+            if Instant::now() >= deadline {
+                return true;
+            }
+            std::thread::sleep(poll_interval);
         }
     }
 
@@ -235,5 +256,45 @@ mod tests {
         let mut sup = StdinSupervisor::new("/bin/cat", &missing, LogLevel::Error);
         let result = sup.start_stream();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn startup_check_returns_true_for_running_process() {
+        // Write a temporary shell script that ignores its arguments and blocks
+        // reading from stdin.  It will exit cleanly when we close the pipe
+        // write-end (EOF), so stop_stream() does not need to kill it.
+        let script = std::env::temp_dir().join("picoredsp-sup-read.sh");
+        std::fs::write(&script, "#!/bin/sh\nread x\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config = tmp_config("startup-ok");
+        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        sup.start_stream().unwrap();
+
+        let alive = sup.startup_check(Duration::from_millis(200), Duration::from_millis(20));
+        assert!(
+            alive,
+            "stdin-read script should still be running after 200 ms"
+        );
+
+        // Closing the write-end sends EOF → `read` returns → script exits.
+        sup.stop_stream();
+    }
+
+    #[test]
+    fn startup_check_returns_false_when_process_exits_immediately() {
+        // Write a temporary script that exits immediately (status 0).
+        let script = std::env::temp_dir().join("picoredsp-sup-exit.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config = tmp_config("startup-exits");
+        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        sup.start_stream().unwrap();
+
+        let alive = sup.startup_check(Duration::from_millis(500), Duration::from_millis(20));
+        assert!(!alive, "process should have exited within the window");
     }
 }
