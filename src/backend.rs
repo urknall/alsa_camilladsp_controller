@@ -95,6 +95,14 @@ pub trait ControllerBackend {
     /// recover accurate stream parameters after a CamillaDSP
     /// `CaptureFormatChange` stop reason.
     fn read_snapshot(&self) -> AppResult<DeviceSnapshot>;
+
+    /// Called by the controller after CamillaDSP has been successfully prepared
+    /// for a new stream.  For the `aloop` backend this is a no-op.  For the
+    /// `ioplug` backend this sends the `READY` message to the plugin, releasing
+    /// it to start transferring PCM to CamillaDSP.
+    fn on_stream_ready(&mut self) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 /// Detect a backend-neutral stream lifecycle event from consecutive snapshots.

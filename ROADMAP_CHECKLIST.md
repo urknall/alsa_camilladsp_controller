@@ -80,11 +80,11 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ## Phase 3 — Config field ownership policy
 
-- [ ] Define and document **user-owned** config fields (filters, mixers, pipeline, playback device, etc.)
-- [ ] Define and document **runtime/backend-managed** config fields (samplerate, capture type/device/format/channels, stop_on_inactive, enable_rate_adjust)
-- [ ] Verify that the same persistent DSP baseline config works with both backends
-- [ ] Runtime config generation for `aloop` — injects ALSA capture section
-- [ ] Runtime config generation for `ioplug` — injects Stdin capture section
+- [x] Define and document **user-owned** config fields (filters, mixers, pipeline, playback device, etc.)
+- [x] Define and document **runtime/backend-managed** config fields (samplerate, capture type/device/format/channels, stop_on_inactive, enable_rate_adjust)
+- [x] Verify that the same persistent DSP baseline config works with both backends
+- [x] Runtime config generation for `aloop` — injects ALSA capture section
+- [x] Runtime config generation for `ioplug` — injects Stdin capture section
 
 ---
 
@@ -92,49 +92,49 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M4: Build standalone modern ALSA ioplug**
 
-- [ ] Create new `picoredsp-ioplug/` project (do NOT continue the old `alsa_cdsp` source tree)
-  - [ ] `src/pcm.c`
-  - [ ] `src/ringbuffer.c` / `ringbuffer.h`
-  - [ ] `src/ipc.c` / `ipc.h`
-  - [ ] `src/timing.c`
-  - [ ] `src/format.c`
-  - [ ] `tests/`
-  - [ ] `docs/BLUEALSA_TRACKING.md`
-  - [ ] `CMakeLists.txt` or `Makefile`
-- [ ] First prototype works without touching CamillaDSP (audio loopback/null sink only)
+- [x] Create new `picoredsp-ioplug/` project (do NOT continue the old `alsa_cdsp` source tree)
+  - [x] `src/pcm.c`
+  - [x] `src/ringbuffer.c` / `ringbuffer.h`
+  - [x] `src/ipc.c` / `ipc.h`
+  - [x] `src/timing.c`
+  - [x] `src/format.c`
+  - [x] `tests/`
+  - [x] `docs/BLUEALSA_TRACKING.md`
+  - [x] `CMakeLists.txt` or `Makefile`
+- [x] First prototype works without touching CamillaDSP (audio loopback/null sink only)
 
 **Milestone M5: Validate ALSA ringbuffer / poll / XRUN semantics**
 
-- [ ] Plugin loads as ALSA PCM
-- [ ] hw_params negotiation works
-- [ ] Plugin receives PCM
-- [ ] Correct `hw_ptr` maintained
-- [ ] Periods handled correctly
-- [ ] Poll state reported correctly
-- [ ] XRUN handled
-- [ ] Pause / resume works
-- [ ] Drain / drop works
-- [ ] Close cleans up
+- [x] Plugin loads as ALSA PCM
+- [x] hw_params negotiation works
+- [x] Plugin receives PCM
+- [x] Correct `hw_ptr` maintained
+- [x] Periods handled correctly
+- [x] Poll state reported correctly
+- [x] XRUN handled
+- [x] Pause / resume works
+- [x] Drain / drop works
+- [x] Close cleans up
 
 ---
 
 ## Phase 5 — BlueALSA reference review
 
-- [ ] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
-- [ ] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
-  - [ ] C11 atomics usage
-  - [ ] Ringbuffer pointer synchronisation
-  - [ ] Period boundary handling
-  - [ ] Buffer boundary handling
-  - [ ] poll/revents behaviour
-  - [ ] XRUN detection
-  - [ ] Pause/resume synchronisation
-  - [ ] Drain semantics
-  - [ ] Thread cancellation
-  - [ ] Signal masking
-  - [ ] Delay accounting
-  - [ ] alsa-lib compatibility workarounds
-- [ ] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
+- [x] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
+- [x] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
+  - [x] C11 atomics usage
+  - [x] Ringbuffer pointer synchronisation
+  - [x] Period boundary handling
+  - [x] Buffer boundary handling
+  - [x] poll/revents behaviour
+  - [x] XRUN detection
+  - [x] Pause/resume synchronisation
+  - [x] Drain semantics
+  - [x] Thread cancellation
+  - [x] Signal masking
+  - [x] Delay accounting
+  - [x] alsa-lib compatibility workarounds
+- [x] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
 
 ---
 
@@ -142,20 +142,20 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M6: Implement versioned plugin ↔ Rust IPC**
 
-- [ ] Choose `AF_UNIX` socket as transport
-- [ ] Define protocol version field from day one
-- [ ] Define and implement all message types: `Hello`, `Start`, `Stop`, `Ready`, `Error`
-- [ ] Define and document:
-  - [ ] Endianness
-  - [ ] Version negotiation
-  - [ ] Unknown message handling
-  - [ ] Disconnect behaviour
-  - [ ] Timeouts
-  - [ ] Maximum message length
-  - [ ] Reconnect behaviour
-  - [ ] Controller-unavailable behaviour
-- [ ] Rust `PluginMessage` enum implemented in `ipc/protocol.rs`
-- [ ] Rust IPC listener implemented in `ipc/unix_socket.rs`
+- [x] Choose `AF_UNIX` socket as transport
+- [x] Define protocol version field from day one
+- [x] Define and implement all message types: `Hello`, `Start`, `Stop`, `Ready`, `Error`
+- [x] Define and document:
+  - [x] Endianness
+  - [x] Version negotiation
+  - [x] Unknown message handling
+  - [x] Disconnect behaviour
+  - [x] Timeouts
+  - [x] Maximum message length
+  - [x] Reconnect behaviour
+  - [x] Controller-unavailable behaviour
+- [x] Rust `PluginMessage` enum implemented in `ipc/protocol.rs`
+- [x] Rust IPC listener implemented in `ipc/unix_socket.rs`
 
 ---
 
@@ -163,11 +163,11 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M7: Implement START / READY handshake**
 
-- [ ] Plugin sends `START(rate, format, channels)` after `hw_params` negotiation
-- [ ] Rust controller receives `START`, reads active baseline, validates, adapts runtime config, prepares CamillaDSP
-- [ ] Rust controller sends `READY`
-- [ ] Plugin releases PCM to CamillaDSP only after receiving `READY`
-- [ ] Invariant enforced: no PCM transferred before `READY`
+- [x] Plugin sends `START(rate, format, channels)` after `hw_params` negotiation
+- [x] Rust controller receives `START`, reads active baseline, validates, adapts runtime config, prepares CamillaDSP
+- [x] Rust controller sends `READY`
+- [x] Plugin releases PCM to CamillaDSP only after receiving `READY`
+- [x] Invariant enforced: no PCM transferred before `READY`
 
 ---
 
