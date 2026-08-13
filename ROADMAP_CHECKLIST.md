@@ -142,20 +142,20 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M6: Implement versioned plugin ↔ Rust IPC**
 
-- [ ] Choose `AF_UNIX` socket as transport
-- [ ] Define protocol version field from day one
-- [ ] Define and implement all message types: `Hello`, `Start`, `Stop`, `Ready`, `Error`
-- [ ] Define and document:
-  - [ ] Endianness
-  - [ ] Version negotiation
-  - [ ] Unknown message handling
-  - [ ] Disconnect behaviour
-  - [ ] Timeouts
-  - [ ] Maximum message length
-  - [ ] Reconnect behaviour
-  - [ ] Controller-unavailable behaviour
-- [ ] Rust `PluginMessage` enum implemented in `ipc/protocol.rs`
-- [ ] Rust IPC listener implemented in `ipc/unix_socket.rs`
+- [x] Choose `AF_UNIX` socket as transport
+- [x] Define protocol version field from day one
+- [x] Define and implement all message types: `Hello`, `Start`, `Stop`, `Ready`, `Error`
+- [x] Define and document:
+  - [x] Endianness
+  - [x] Version negotiation
+  - [x] Unknown message handling
+  - [x] Disconnect behaviour
+  - [x] Timeouts
+  - [x] Maximum message length
+  - [x] Reconnect behaviour
+  - [x] Controller-unavailable behaviour
+- [x] Rust `PluginMessage` enum implemented in `ipc/protocol.rs`
+- [x] Rust IPC listener implemented in `ipc/unix_socket.rs`
 
 ---
 
