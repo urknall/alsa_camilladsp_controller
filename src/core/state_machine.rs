@@ -939,6 +939,45 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Gate 0 acceptance: Apply and Save updates to the active config file are
+    /// re-read on the next restart even when the active symlink target and wave
+    /// format stay the same.
+    #[test]
+    fn acceptance_gui_apply_and_save_rereads_saved_active_file() {
+        let dir = test_dir("gui-apply-save");
+        let config = dir.join("RoomCorrection.yml");
+        let active = dir.join("active_config.yml");
+
+        fs::write(&config, minimal_config("hw:CardA,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let mut ctrl = make_controller(
+            MockClient::new(vec![MockClient::ok(), MockClient::ok()]),
+            MockListener::new(vec![]),
+            active.clone(),
+        );
+
+        ctrl.start_cdsp().unwrap();
+        assert_eq!(ctrl.client.sent_configs.len(), 1);
+        assert!(
+            ctrl.client.sent_configs[0].contains("hw:CardA,0"),
+            "first start should use the initial saved config"
+        );
+
+        ctrl.retry.reset();
+        ctrl.pending_since = None;
+        fs::write(&config, minimal_config("hw:CardB,0")).unwrap();
+
+        ctrl.start_cdsp().unwrap();
+        assert_eq!(ctrl.client.sent_configs.len(), 2);
+        assert!(
+            ctrl.client.sent_configs[1].contains("hw:CardB,0"),
+            "second start should re-read the saved file contents"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Issue 5 & 6: After SetConfig succeeds (pending=true), a subsequent
     /// Inactive + StopReason=None must NOT issue a second SetConfig.
     #[test]

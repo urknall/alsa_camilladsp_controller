@@ -20,7 +20,7 @@ Scope: current Rust controller + `snd-aloop` + CamillaDSP websocket behavior.
 | 44.1 → 48 → 96 kHz changes | Each start/restart adapts runtime samplerate to live stream rate | Automated: `acceptance_rate_change_sequence_reapplies_live_rates` |
 | Format changes | Runtime config adaptation tracks negotiated sample format | Automated: `acceptance_format_change_reapplies_live_format` |
 | Stop / start | Source stop triggers CamillaDSP stop path; next start re-applies config with live wave | Automated: `normal_source_stop_arms_idle_stop_guard`, `idle_invariant_clears_on_source_active_and_applies_config` |
-| GUI Apply and Save | Unsaved in-memory GUI state is not treated as persistent baseline; persisted file/symlink changes are re-read on restart | Automated: `start_cdsp_follows_symlink_retarget`; Manual: GUI Apply vs Save workflow check |
+| GUI Apply and Save | Unsaved in-memory GUI state is not treated as persistent baseline; persisted file/symlink changes are re-read on restart | Automated: `acceptance_gui_apply_and_save_rereads_saved_active_file`; Manual: GUI Apply vs Save workflow check |
 | Active-config selection | Controller follows active symlink target and uses selected config on next start | Automated: `start_cdsp_follows_symlink_retarget` |
 | PCP backup | Persisted config changes survive reboot only after `pcp backup` | Manual on piCorePlayer target |
 | Reboot persistence | Controller restart/boot reads persisted active config and applies only when source becomes active | Automated: bootstrap tests above + Manual reboot verification |

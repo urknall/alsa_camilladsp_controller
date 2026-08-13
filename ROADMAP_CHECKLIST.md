@@ -16,7 +16,7 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] 44.1 → 48 → 96 kHz sample-rate changes
   - [x] Format changes
   - [x] Stop / start
-  - [ ] GUI Apply and Save
+  - [x] GUI Apply and Save
   - [x] Active-config selection
   - [ ] PCP backup
   - [ ] Reboot persistence
