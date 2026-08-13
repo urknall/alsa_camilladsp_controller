@@ -1706,4 +1706,147 @@ mod tests {
 
         fs::remove_dir_all(dir).unwrap();
     }
+
+    /// Gate 0 acceptance: 44.1 → 48 → 96 kHz transitions each trigger an
+    /// adapted restart with the live source sample-rate.
+    #[test]
+    fn acceptance_rate_change_sequence_reapplies_live_rates() {
+        let dir = test_dir("acceptance-rate-sequence");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop 44.1
+            MockClient::ok(), // SetConfig 44.1
+            MockClient::ok(), // Stop 48
+            MockClient::ok(), // SetConfig 48
+            MockClient::ok(), // Stop 96
+            MockClient::ok(), // SetConfig 96
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        ctrl.handle_started(&MockListener::active_with_rate(44100))
+            .unwrap();
+        ctrl.handle_started(&MockListener::active_with_rate(48000))
+            .unwrap();
+        ctrl.handle_started(&MockListener::active_with_rate(96000))
+            .unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 3);
+        assert!(ctrl.client.sent_configs[0].contains("samplerate: 44100"));
+        assert!(ctrl.client.sent_configs[1].contains("samplerate: 48000"));
+        assert!(ctrl.client.sent_configs[2].contains("samplerate: 96000"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Gate 0 acceptance: format changes are reflected in runtime config
+    /// adaptation for the next start.
+    #[test]
+    fn acceptance_format_change_reapplies_live_format() {
+        let dir = test_dir("acceptance-format-change");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(
+            &config,
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             capture:\n    type: Alsa\n    channels: 2\n    \
+             device: \"hw:Loopback,0,0\"\n    format: S32_LE\n  \
+             playback:\n    type: Alsa\n    channels: 2\n    \
+             device: \"hw:X,0\"\n\
+             filters: {}\nmixers: {}\npipeline: []\nprocessors: {}\n",
+        )
+        .unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop first start
+            MockClient::ok(), // SetConfig first start
+            MockClient::ok(), // Stop second start
+            MockClient::ok(), // SetConfig second start
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        let first = DeviceSnapshot {
+            active: true,
+            wave: WaveFormat {
+                sample_rate: Some(48000),
+                sample_format: Some("S16_LE".to_owned()),
+                channels: Some(2),
+            },
+        };
+        let second = DeviceSnapshot {
+            active: true,
+            wave: WaveFormat {
+                sample_rate: Some(48000),
+                sample_format: Some("S24_3LE".to_owned()),
+                channels: Some(2),
+            },
+        };
+
+        ctrl.handle_started(&first).unwrap();
+        ctrl.handle_started(&second).unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 2);
+        assert_ne!(
+            ctrl.client.sent_configs[0], ctrl.client.sent_configs[1],
+            "format change must produce a different adapted config payload"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Gate 0 acceptance: if CamillaDSP becomes Inactive while playback is
+    /// still active, controller immediately re-applies runtime config.
+    #[test]
+    fn acceptance_cdsp_restart_with_active_source_restarts_processing() {
+        let dir = test_dir("acceptance-cdsp-restart");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::stop_reason("None"), // GetStopReason from Inactive state
+            MockClient::ok(),                // SetConfig restart
+        ]);
+        let listener = MockListener::new(vec![MockListener::active_with_rate(48000)]);
+        let mut ctrl = make_controller(client, listener, active.clone());
+
+        let snap = MockListener::active_with_rate(48000);
+        ctrl.process_inactive_state(&snap).unwrap();
+
+        assert_eq!(ctrl.client.sent_configs.len(), 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Gate 0 acceptance: transient WebSocket transport errors during restart
+    /// are surfaced as controller errors for supervisor-level recovery.
+    #[test]
+    fn acceptance_transient_websocket_failure_returns_error() {
+        let dir = test_dir("acceptance-ws-failure");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop from handle_started
+            Err(WsError::Transport("temporary network glitch".to_owned())),
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+
+        let result = ctrl.handle_started(&MockListener::active_with_rate(48000));
+        assert!(result.is_err(), "transport failure must be returned");
+        let message = format!("{}", result.unwrap_err());
+        assert!(
+            message.contains("temporary network glitch"),
+            "error must surface the underlying transport failure"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

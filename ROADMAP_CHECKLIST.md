@@ -9,20 +9,20 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M0: Freeze current aloop baseline**
 
-- [ ] Document all current `snd-aloop` behaviour in a written acceptance specification
-- [ ] Define and write acceptance tests covering:
-  - [ ] Idle reboot
-  - [ ] First playback
-  - [ ] 44.1 → 48 → 96 kHz sample-rate changes
-  - [ ] Format changes
-  - [ ] Stop / start
+- [x] Document all current `snd-aloop` behaviour in a written acceptance specification
+- [x] Define and write acceptance tests covering:
+  - [x] Idle reboot
+  - [x] First playback
+  - [x] 44.1 → 48 → 96 kHz sample-rate changes
+  - [x] Format changes
+  - [x] Stop / start
   - [ ] GUI Apply and Save
-  - [ ] Active-config selection
+  - [x] Active-config selection
   - [ ] PCP backup
   - [ ] Reboot persistence
-  - [ ] Controller restart
-  - [ ] CamillaDSP restart
-  - [ ] Transient WebSocket failure
+  - [x] Controller restart
+  - [x] CamillaDSP restart
+  - [x] Transient WebSocket failure
 - [ ] All acceptance tests pass on the current codebase
 - [ ] ✅ **Gate 0 passed**: aloop baseline is reproducible through the defined acceptance suite
 
