@@ -24,7 +24,7 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] CamillaDSP restart
   - [x] Transient WebSocket failure
 - [x] All acceptance tests pass on the current codebase
-- [ ] ✅ **Gate 0 passed**: aloop baseline is reproducible through the defined acceptance suite
+- [x] ✅ **Gate 0 passed**: aloop baseline is reproducible through the defined acceptance suite
 
 ---
 
