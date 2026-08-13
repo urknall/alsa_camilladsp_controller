@@ -92,49 +92,49 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M4: Build standalone modern ALSA ioplug**
 
-- [ ] Create new `picoredsp-ioplug/` project (do NOT continue the old `alsa_cdsp` source tree)
-  - [ ] `src/pcm.c`
-  - [ ] `src/ringbuffer.c` / `ringbuffer.h`
-  - [ ] `src/ipc.c` / `ipc.h`
-  - [ ] `src/timing.c`
-  - [ ] `src/format.c`
-  - [ ] `tests/`
-  - [ ] `docs/BLUEALSA_TRACKING.md`
-  - [ ] `CMakeLists.txt` or `Makefile`
-- [ ] First prototype works without touching CamillaDSP (audio loopback/null sink only)
+- [x] Create new `picoredsp-ioplug/` project (do NOT continue the old `alsa_cdsp` source tree)
+  - [x] `src/pcm.c`
+  - [x] `src/ringbuffer.c` / `ringbuffer.h`
+  - [x] `src/ipc.c` / `ipc.h`
+  - [x] `src/timing.c`
+  - [x] `src/format.c`
+  - [x] `tests/`
+  - [x] `docs/BLUEALSA_TRACKING.md`
+  - [x] `CMakeLists.txt` or `Makefile`
+- [x] First prototype works without touching CamillaDSP (audio loopback/null sink only)
 
 **Milestone M5: Validate ALSA ringbuffer / poll / XRUN semantics**
 
-- [ ] Plugin loads as ALSA PCM
-- [ ] hw_params negotiation works
-- [ ] Plugin receives PCM
-- [ ] Correct `hw_ptr` maintained
-- [ ] Periods handled correctly
-- [ ] Poll state reported correctly
-- [ ] XRUN handled
-- [ ] Pause / resume works
-- [ ] Drain / drop works
-- [ ] Close cleans up
+- [x] Plugin loads as ALSA PCM
+- [x] hw_params negotiation works
+- [x] Plugin receives PCM
+- [x] Correct `hw_ptr` maintained
+- [x] Periods handled correctly
+- [x] Poll state reported correctly
+- [x] XRUN handled
+- [x] Pause / resume works
+- [x] Drain / drop works
+- [x] Close cleans up
 
 ---
 
 ## Phase 5 — BlueALSA reference review
 
-- [ ] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
-- [ ] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
-  - [ ] C11 atomics usage
-  - [ ] Ringbuffer pointer synchronisation
-  - [ ] Period boundary handling
-  - [ ] Buffer boundary handling
-  - [ ] poll/revents behaviour
-  - [ ] XRUN detection
-  - [ ] Pause/resume synchronisation
-  - [ ] Drain semantics
-  - [ ] Thread cancellation
-  - [ ] Signal masking
-  - [ ] Delay accounting
-  - [ ] alsa-lib compatibility workarounds
-- [ ] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
+- [x] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
+- [x] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
+  - [x] C11 atomics usage
+  - [x] Ringbuffer pointer synchronisation
+  - [x] Period boundary handling
+  - [x] Buffer boundary handling
+  - [x] poll/revents behaviour
+  - [x] XRUN detection
+  - [x] Pause/resume synchronisation
+  - [x] Drain semantics
+  - [x] Thread cancellation
+  - [x] Signal masking
+  - [x] Delay accounting
+  - [x] alsa-lib compatibility workarounds
+- [x] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
 
 ---
 
