@@ -6,6 +6,13 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const CAMILLA_STATE_CHANNELS: usize = 5;
+const ALOOP_CAPTURE_DEVICE: &str = "hw:Loopback,0,0";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeBackend {
+    Aloop,
+    Ioplug,
+}
 
 // ─── Statefile types ───────────────────────────────────────────────────────
 
@@ -165,6 +172,120 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
                     let resolved = abs.canonicalize().unwrap_or_else(|_| normalize_path(&abs));
                     *filename_val = YamlValue::String(resolved.to_string_lossy().into_owned());
                 }
+            }
+
+            fn runtime_managed_capture_field(name: &str) -> bool {
+                matches!(name, "type" | "device" | "format" | "channels" | "stop_on_inactive")
+            }
+
+            fn existing_capture_mapping<'a>(devices: &'a Mapping) -> AppResult<Option<&'a Mapping>> {
+                devices
+                    .get(yaml_key("capture"))
+                    .map(|value| mapping(value, "devices.capture"))
+                    .transpose()
+            }
+
+            fn existing_capture_format(existing_capture: Option<&Mapping>) -> AppResult<Option<String>> {
+                let Some(capture) = existing_capture else {
+                    return Ok(None);
+                };
+                let Some(value) = capture.get(yaml_key("format")) else {
+                    return Ok(None);
+                };
+                if value.is_null() {
+                    return Ok(None);
+                }
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| app_error("devices.capture.format must be a string"))
+            }
+
+            fn existing_capture_channels(existing_capture: Option<&Mapping>) -> AppResult<Option<u32>> {
+                let Some(capture) = existing_capture else {
+                    return Ok(None);
+                };
+                let Some(value) = capture.get(yaml_key("channels")) else {
+                    return Ok(None);
+                };
+                if value.is_null() {
+                    return Ok(None);
+                }
+                yaml_u32(value).ok_or_else(|| app_error("devices.capture.channels is missing or invalid"))
+            }
+
+            fn resolve_capture_channels(existing_capture: Option<&Mapping>, wave: &WaveFormat) -> AppResult<u32> {
+                let configured = existing_capture_channels(existing_capture)?;
+                if let (Some(configured), Some(channels)) = (configured, wave.channels) {
+                    if configured != channels {
+                        return Err(app_error(format!(
+                            "changing capture channels is not implemented \
+                             (config={configured}, stream={channels})"
+                        )));
+                    }
+                }
+                Ok(wave.channels.or(configured).unwrap_or(2))
+            }
+
+            fn base_runtime_capture(existing_capture: Option<&Mapping>) -> Mapping {
+                let mut capture = Mapping::new();
+                let Some(existing_capture) = existing_capture else {
+                    return capture;
+                };
+
+                for (key, value) in existing_capture {
+                    let preserve = key
+                        .as_str()
+                        .map(|name| !runtime_managed_capture_field(name))
+                        .unwrap_or(true);
+                    if preserve {
+                        capture.insert(key.clone(), value.clone());
+                    }
+                }
+
+                capture
+            }
+
+            fn build_runtime_capture(
+                existing_capture: Option<&Mapping>,
+                wave: &WaveFormat,
+                backend: RuntimeBackend,
+            ) -> AppResult<Mapping> {
+                let mut capture = base_runtime_capture(existing_capture);
+                let channels = resolve_capture_channels(existing_capture, wave)?;
+                let explicit_format = existing_capture_format(existing_capture)?;
+
+                match backend {
+                    RuntimeBackend::Aloop => {
+                        capture.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
+                        capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
+                        capture.insert(
+                            yaml_key("device"),
+                            YamlValue::String(ALOOP_CAPTURE_DEVICE.to_owned()),
+                        );
+                        capture.insert(yaml_key("stop_on_inactive"), YamlValue::Bool(true));
+
+                        if let Some(format) = wave.sample_format.clone().or(explicit_format) {
+                            let format_was_explicit = existing_capture
+                                .and_then(|capture| capture.get(yaml_key("format")))
+                                .map(|value| !value.is_null())
+                                .unwrap_or(false);
+                            if format_was_explicit {
+                                capture.insert(yaml_key("format"), YamlValue::String(format));
+                            }
+                        }
+                    }
+                    RuntimeBackend::Ioplug => {
+                        let format = wave.sample_format.clone().or(explicit_format).ok_or_else(|| {
+                            app_error("ioplug runtime capture format is missing and no fallback is configured")
+                        })?;
+                        capture.insert(yaml_key("type"), YamlValue::String("Stdin".to_owned()));
+                        capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
+                        capture.insert(yaml_key("format"), YamlValue::String(format));
+                    }
+                }
+
+                Ok(capture)
             }
         }
     }
@@ -365,8 +486,13 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
 
 // ─── Config adaptation ─────────────────────────────────────────────────────
 
-/// Adapt a CamillaDSP YAML config for the current wave format and return the
-/// updated YAML string.
+/// Adapt a CamillaDSP YAML config for the current wave format and the aloop
+/// backend, returning the updated YAML string.
+pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
+    adapt_config_for_backend(path, wave, RuntimeBackend::Aloop)
+}
+/// Adapt a CamillaDSP YAML config for the current wave format and runtime
+/// backend, returning the updated YAML string.
 ///
 /// The path is intentionally **re-read on every call**. Because the installer
 /// passes `active_config.yml` (a symlink managed by CamillaGUI), re-reading
@@ -385,10 +511,14 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
 /// * **samplerate** — updated in `devices.samplerate` unless a resampler is
 ///   present, in which case `devices.capture_samplerate` is set instead (and a
 ///   synchronous 1:1 resampler is removed for this runtime copy).
-/// * **format** — updated in `devices.capture.format` only when that key
-///   already exists with a non-null value (automatic format is left automatic).
-/// * **channels** — validated only; changing channel count is not supported.
-pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
+/// * **capture runtime fields** — `type`, `device`, `format`, `channels`, and
+///   `stop_on_inactive` are injected according to the selected backend while
+///   preserving user-owned capture fields such as `labels`.
+pub fn adapt_config_for_backend(
+    path: &Path,
+    wave: &WaveFormat,
+    backend: RuntimeBackend,
+) -> AppResult<String> {
     // Canonicalize to resolve symlinks and get the true config file directory.
     // This is required for correct relative-path resolution in filters.
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -439,37 +569,9 @@ pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
         }
     }
 
-    let capture_value = devices
-        .get_mut(yaml_key("capture"))
-        .ok_or_else(|| app_error("config has no 'devices.capture' section"))?;
-    let capture = mapping_mut(capture_value, "devices.capture")?;
-
-    // Only update `format` when the config explicitly sets it (non-null).
-    // Configs that omit `format` use CamillaDSP's automatic detection.
-    if let Some(format) = wave.sample_format.as_deref() {
-        let format_key = yaml_key("format");
-        if capture
-            .get(&format_key)
-            .map(|value| !value.is_null())
-            .unwrap_or(false)
-        {
-            capture.insert(format_key, YamlValue::String(format.to_owned()));
-        }
-    }
-
-    // Channel count changes are not supported; validate equality only.
-    if let Some(channels) = wave.channels {
-        let configured = capture
-            .get(yaml_key("channels"))
-            .and_then(yaml_u32)
-            .ok_or_else(|| app_error("devices.capture.channels is missing or invalid"))?;
-        if configured != channels {
-            return Err(app_error(format!(
-                "changing capture channels is not implemented \
-                 (config={configured}, stream={channels})"
-            )));
-        }
-    }
+    let existing_capture = existing_capture_mapping(devices)?;
+    let runtime_capture = build_runtime_capture(existing_capture, wave, backend)?;
+    devices.insert(yaml_key("capture"), YamlValue::Mapping(runtime_capture));
 
     // Convert relative FIR coefficient filenames to absolute paths, mirroring
     // CamillaGUI's behavior before SetConfig calls.
@@ -510,6 +612,16 @@ mod tests {
              playback:\n    type: Alsa\n    channels: 2\n    \
              device: \"{playback}\"\nfilters: {{}}\nmixers: {{}}\n\
              pipeline: []\nprocessors: {{}}\n"
+        )
+    }
+
+    fn portable_base_config(playback: &str) -> String {
+        format!(
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             capture:\n    labels:\n      - Input_L\n      - Input_R\n  \
+             playback:\n    type: Alsa\n    channels: 2\n    \
+             device: \"{playback}\"\nfilters:\n  Gain:\n    type: Gain\n    parameters:\n      gain: -3.0\nmixers: {{}}\n\
+             pipeline:\n  - type: Filter\n    channel: 0\n    names:\n      - Gain\nprocessors: {{}}\n"
         )
     }
 
@@ -652,6 +764,134 @@ mod tests {
             channels: Some(6),
         };
         assert!(adapt_config(&config, &wave).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_portable_baseline_adapts_for_aloop_and_ioplug() {
+        let dir = test_dir("portable-both");
+        let config = dir.join("config.yml");
+        fs::write(&config, portable_base_config("hw:DAC,0")).unwrap();
+
+        let wave = WaveFormat {
+            sample_rate: Some(96_000),
+            sample_format: Some("S24_4_LE".to_owned()),
+            channels: Some(2),
+        };
+
+        let aloop = adapt_config_for_backend(&config, &wave, RuntimeBackend::Aloop).unwrap();
+        let ioplug = adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).unwrap();
+
+        let aloop_parsed: YamlValue = serde_yaml_ng::from_str(&aloop).unwrap();
+        let ioplug_parsed: YamlValue = serde_yaml_ng::from_str(&ioplug).unwrap();
+
+        assert_eq!(aloop_parsed["devices"]["samplerate"].as_u64(), Some(96_000));
+        assert_eq!(
+            aloop_parsed["devices"]["capture"]["type"].as_str(),
+            Some("Alsa")
+        );
+        assert_eq!(
+            aloop_parsed["devices"]["capture"]["device"].as_str(),
+            Some("hw:Loopback,0,0")
+        );
+        assert_eq!(
+            aloop_parsed["devices"]["capture"]["stop_on_inactive"].as_bool(),
+            Some(true)
+        );
+        assert!(aloop_parsed["devices"]["capture"].get("format").is_none());
+        assert_eq!(
+            aloop_parsed["devices"]["capture"]["labels"][0].as_str(),
+            Some("Input_L")
+        );
+
+        assert_eq!(ioplug_parsed["devices"]["samplerate"].as_u64(), Some(96_000));
+        assert_eq!(
+            ioplug_parsed["devices"]["capture"]["type"].as_str(),
+            Some("Stdin")
+        );
+        assert_eq!(
+            ioplug_parsed["devices"]["capture"]["format"].as_str(),
+            Some("S24_4_LE")
+        );
+        assert!(ioplug_parsed["devices"]["capture"].get("device").is_none());
+        assert!(ioplug_parsed["devices"]["capture"]
+            .get("stop_on_inactive")
+            .is_none());
+        assert_eq!(
+            ioplug_parsed["devices"]["capture"]["labels"][1].as_str(),
+            Some("Input_R")
+        );
+
+        assert_eq!(
+            aloop_parsed["devices"]["playback"]["device"].as_str(),
+            Some("hw:DAC,0")
+        );
+        assert_eq!(
+            ioplug_parsed["devices"]["playback"]["device"].as_str(),
+            Some("hw:DAC,0")
+        );
+        assert_eq!(aloop_parsed["filters"]["Gain"]["type"].as_str(), Some("Gain"));
+        assert_eq!(ioplug_parsed["filters"]["Gain"]["type"].as_str(), Some("Gain"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ioplug_adaptation_removes_stale_aloop_runtime_fields() {
+        let dir = test_dir("ioplug-removes-aloop");
+        let config = dir.join("config.yml");
+        fs::write(&config, base_config("hw:DAC,0", Some("S16_LE"))).unwrap();
+
+        let raw = fs::read_to_string(&config).unwrap();
+        fs::write(
+            &config,
+            raw.replace(
+                "    format: S16_LE\n",
+                "    format: S16_LE\n    labels:\n      - Input_L\n      - Input_R\n",
+            ),
+        )
+        .unwrap();
+
+        let wave = WaveFormat {
+            sample_rate: Some(48_000),
+            sample_format: Some("S32_LE".to_owned()),
+            channels: Some(2),
+        };
+
+        let adapted = adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
+
+        assert_eq!(
+            parsed["devices"]["capture"]["type"].as_str(),
+            Some("Stdin")
+        );
+        assert_eq!(
+            parsed["devices"]["capture"]["format"].as_str(),
+            Some("S32_LE")
+        );
+        assert!(parsed["devices"]["capture"].get("device").is_none());
+        assert!(parsed["devices"]["capture"].get("stop_on_inactive").is_none());
+        assert_eq!(
+            parsed["devices"]["capture"]["labels"][0].as_str(),
+            Some("Input_L")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ioplug_adaptation_requires_format_when_no_runtime_or_baseline_format_exists() {
+        let dir = test_dir("ioplug-format-required");
+        let config = dir.join("config.yml");
+        fs::write(&config, portable_base_config("null")).unwrap();
+
+        let wave = WaveFormat {
+            sample_rate: Some(44_100),
+            sample_format: None,
+            channels: Some(2),
+        };
+
+        assert!(adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 
