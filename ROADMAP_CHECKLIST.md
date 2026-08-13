@@ -47,9 +47,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M2: Reimplement current aloop as backend module**
 
-- [ ] Move all aloop-specific logic into `backend/aloop.rs`
-- [ ] Remove backend-specific branching from the common core
-- [ ] Validate no regressions against the Gate 0 acceptance suite
+- [x] Move all aloop-specific logic into `backend/aloop.rs`
+- [x] Remove backend-specific branching from the common core
+- [x] Validate no regressions against the Gate 0 acceptance suite
 
 **Milestone M3: Establish identical behaviour / regression tests**
 

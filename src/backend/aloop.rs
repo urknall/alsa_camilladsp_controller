@@ -1,5 +1,5 @@
 use crate::camilladsp::alsa_capture::DeviceListener;
-use crate::backend::{detect_stream_event, StreamBackend, StreamEvent};
+use crate::backend::{detect_stream_event, ControllerBackend, StreamBackend, StreamEvent};
 use crate::core::errors::AppResult;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use std::thread;
@@ -58,6 +58,20 @@ impl<D: DeviceListener> StreamBackend for AloopBackend<D> {
             }
             thread::sleep(Duration::from_millis(NO_EVENT_SPIN_GUARD_MS));
         }
+    }
+}
+
+impl<D: DeviceListener> ControllerBackend for AloopBackend<D> {
+    fn poll_event(&mut self, timeout_ms: u32) -> AppResult<Option<StreamEvent>> {
+        AloopBackend::poll_event(self, timeout_ms)
+    }
+
+    fn current_snapshot(&self) -> &DeviceSnapshot {
+        AloopBackend::current_snapshot(self)
+    }
+
+    fn read_snapshot(&self) -> AppResult<DeviceSnapshot> {
+        AloopBackend::read_snapshot(self)
     }
 }
 

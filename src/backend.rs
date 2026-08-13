@@ -47,6 +47,32 @@ pub trait StreamBackend {
     fn next_event(&mut self) -> AppResult<StreamEvent>;
 }
 
+/// Interface used by the controller state machine to drive a stream backend.
+///
+/// Extends the basic event source with a non-blocking poll, access to the
+/// last-observed stream state, and a live snapshot refresh used when
+/// CamillaDSP reports a capture format change.  Both `AloopBackend` and the
+/// future `IoplugBackend` must implement this trait so the controller core
+/// can remain backend-neutral.
+pub trait ControllerBackend {
+    /// Poll for a stream event without blocking longer than `timeout_ms`.
+    ///
+    /// Returns `Some(event)` when a state transition is detected, `None` when
+    /// the poll period elapsed without a change.
+    fn poll_event(&mut self, timeout_ms: u32) -> AppResult<Option<StreamEvent>>;
+
+    /// Return a reference to the stream state observed during the last
+    /// `poll_event` call.  The returned snapshot is valid until the next call
+    /// to `poll_event`.
+    fn current_snapshot(&self) -> &DeviceSnapshot;
+
+    /// Perform a live re-read of the current stream state from the underlying
+    /// source (ALSA controls, IPC socket, etc.).  Used by the controller to
+    /// recover accurate stream parameters after a CamillaDSP
+    /// `CaptureFormatChange` stop reason.
+    fn read_snapshot(&self) -> AppResult<DeviceSnapshot>;
+}
+
 /// Detect a backend-neutral stream lifecycle event from consecutive snapshots.
 pub fn detect_stream_event(
     previous: &DeviceSnapshot,

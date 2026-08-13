@@ -1,8 +1,8 @@
 use crate::core::adaptation::adapt_config;
-use crate::camilladsp::alsa_capture::{AlsaLoopbackListener, DeviceListener};
+use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
-use crate::backend::StreamEvent;
+use crate::backend::{ControllerBackend, StreamEvent};
 use crate::camilladsp::websocket::{
     parse_processing_state, parse_stop_reason, CamillaClient, CamillaWs, CommandReason,
     ProcessingState, StopReason, WsError,
@@ -135,11 +135,11 @@ impl ConfigFingerprint {
 /// implementing the control loop that mirrors the Python reference controller's
 /// `--adapt` behavior.
 ///
-/// Generic over `D: DeviceListener` and `C: CamillaClient` to allow mock
+/// Generic over `B: ControllerBackend` and `C: CamillaClient` to allow mock
 /// injection for unit-testing the state machine.
-pub struct Controller<D: DeviceListener, C> {
+pub struct Controller<B: ControllerBackend, C> {
     client: C,
-    stream_backend: AloopBackend<D>,
+    stream_backend: B,
     adapt_path: PathBuf,
     fallback_wave: WaveFormat,
     /// The effective wave format used for the last (or pending) adaptation.
@@ -168,7 +168,7 @@ pub struct Controller<D: DeviceListener, C> {
     log_level: LogLevel,
 }
 
-impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
+impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
     // ── Internal helpers ────────────────────────────────────────────────
 
     fn stop_cdsp(&mut self) -> AppResult<()> {
@@ -695,7 +695,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
 }
 
 /// Concrete constructor using the production ALSA listener and WebSocket client.
-impl Controller<AlsaLoopbackListener, CamillaWs> {
+impl Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs> {
     pub fn new(args: &Args) -> AppResult<(Self, DeviceSnapshot)> {
         let listener = AlsaLoopbackListener::new(&args.device, args.log_level)?;
         let initial = listener.read_snapshot()?;
@@ -738,7 +738,6 @@ impl Controller<AlsaLoopbackListener, CamillaWs> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camilladsp::alsa_capture::DeviceListener;
     use crate::camilladsp::websocket::{CamillaClient, CommandReason, WsError};
     use crate::core::errors::AppResult;
     use crate::core::logging::LogLevel;
@@ -800,14 +799,23 @@ mod tests {
         }
     }
 
+    /// Mock stream backend that directly implements `ControllerBackend`.
+    ///
+    /// `poll_event` always returns `None`; the tests exercise the state machine
+    /// handlers directly rather than through the run loop.  `read_snapshot`
+    /// peeks at the front of the pre-loaded snapshot queue (without consuming
+    /// it) to supply the fresh snapshot used by `handle_stop_reason` for
+    /// `CaptureFormatChange`.
     struct MockListener {
         snapshots: VecDeque<DeviceSnapshot>,
+        current: DeviceSnapshot,
     }
 
     impl MockListener {
         fn new(snapshots: Vec<DeviceSnapshot>) -> Self {
             Self {
                 snapshots: snapshots.into(),
+                current: MockListener::inactive(),
             }
         }
         fn active_with_rate(rate: u32) -> DeviceSnapshot {
@@ -828,12 +836,12 @@ mod tests {
         }
     }
 
-    impl DeviceListener for MockListener {
-        fn wait_for_event(&self, _timeout_ms: u32) -> AppResult<bool> {
-            Ok(false)
+    impl ControllerBackend for MockListener {
+        fn poll_event(&mut self, _timeout_ms: u32) -> AppResult<Option<StreamEvent>> {
+            Ok(None)
         }
-        fn handle_events(&self) -> AppResult<()> {
-            Ok(())
+        fn current_snapshot(&self) -> &DeviceSnapshot {
+            &self.current
         }
         fn read_snapshot(&self) -> AppResult<DeviceSnapshot> {
             self.snapshots
@@ -872,11 +880,10 @@ mod tests {
         listener: MockListener,
         adapt_path: PathBuf,
     ) -> Controller<MockListener, MockClient> {
-        let initial = MockListener::inactive();
         let fallback_wave = WaveFormat::default();
         Controller {
             client,
-            stream_backend: AloopBackend::new(listener, initial, fallback_wave.clone()),
+            stream_backend: listener,
             current_wave: WaveFormat {
                 sample_rate: Some(44100),
                 sample_format: Some("S32_LE".to_owned()),
