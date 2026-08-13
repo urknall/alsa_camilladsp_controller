@@ -8,6 +8,43 @@ The most important conceptual change is:
 
 The Rust `picoredsp-controller` monitors the active `snd-aloop` stream and adapts the configuration in memory before starting/restarting CamillaDSP.
 
+## Config field ownership policy
+
+The persistent YAML is meant to hold the user's DSP design, while transport-specific
+capture details are determined by piCoreDSP at runtime.
+
+### User-owned fields
+
+These fields should remain part of the persistent baseline config and should be
+edited intentionally by the user:
+
+- `filters`
+- `mixers`
+- `processors`
+- `pipeline`
+- `devices.playback.*` (including the physical playback device)
+- `devices.capture.labels`
+- intentional gains, delays, crossovers, routing choices, and FIR coefficient references
+- deliberately tuned buffering values such as `devices.chunksize` and `devices.queuelimit`
+
+### Runtime/backend-managed fields
+
+These fields describe the active transport and should be treated as runtime values
+managed by piCoreDSP rather than as fixed user tuning knobs:
+
+- `devices.samplerate`
+- `devices.capture.type`
+- `devices.capture.device`
+- `devices.capture.format`
+- `devices.capture.channels`
+- `devices.capture.stop_on_inactive`
+- `devices.enable_rate_adjust`
+
+For the current `aloop` backend, piCoreDSP derives these values from the live ALSA
+loopback stream and builds the runtime CamillaDSP configuration in memory. Future
+backends must preserve the same ownership split so one saved DSP baseline can stay
+portable across backend implementations.
+
 ## Old vs. new audio flow
 
 ### Legacy setup

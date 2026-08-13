@@ -130,9 +130,9 @@ parameters in the YAML). The current piCoreDSP setup routes audio through
 `snd-aloop` and treats the YAML as a persistent **DSP baseline** while the Rust
 controller adapts live stream parameters in memory.
 
-For the complete old-vs-new flow, field-by-field migration rules, a recommended
-`devices:` block, CamillaGUI active-file semantics, and the `pcp backup` workflow,
-see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
+For the complete old-vs-new flow, config field ownership policy, field-by-field
+migration rules, a recommended `devices:` block, CamillaGUI active-file semantics,
+and the `pcp backup` workflow, see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
 
 ## Controller modules
 
