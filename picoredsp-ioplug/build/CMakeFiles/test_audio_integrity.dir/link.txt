@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_audio_integrity.dir/link.d CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o -o test_audio_integrity  libpcdsp_internals.a -lasound -lpthread

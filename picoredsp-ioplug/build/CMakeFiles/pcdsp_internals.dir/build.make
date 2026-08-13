@@ -128,12 +128,27 @@ CMakeFiles/pcdsp_internals.dir/src/timing.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/pcdsp_internals.dir/src/timing.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/timing.c -o CMakeFiles/pcdsp_internals.dir/src/timing.c.s
 
+CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o: CMakeFiles/pcdsp_internals.dir/flags.make
+CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c
+CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o: CMakeFiles/pcdsp_internals.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o -MF CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o.d -o CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o -c /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c
+
+CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c > CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.i
+
+CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c -o CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.s
+
 # Object files for target pcdsp_internals
 pcdsp_internals_OBJECTS = \
 "CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o" \
 "CMakeFiles/pcdsp_internals.dir/src/ipc.c.o" \
 "CMakeFiles/pcdsp_internals.dir/src/format.c.o" \
-"CMakeFiles/pcdsp_internals.dir/src/timing.c.o"
+"CMakeFiles/pcdsp_internals.dir/src/timing.c.o" \
+"CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o"
 
 # External object files for target pcdsp_internals
 pcdsp_internals_EXTERNAL_OBJECTS =
@@ -142,9 +157,10 @@ libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o
 libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/src/ipc.c.o
 libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/src/format.c.o
 libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/src/timing.c.o
+libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o
 libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/build.make
 libpcdsp_internals.a: CMakeFiles/pcdsp_internals.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Linking C static library libpcdsp_internals.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Linking C static library libpcdsp_internals.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/pcdsp_internals.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/pcdsp_internals.dir/link.txt --verbose=$(VERBOSE)
 

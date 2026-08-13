@@ -6,6 +6,7 @@ asound_module_pcm_picoredsp.so: \
   CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.o \
   CMakeFiles/asound_module_pcm_picoredsp.dir/src/format.c.o \
   CMakeFiles/asound_module_pcm_picoredsp.dir/src/timing.c.o \
+  CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.o \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libasound.so \
   /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libpthread.a \
   /usr/lib/gcc/x86_64-linux-gnu/13/libgcc.a \
@@ -42,6 +43,8 @@ CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.o:
 CMakeFiles/asound_module_pcm_picoredsp.dir/src/format.c.o:
 
 CMakeFiles/asound_module_pcm_picoredsp.dir/src/timing.c.o:
+
+CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.o:
 
 /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libasound.so:
 

@@ -10,6 +10,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/format.c" "CMakeFiles/pcdsp_internals.dir/src/format.c.o" "gcc" "CMakeFiles/pcdsp_internals.dir/src/format.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ipc.c" "CMakeFiles/pcdsp_internals.dir/src/ipc.c.o" "gcc" "CMakeFiles/pcdsp_internals.dir/src/ipc.c.o.d"
+  "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c" "CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o" "gcc" "CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ringbuffer.c" "CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o" "gcc" "CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/timing.c" "CMakeFiles/pcdsp_internals.dir/src/timing.c.o" "gcc" "CMakeFiles/pcdsp_internals.dir/src/timing.c.o.d"
   )

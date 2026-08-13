@@ -69,6 +69,9 @@ all: CMakeFiles/test_ringbuffer.dir/all
 all: CMakeFiles/test_format.dir/all
 all: CMakeFiles/test_timing.dir/all
 all: CMakeFiles/test_ipc.dir/all
+all: CMakeFiles/test_pcm_worker.dir/all
+all: CMakeFiles/test_audio_integrity.dir/all
+all: CMakeFiles/test_pcm_integration.dir/all
 .PHONY : all
 
 # The main recursive "codegen" target.
@@ -78,6 +81,9 @@ codegen: CMakeFiles/test_ringbuffer.dir/codegen
 codegen: CMakeFiles/test_format.dir/codegen
 codegen: CMakeFiles/test_timing.dir/codegen
 codegen: CMakeFiles/test_ipc.dir/codegen
+codegen: CMakeFiles/test_pcm_worker.dir/codegen
+codegen: CMakeFiles/test_audio_integrity.dir/codegen
+codegen: CMakeFiles/test_pcm_integration.dir/codegen
 .PHONY : codegen
 
 # The main recursive "preinstall" target.
@@ -91,6 +97,9 @@ clean: CMakeFiles/test_ringbuffer.dir/clean
 clean: CMakeFiles/test_format.dir/clean
 clean: CMakeFiles/test_timing.dir/clean
 clean: CMakeFiles/test_ipc.dir/clean
+clean: CMakeFiles/test_pcm_worker.dir/clean
+clean: CMakeFiles/test_audio_integrity.dir/clean
+clean: CMakeFiles/test_pcm_integration.dir/clean
 .PHONY : clean
 
 #=============================================================================
@@ -100,12 +109,12 @@ clean: CMakeFiles/test_ipc.dir/clean
 CMakeFiles/asound_module_pcm_picoredsp.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=1,2,3,4,5,6 "Built target asound_module_pcm_picoredsp"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=1,2,3,4,5,6,7 "Built target asound_module_pcm_picoredsp"
 .PHONY : CMakeFiles/asound_module_pcm_picoredsp.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/asound_module_pcm_picoredsp.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 6
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 7
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/asound_module_pcm_picoredsp.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
 .PHONY : CMakeFiles/asound_module_pcm_picoredsp.dir/rule
@@ -117,7 +126,7 @@ asound_module_pcm_picoredsp: CMakeFiles/asound_module_pcm_picoredsp.dir/rule
 # codegen rule for target.
 CMakeFiles/asound_module_pcm_picoredsp.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=1,2,3,4,5,6 "Finished codegen for target asound_module_pcm_picoredsp"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=1,2,3,4,5,6,7 "Finished codegen for target asound_module_pcm_picoredsp"
 .PHONY : CMakeFiles/asound_module_pcm_picoredsp.dir/codegen
 
 # clean rule for target.
@@ -132,12 +141,12 @@ CMakeFiles/asound_module_pcm_picoredsp.dir/clean:
 CMakeFiles/pcdsp_internals.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=7,8,9,10,11 "Built target pcdsp_internals"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=8,9,10,11,12,13 "Built target pcdsp_internals"
 .PHONY : CMakeFiles/pcdsp_internals.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/pcdsp_internals.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 5
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 6
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/pcdsp_internals.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
 .PHONY : CMakeFiles/pcdsp_internals.dir/rule
@@ -149,7 +158,7 @@ pcdsp_internals: CMakeFiles/pcdsp_internals.dir/rule
 # codegen rule for target.
 CMakeFiles/pcdsp_internals.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=7,8,9,10,11 "Finished codegen for target pcdsp_internals"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=8,9,10,11,12,13 "Finished codegen for target pcdsp_internals"
 .PHONY : CMakeFiles/pcdsp_internals.dir/codegen
 
 # clean rule for target.
@@ -164,12 +173,12 @@ CMakeFiles/pcdsp_internals.dir/clean:
 CMakeFiles/test_ringbuffer.dir/all: CMakeFiles/pcdsp_internals.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ringbuffer.dir/build.make CMakeFiles/test_ringbuffer.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ringbuffer.dir/build.make CMakeFiles/test_ringbuffer.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=17,18 "Built target test_ringbuffer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=26,27 "Built target test_ringbuffer"
 .PHONY : CMakeFiles/test_ringbuffer.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/test_ringbuffer.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_ringbuffer.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
 .PHONY : CMakeFiles/test_ringbuffer.dir/rule
@@ -181,7 +190,7 @@ test_ringbuffer: CMakeFiles/test_ringbuffer.dir/rule
 # codegen rule for target.
 CMakeFiles/test_ringbuffer.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ringbuffer.dir/build.make CMakeFiles/test_ringbuffer.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=17,18 "Finished codegen for target test_ringbuffer"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=26,27 "Finished codegen for target test_ringbuffer"
 .PHONY : CMakeFiles/test_ringbuffer.dir/codegen
 
 # clean rule for target.
@@ -196,12 +205,12 @@ CMakeFiles/test_ringbuffer.dir/clean:
 CMakeFiles/test_format.dir/all: CMakeFiles/pcdsp_internals.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_format.dir/build.make CMakeFiles/test_format.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_format.dir/build.make CMakeFiles/test_format.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=12,13 "Built target test_format"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=16,17 "Built target test_format"
 .PHONY : CMakeFiles/test_format.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/test_format.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_format.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
 .PHONY : CMakeFiles/test_format.dir/rule
@@ -213,7 +222,7 @@ test_format: CMakeFiles/test_format.dir/rule
 # codegen rule for target.
 CMakeFiles/test_format.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_format.dir/build.make CMakeFiles/test_format.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=12,13 "Finished codegen for target test_format"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=16,17 "Finished codegen for target test_format"
 .PHONY : CMakeFiles/test_format.dir/codegen
 
 # clean rule for target.
@@ -228,12 +237,12 @@ CMakeFiles/test_format.dir/clean:
 CMakeFiles/test_timing.dir/all: CMakeFiles/pcdsp_internals.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_timing.dir/build.make CMakeFiles/test_timing.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_timing.dir/build.make CMakeFiles/test_timing.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=19,20 "Built target test_timing"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=28,29 "Built target test_timing"
 .PHONY : CMakeFiles/test_timing.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/test_timing.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 7
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 8
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_timing.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
 .PHONY : CMakeFiles/test_timing.dir/rule
@@ -245,7 +254,7 @@ test_timing: CMakeFiles/test_timing.dir/rule
 # codegen rule for target.
 CMakeFiles/test_timing.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_timing.dir/build.make CMakeFiles/test_timing.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=19,20 "Finished codegen for target test_timing"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=28,29 "Finished codegen for target test_timing"
 .PHONY : CMakeFiles/test_timing.dir/codegen
 
 # clean rule for target.
@@ -260,7 +269,7 @@ CMakeFiles/test_timing.dir/clean:
 CMakeFiles/test_ipc.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=14,15,16 "Built target test_ipc"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=18,19,20 "Built target test_ipc"
 .PHONY : CMakeFiles/test_ipc.dir/all
 
 # Build rule for subdir invocation for target.
@@ -277,13 +286,109 @@ test_ipc: CMakeFiles/test_ipc.dir/rule
 # codegen rule for target.
 CMakeFiles/test_ipc.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=14,15,16 "Finished codegen for target test_ipc"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=18,19,20 "Finished codegen for target test_ipc"
 .PHONY : CMakeFiles/test_ipc.dir/codegen
 
 # clean rule for target.
 CMakeFiles/test_ipc.dir/clean:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/clean
 .PHONY : CMakeFiles/test_ipc.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/test_pcm_worker.dir
+
+# All Build rule for target.
+CMakeFiles/test_pcm_worker.dir/all: CMakeFiles/pcdsp_internals.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=24,25 "Built target test_pcm_worker"
+.PHONY : CMakeFiles/test_pcm_worker.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/test_pcm_worker.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 8
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_pcm_worker.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
+.PHONY : CMakeFiles/test_pcm_worker.dir/rule
+
+# Convenience name for target.
+test_pcm_worker: CMakeFiles/test_pcm_worker.dir/rule
+.PHONY : test_pcm_worker
+
+# codegen rule for target.
+CMakeFiles/test_pcm_worker.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=24,25 "Finished codegen for target test_pcm_worker"
+.PHONY : CMakeFiles/test_pcm_worker.dir/codegen
+
+# clean rule for target.
+CMakeFiles/test_pcm_worker.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/clean
+.PHONY : CMakeFiles/test_pcm_worker.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/test_audio_integrity.dir
+
+# All Build rule for target.
+CMakeFiles/test_audio_integrity.dir/all: CMakeFiles/pcdsp_internals.dir/all
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=14,15 "Built target test_audio_integrity"
+.PHONY : CMakeFiles/test_audio_integrity.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/test_audio_integrity.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 8
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_audio_integrity.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
+.PHONY : CMakeFiles/test_audio_integrity.dir/rule
+
+# Convenience name for target.
+test_audio_integrity: CMakeFiles/test_audio_integrity.dir/rule
+.PHONY : test_audio_integrity
+
+# codegen rule for target.
+CMakeFiles/test_audio_integrity.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=14,15 "Finished codegen for target test_audio_integrity"
+.PHONY : CMakeFiles/test_audio_integrity.dir/codegen
+
+# clean rule for target.
+CMakeFiles/test_audio_integrity.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/clean
+.PHONY : CMakeFiles/test_audio_integrity.dir/clean
+
+#=============================================================================
+# Target rules for target CMakeFiles/test_pcm_integration.dir
+
+# All Build rule for target.
+CMakeFiles/test_pcm_integration.dir/all:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/depend
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=21,22,23 "Built target test_pcm_integration"
+.PHONY : CMakeFiles/test_pcm_integration.dir/all
+
+# Build rule for subdir invocation for target.
+CMakeFiles/test_pcm_integration.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 3
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/test_pcm_integration.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles 0
+.PHONY : CMakeFiles/test_pcm_integration.dir/rule
+
+# Convenience name for target.
+test_pcm_integration: CMakeFiles/test_pcm_integration.dir/rule
+.PHONY : test_pcm_integration
+
+# codegen rule for target.
+CMakeFiles/test_pcm_integration.dir/codegen:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles --progress-num=21,22,23 "Finished codegen for target test_pcm_integration"
+.PHONY : CMakeFiles/test_pcm_integration.dir/codegen
+
+# clean rule for target.
+CMakeFiles/test_pcm_integration.dir/clean:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/clean
+.PHONY : CMakeFiles/test_pcm_integration.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

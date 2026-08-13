@@ -1,10 +1,10 @@
-Start testing: Aug 13 23:10 UTC
+Start testing: Aug 13 23:26 UTC
 ----------------------------------------------------------
-1/4 Testing: test_ringbuffer
-1/4 Test: test_ringbuffer
+1/7 Testing: test_ringbuffer
+1/7 Test: test_ringbuffer
 Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_ringbuffer"
 Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
-"test_ringbuffer" start time: Aug 13 23:10 UTC
+"test_ringbuffer" start time: Aug 13 23:26 UTC
 Output:
 ----------------------------------------------------------
 test_ringbuffer
@@ -25,15 +25,15 @@ test_ringbuffer
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"test_ringbuffer" end time: Aug 13 23:10 UTC
+"test_ringbuffer" end time: Aug 13 23:26 UTC
 "test_ringbuffer" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-2/4 Testing: test_format
-2/4 Test: test_format
+2/7 Testing: test_format
+2/7 Test: test_format
 Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_format"
 Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
-"test_format" start time: Aug 13 23:10 UTC
+"test_format" start time: Aug 13 23:26 UTC
 Output:
 ----------------------------------------------------------
 test_format
@@ -56,15 +56,15 @@ test_format
 Test time =   0.00 sec
 ----------------------------------------------------------
 Test Passed.
-"test_format" end time: Aug 13 23:10 UTC
+"test_format" end time: Aug 13 23:26 UTC
 "test_format" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-3/4 Testing: test_timing
-3/4 Test: test_timing
+3/7 Testing: test_timing
+3/7 Test: test_timing
 Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_timing"
 Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
-"test_timing" start time: Aug 13 23:10 UTC
+"test_timing" start time: Aug 13 23:26 UTC
 Output:
 ----------------------------------------------------------
 test_timing
@@ -80,15 +80,15 @@ test_timing
 Test time =   0.09 sec
 ----------------------------------------------------------
 Test Passed.
-"test_timing" end time: Aug 13 23:10 UTC
+"test_timing" end time: Aug 13 23:26 UTC
 "test_timing" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-4/4 Testing: test_ipc
-4/4 Test: test_ipc
+4/7 Testing: test_ipc
+4/7 Test: test_ipc
 Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_ipc"
 Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
-"test_ipc" start time: Aug 13 23:10 UTC
+"test_ipc" start time: Aug 13 23:26 UTC
 Output:
 ----------------------------------------------------------
 test_ipc
@@ -139,8 +139,104 @@ test_ipc
 Test time =   1.04 sec
 ----------------------------------------------------------
 Test Passed.
-"test_ipc" end time: Aug 13 23:10 UTC
+"test_ipc" end time: Aug 13 23:26 UTC
 "test_ipc" time elapsed: 00:00:01
 ----------------------------------------------------------
 
-End testing: Aug 13 23:10 UTC
+5/7 Testing: test_pcm_worker
+5/7 Test: test_pcm_worker
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_pcm_worker"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_pcm_worker" start time: Aug 13 23:26 UTC
+Output:
+----------------------------------------------------------
+test_pcm_worker
+  drain_period_writes_correct_bytes_to_pipe ... ok
+  drain_period_handles_epipe_and_returns_negative_errno ... ok
+  drain_period_partial_ring_buffer_writes_available_frames ... ok
+  drain_period_returns_zero_on_empty_ring_buffer ... ok
+  drain_period_wraps_around_ring_buffer_boundary ... ok
+  null_sink_drops_period_frames_from_ring_buffer ... ok
+  null_sink_returns_fewer_frames_when_ring_buffer_partially_filled ... ok
+  null_sink_returns_zero_on_empty_ring_buffer ... ok
+  null_sink_skips_sleep_when_rate_is_zero ... ok
+  period_wrap_across_ring_buffer_boundary ... ok
+  buffer_size_not_divisible_by_period_partial_final_period ... ok
+  epipe_on_read_end_close_returns_minus_epipe ... ok
+  worker_survives_eintr_and_delivers_all_data ... ok
+  eventfd_is_signalled_after_each_period ... ok
+  eventfd_accumulates_multiple_signals ... ok
+  failure_rust_daemon_restart_ipc_send_stop_fails_gracefully ... ok
+  failure_camilladsp_early_exit_detected_via_epipe ... ok
+
+17 passed, 0 failed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_pcm_worker" end time: Aug 13 23:26 UTC
+"test_pcm_worker" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/7 Testing: test_audio_integrity
+6/7 Test: test_audio_integrity
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_audio_integrity"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_audio_integrity" start time: Aug 13 23:26 UTC
+Output:
+----------------------------------------------------------
+test_audio_integrity
+  s16_le_stereo_bit_transparent ... ok
+  s24_3le_stereo_bit_transparent ... ok
+  s24_le_stereo_bit_transparent ... ok
+  s32_le_stereo_bit_transparent ... ok
+  f32_le_stereo_bit_transparent ... ok
+  s32_le_8ch_no_channel_swap ... ok
+  s16_le_mono_all_sample_rates ... ok
+  s24_3le_3byte_alignment_no_truncation ... ok
+  no_gain_modification_s32_le ... ok
+  no_padding_corruption_s24_le ... ok
+  large_transfer_multiple_chunks_bit_transparent ... ok
+
+11 passed, 0 failed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_audio_integrity" end time: Aug 13 23:26 UTC
+"test_audio_integrity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/7 Testing: test_pcm_integration
+7/7 Test: test_pcm_integration
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_pcm_integration"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_pcm_integration" start time: Aug 13 23:26 UTC
+Output:
+----------------------------------------------------------
+test_pcm_integration
+  plugin_opens_and_closes_without_controller ... ok
+  rapid_open_close_does_not_leak_fds ... ok
+  hw_params_fails_when_no_controller_present ... ALSA lib /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm.c:359:(pcdsp_hw_params) picoredsp: controller unavailable (2): No such file or directory
+ok
+  hw_params_succeeds_with_mock_controller_and_ready ... ALSA lib /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm.c:383:(pcdsp_hw_params) picoredsp: failed waiting for READY (104): Connection reset by peer
+ok
+  hw_params_fails_with_error_config_from_controller ... ALSA lib /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm.c:381:(pcdsp_hw_params) picoredsp: controller rejected stream (error code 1)
+ok
+  hw_params_fails_with_error_playback_device_from_controller ... ALSA lib /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm.c:381:(pcdsp_hw_params) picoredsp: controller rejected stream (error code 2)
+ok
+  hw_params_fails_for_unsupported_format ... ok
+  poll_descriptors_count_is_one ... ok
+  poll_revents_returns_pollout_when_eventfd_signalled ... ok
+  rapid_format_change_open_close_cycle ... ok
+
+10 passed, 0 failed
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"test_pcm_integration" end time: Aug 13 23:26 UTC
+"test_pcm_integration" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 13 23:26 UTC

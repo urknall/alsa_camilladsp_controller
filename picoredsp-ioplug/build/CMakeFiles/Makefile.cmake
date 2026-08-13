@@ -57,4 +57,7 @@ set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/test_format.dir/DependInfo.cmake"
   "CMakeFiles/test_timing.dir/DependInfo.cmake"
   "CMakeFiles/test_ipc.dir/DependInfo.cmake"
+  "CMakeFiles/test_pcm_worker.dir/DependInfo.cmake"
+  "CMakeFiles/test_audio_integrity.dir/DependInfo.cmake"
+  "CMakeFiles/test_pcm_integration.dir/DependInfo.cmake"
   )

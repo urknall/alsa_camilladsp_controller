@@ -11,6 +11,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/format.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/format.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/format.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ipc.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm.c.o.d"
+  "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ringbuffer.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/ringbuffer.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/ringbuffer.c.o.d"
   "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/timing.c" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/timing.c.o" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/src/timing.c.o.d"
   "" "asound_module_pcm_picoredsp.so" "gcc" "CMakeFiles/asound_module_pcm_picoredsp.dir/link.d"

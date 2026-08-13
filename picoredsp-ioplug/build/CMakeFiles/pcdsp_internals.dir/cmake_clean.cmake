@@ -3,6 +3,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/pcdsp_internals.dir/src/format.c.o.d"
   "CMakeFiles/pcdsp_internals.dir/src/ipc.c.o"
   "CMakeFiles/pcdsp_internals.dir/src/ipc.c.o.d"
+  "CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o"
+  "CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o.d"
   "CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o"
   "CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o.d"
   "CMakeFiles/pcdsp_internals.dir/src/timing.c.o"

@@ -249,6 +249,45 @@ test_ipc/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/build
 .PHONY : test_ipc/fast
 
+#=============================================================================
+# Target rules for targets named test_pcm_worker
+
+# Build rule for target.
+test_pcm_worker: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_pcm_worker
+.PHONY : test_pcm_worker
+
+# fast build rule for target.
+test_pcm_worker/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/build
+.PHONY : test_pcm_worker/fast
+
+#=============================================================================
+# Target rules for targets named test_audio_integrity
+
+# Build rule for target.
+test_audio_integrity: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_audio_integrity
+.PHONY : test_audio_integrity
+
+# fast build rule for target.
+test_audio_integrity/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/build
+.PHONY : test_audio_integrity/fast
+
+#=============================================================================
+# Target rules for targets named test_pcm_integration
+
+# Build rule for target.
+test_pcm_integration: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_pcm_integration
+.PHONY : test_pcm_integration
+
+# fast build rule for target.
+test_pcm_integration/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/build
+.PHONY : test_pcm_integration/fast
+
 src/format.o: src/format.c.o
 .PHONY : src/format.o
 
@@ -284,6 +323,7 @@ src/ipc.c.o:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/ipc.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/src/ipc.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/src/ipc.c.o
 .PHONY : src/ipc.c.o
 
 src/ipc.i: src/ipc.c.i
@@ -294,6 +334,7 @@ src/ipc.c.i:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/ipc.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/src/ipc.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/src/ipc.c.i
 .PHONY : src/ipc.c.i
 
 src/ipc.s: src/ipc.c.s
@@ -304,6 +345,7 @@ src/ipc.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/ipc.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/ipc.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/src/ipc.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/src/ipc.c.s
 .PHONY : src/ipc.c.s
 
 src/pcm.o: src/pcm.c.o
@@ -329,6 +371,33 @@ src/pcm.s: src/pcm.c.s
 src/pcm.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm.c.s
 .PHONY : src/pcm.c.s
+
+src/pcm_worker.o: src/pcm_worker.c.o
+.PHONY : src/pcm_worker.o
+
+# target to build an object file
+src/pcm_worker.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o
+.PHONY : src/pcm_worker.c.o
+
+src/pcm_worker.i: src/pcm_worker.c.i
+.PHONY : src/pcm_worker.i
+
+# target to preprocess a source file
+src/pcm_worker.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.i
+.PHONY : src/pcm_worker.c.i
+
+src/pcm_worker.s: src/pcm_worker.c.s
+.PHONY : src/pcm_worker.s
+
+# target to generate assembly for a file
+src/pcm_worker.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/asound_module_pcm_picoredsp.dir/build.make CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm_worker.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.s
+.PHONY : src/pcm_worker.c.s
 
 src/ringbuffer.o: src/ringbuffer.c.o
 .PHONY : src/ringbuffer.o
@@ -384,6 +453,30 @@ src/timing.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/pcdsp_internals.dir/build.make CMakeFiles/pcdsp_internals.dir/src/timing.c.s
 .PHONY : src/timing.c.s
 
+tests/test_audio_integrity.o: tests/test_audio_integrity.c.o
+.PHONY : tests/test_audio_integrity.o
+
+# target to build an object file
+tests/test_audio_integrity.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
+.PHONY : tests/test_audio_integrity.c.o
+
+tests/test_audio_integrity.i: tests/test_audio_integrity.c.i
+.PHONY : tests/test_audio_integrity.i
+
+# target to preprocess a source file
+tests/test_audio_integrity.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.i
+.PHONY : tests/test_audio_integrity.c.i
+
+tests/test_audio_integrity.s: tests/test_audio_integrity.c.s
+.PHONY : tests/test_audio_integrity.s
+
+# target to generate assembly for a file
+tests/test_audio_integrity.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_audio_integrity.dir/build.make CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.s
+.PHONY : tests/test_audio_integrity.c.s
+
 tests/test_format.o: tests/test_format.c.o
 .PHONY : tests/test_format.o
 
@@ -431,6 +524,54 @@ tests/test_ipc.s: tests/test_ipc.c.s
 tests/test_ipc.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_ipc.dir/build.make CMakeFiles/test_ipc.dir/tests/test_ipc.c.s
 .PHONY : tests/test_ipc.c.s
+
+tests/test_pcm_integration.o: tests/test_pcm_integration.c.o
+.PHONY : tests/test_pcm_integration.o
+
+# target to build an object file
+tests/test_pcm_integration.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/tests/test_pcm_integration.c.o
+.PHONY : tests/test_pcm_integration.c.o
+
+tests/test_pcm_integration.i: tests/test_pcm_integration.c.i
+.PHONY : tests/test_pcm_integration.i
+
+# target to preprocess a source file
+tests/test_pcm_integration.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/tests/test_pcm_integration.c.i
+.PHONY : tests/test_pcm_integration.c.i
+
+tests/test_pcm_integration.s: tests/test_pcm_integration.c.s
+.PHONY : tests/test_pcm_integration.s
+
+# target to generate assembly for a file
+tests/test_pcm_integration.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_integration.dir/build.make CMakeFiles/test_pcm_integration.dir/tests/test_pcm_integration.c.s
+.PHONY : tests/test_pcm_integration.c.s
+
+tests/test_pcm_worker.o: tests/test_pcm_worker.c.o
+.PHONY : tests/test_pcm_worker.o
+
+# target to build an object file
+tests/test_pcm_worker.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/tests/test_pcm_worker.c.o
+.PHONY : tests/test_pcm_worker.c.o
+
+tests/test_pcm_worker.i: tests/test_pcm_worker.c.i
+.PHONY : tests/test_pcm_worker.i
+
+# target to preprocess a source file
+tests/test_pcm_worker.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/tests/test_pcm_worker.c.i
+.PHONY : tests/test_pcm_worker.c.i
+
+tests/test_pcm_worker.s: tests/test_pcm_worker.c.s
+.PHONY : tests/test_pcm_worker.s
+
+# target to generate assembly for a file
+tests/test_pcm_worker.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_pcm_worker.dir/build.make CMakeFiles/test_pcm_worker.dir/tests/test_pcm_worker.c.s
+.PHONY : tests/test_pcm_worker.c.s
 
 tests/test_ringbuffer.o: tests/test_ringbuffer.c.o
 .PHONY : tests/test_ringbuffer.o
@@ -495,8 +636,11 @@ help:
 	@echo "... test"
 	@echo "... asound_module_pcm_picoredsp"
 	@echo "... pcdsp_internals"
+	@echo "... test_audio_integrity"
 	@echo "... test_format"
 	@echo "... test_ipc"
+	@echo "... test_pcm_integration"
+	@echo "... test_pcm_worker"
 	@echo "... test_ringbuffer"
 	@echo "... test_timing"
 	@echo "... src/format.o"
@@ -508,18 +652,30 @@ help:
 	@echo "... src/pcm.o"
 	@echo "... src/pcm.i"
 	@echo "... src/pcm.s"
+	@echo "... src/pcm_worker.o"
+	@echo "... src/pcm_worker.i"
+	@echo "... src/pcm_worker.s"
 	@echo "... src/ringbuffer.o"
 	@echo "... src/ringbuffer.i"
 	@echo "... src/ringbuffer.s"
 	@echo "... src/timing.o"
 	@echo "... src/timing.i"
 	@echo "... src/timing.s"
+	@echo "... tests/test_audio_integrity.o"
+	@echo "... tests/test_audio_integrity.i"
+	@echo "... tests/test_audio_integrity.s"
 	@echo "... tests/test_format.o"
 	@echo "... tests/test_format.i"
 	@echo "... tests/test_format.s"
 	@echo "... tests/test_ipc.o"
 	@echo "... tests/test_ipc.i"
 	@echo "... tests/test_ipc.s"
+	@echo "... tests/test_pcm_integration.o"
+	@echo "... tests/test_pcm_integration.i"
+	@echo "... tests/test_pcm_integration.s"
+	@echo "... tests/test_pcm_worker.o"
+	@echo "... tests/test_pcm_worker.i"
+	@echo "... tests/test_pcm_worker.s"
 	@echo "... tests/test_ringbuffer.o"
 	@echo "... tests/test_ringbuffer.i"
 	@echo "... tests/test_ringbuffer.s"

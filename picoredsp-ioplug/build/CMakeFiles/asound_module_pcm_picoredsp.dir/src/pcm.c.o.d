@@ -94,6 +94,7 @@ CMakeFiles/asound_module_pcm_picoredsp.dir/src/pcm.c.o: \
  /usr/include/alsa/pcm_ioplug.h \
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/format.h \
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ipc.h \
+ /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.h \
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ringbuffer.h \
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stdatomic.h \
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/timing.h \

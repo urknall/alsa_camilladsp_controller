@@ -322,10 +322,11 @@ impl BackendProfile for IoplugBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camilladsp::supervisor::StdinSupervisor;
     use crate::ipc::protocol::PluginMessage;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn test_socket_path(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -586,5 +587,140 @@ mod tests {
         let backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
         assert_eq!(backend.detector(), StreamDetector::IoplugIpc);
         assert_eq!(backend.transport(), AudioTransport::StdinPipe);
+    }
+
+    // ── Failure scenario tests (M10 checklist) ────────────────────────────
+
+    /// M10 failure scenario: "Plugin/application disappears: Rust cleans up
+    /// CamillaDSP (control socket close + PCM fd close)".
+    ///
+    /// Verify the full Rust side of the scenario end-to-end:
+    /// 1. Plugin connects and sends START → backend emits `Started`.
+    /// 2. Controller acknowledges with READY.
+    /// 3. Plugin drops the socket (application crash / process exit).
+    /// 4. `poll_event` detects the disconnect and returns `Stopped`.
+    /// 5. Controller calls `supervisor.stop_stream()` to close the pipe
+    ///    write-end → the spawned process sees EOF and exits.
+    /// 6. `supervisor.is_running()` returns `false`.
+    #[test]
+    fn failure_plugin_disappears_supervisor_cleans_up_camilladsp() {
+        let path = test_socket_path("disappear-cleanup");
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+
+        // Write a tiny dummy config for the supervisor (cat ignores its args).
+        let cfg = std::env::temp_dir()
+            .join(format!("picoredsp-disappear-{}.txt", std::process::id()));
+        std::fs::write(&cfg, "dummy").unwrap();
+        let mut supervisor = StdinSupervisor::new("/bin/cat", &cfg, LogLevel::Error);
+
+        let path2 = path.clone();
+        let client_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&path2);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            // Wait for READY (2 bytes).
+            let mut buf = [0u8; 2];
+            client.read_exact(&mut buf).unwrap();
+            // Drop the socket — simulate application crash.
+            drop(client);
+        });
+
+        // Wait for Started event.
+        loop {
+            if backend.poll_event(200).unwrap().is_some() {
+                break;
+            }
+        }
+
+        // Start CamillaDSP (use `/bin/cat` as a stand-in).
+        let write_fd = supervisor.start_stream().unwrap();
+        assert!(supervisor.is_running(), "cat should be running");
+
+        // Send READY to plugin (plain, no SCM_RIGHTS for this test).
+        backend.send_ready_to_plugin().unwrap();
+
+        // Wait for Stopped event (plugin disconnected).
+        let event = loop {
+            match backend.poll_event(200).unwrap() {
+                Some(e) => break e,
+                None => {}
+            }
+        };
+        assert_eq!(event, StreamEvent::Stopped);
+
+        // Controller cleans up: close our write-end of the pipe.
+        // When `cat` has no more data and its stdin is closed it exits.
+        supervisor.stop_stream();
+        // Closing the write-end is enough for `cat` to exit.
+        assert!(
+            !supervisor.is_running(),
+            "cat should have exited after pipe write-end was closed"
+        );
+
+        let _ = client_handle.join();
+        let _ = std::fs::remove_file(&cfg);
+        // Suppress unused-variable warning — write_fd was returned by start_stream.
+        let _ = write_fd;
+    }
+
+    /// M10 failure scenario: "Rust daemon restarts mid-stream: active stream
+    /// fails cleanly (reconnect not required for v1)".
+    ///
+    /// When Rust restarts its `StdinSupervisor` is dropped, which closes
+    /// Rust's write-end and kills CamillaDSP.  The plugin still holds its
+    /// copy of the pipe write-end (received via SCM_RIGHTS), but once
+    /// CamillaDSP is gone its next `write()` into the pipe returns EPIPE.
+    /// The worker thread detects EPIPE and stops → the stream "fails cleanly".
+    ///
+    /// This test verifies the EPIPE signal path using a manual pipe pair:
+    /// 1. Create a pipe (read-end = "CamillaDSP stdin", write-end = "plugin").
+    /// 2. Close the read-end (simulating CamillaDSP exiting after Rust restart).
+    /// 3. Write to the write-end → must get EPIPE.
+    ///
+    /// The supervisor's cleanup path (killing the process) is verified
+    /// separately by the `failure_plugin_disappears_*` test and the supervisor
+    /// unit tests in `camilladsp::supervisor`.
+    #[test]
+    fn failure_rust_restart_mid_stream_plugin_gets_epipe() {
+        // Create a pipe manually: read-end represents CamillaDSP's stdin,
+        // write-end represents the plugin's copy.
+        let mut fds = [0i32; 2];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe() failed");
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        // Suppress SIGPIPE so the assertion below receives EPIPE errno.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+
+        // Close the read-end: simulates CamillaDSP exiting (due to Rust
+        // daemon restart + supervisor cleanup killing the process).
+        unsafe { libc::close(read_fd) };
+
+        // Write to the write-end → must fail with EPIPE.
+        let n = unsafe {
+            libc::write(write_fd, b"x".as_ptr() as *const libc::c_void, 1)
+        };
+        assert_eq!(n, -1, "write to dead pipe should fail");
+        let err = std::io::Error::last_os_error();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::EPIPE),
+            "expected EPIPE after CamillaDSP exit, got {err}"
+        );
+
+        unsafe {
+            libc::close(write_fd);
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
     }
 }
