@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use crate::core::errors::{app_error, AppResult};
 use crate::ipc::protocol::{
-    ErrorCode, PluginMessage, ProtocolError, PROTOCOL_VERSION, expected_frame_len, negotiate_version,
+    expected_frame_len, negotiate_version, ErrorCode, PluginMessage, ProtocolError,
+    PROTOCOL_VERSION,
 };
 
 #[derive(Debug, Clone)]
@@ -140,12 +141,16 @@ impl IpcConnection {
     }
 
     pub fn send_ready(&mut self) -> Result<(), ProtocolError> {
-        let version = self.negotiated_version.unwrap_or(PROTOCOL_VERSION);
+        let version = self
+            .negotiated_version
+            .ok_or(ProtocolError::HandshakeNotComplete)?;
         self.send_message(&PluginMessage::Ready { version })
     }
 
     pub fn send_error(&mut self, code: ErrorCode) -> Result<(), ProtocolError> {
-        let version = self.negotiated_version.unwrap_or(PROTOCOL_VERSION);
+        let version = self
+            .negotiated_version
+            .ok_or(ProtocolError::HandshakeNotComplete)?;
         self.send_message(&PluginMessage::Error { version, code })
     }
 

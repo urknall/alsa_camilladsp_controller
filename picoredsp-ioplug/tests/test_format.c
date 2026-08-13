@@ -29,7 +29,16 @@ static int g_fail = 0;
     } while (0)
 
 #define TEST(name) static void test_##name(void)
-#define RUN(name)  do { printf("  %s ... ", #name); test_##name(); printf("ok\n"); g_pass++; } while (0)
+#define RUN(name) \
+    do { \
+        int fail_before = g_fail; \
+        printf("  %s ... ", #name); \
+        test_##name(); \
+        if (g_fail == fail_before) { \
+            printf("ok\n"); \
+            g_pass++; \
+        } \
+    } while (0)
 
 /* -----------------------------------------------------------------------
  * Tests

@@ -242,6 +242,8 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     ssize_t n = recvmsg(conn->fd, &mh, 0);
     if (n < 0)
         return -errno;
+    if (n == 0)
+        return -ECONNRESET;
 
     for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
         if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS) {
@@ -249,8 +251,12 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
             break;
         }
     }
+    if (rfd < 0)
+        return -EPROTO;
 
     if (pipe_fd)
         *pipe_fd = rfd;
+    else
+        close(rfd);
     return 0;
 }

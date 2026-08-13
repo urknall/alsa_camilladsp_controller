@@ -221,6 +221,7 @@ pub enum ProtocolError {
         requested: u8,
         minimum_supported: u8,
     },
+    HandshakeNotComplete,
     Timeout,
     Disconnected,
     Io(String),
@@ -275,6 +276,7 @@ impl fmt::Display for ProtocolError {
                 f,
                 "unsupported protocol version {requested}, minimum supported is {minimum_supported}"
             ),
+            Self::HandshakeNotComplete => write!(f, "IPC handshake not completed"),
             Self::Timeout => write!(f, "IPC operation timed out"),
             Self::Disconnected => write!(f, "IPC peer disconnected"),
             Self::Io(err) => write!(f, "IPC I/O error: {err}"),
