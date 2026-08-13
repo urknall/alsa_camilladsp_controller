@@ -74,7 +74,7 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 - [x] Model detector and transport explicitly per backend:
   - [x] Aloop: `detector = AloopHctl`, `transport = AlsaCapture`
   - [x] ioplug: `detector = IoplugIpc`, `transport = StdinPipe`
-- [ ] Remove all backend-specific branching from the common core
+- [x] Remove all backend-specific branching from the common core
 
 ---
 
