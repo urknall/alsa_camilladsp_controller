@@ -26,6 +26,19 @@ Before implementing any feature or making a significant change:
 3. **Search for existing solutions** in the codebase before writing new code.
 4. Confirm your approach is consistent with patterns already established in the project.
 
+## Testing Requirements
+
+When implementing any new feature or fixing a bug, you **must** write detailed tests:
+
+1. **Cover the happy path** — verify the feature works correctly under normal conditions.
+2. **Cover edge cases** — test boundary conditions, empty inputs, maximum values, and unexpected states.
+3. **Cover error paths** — verify that failures are handled and reported correctly.
+4. **Use descriptive test names** — each test name should clearly describe what is being tested and what the expected outcome is.
+5. **Keep tests isolated** — tests must not depend on each other or on external state; mock or stub external dependencies (ALSA, CamillaDSP websocket, BlueALSA) as needed.
+6. **Run the full test suite** after adding new tests to confirm nothing is broken.
+
+Tests are a required deliverable for every implementation task — a feature is not complete without them.
+
 ## Verification Before Marking Done
 
 A checklist item in `ROADMAP_CHECKLIST.md` must **not** be marked as done until:
