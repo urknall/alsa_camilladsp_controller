@@ -301,6 +301,15 @@ No new functionality yet.
 
 This is a pure architectural refactor.
 
+### Phase 2 entry requirement
+
+Before continuing with Phase 2, run and clean up all quality checks:
+
+1. Run Rust formatting and apply fixes (`cargo fmt`).
+2. Run Clippy and auto-correct issues where possible (`cargo clippy --fix`), then resolve remaining warnings/errors.
+3. Run the full test suite.
+4. If any tests fail, fix the issues and re-run format, Clippy, and tests until all checks pass.
+
 ---
 
 ## 6. Phase 2 — Separate stream detection from audio transport

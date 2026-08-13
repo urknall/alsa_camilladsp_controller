@@ -59,6 +59,16 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ---
 
+## Phase 2 entry gate — Quality checks before continuing
+
+- [ ] Run `cargo fmt` and apply formatting fixes
+- [ ] Run `cargo clippy --fix` and resolve remaining warnings/errors
+- [ ] Run the full test suite
+- [ ] Fix failing tests and re-run format, Clippy, and tests until all checks pass
+- [ ] Continue with Phase 2 only after all checks are green
+
+---
+
 ## Phase 2 — Separate stream detection from audio transport
 
 - [ ] Model detector and transport explicitly per backend:
