@@ -1,14 +1,11 @@
-use crate::args::Args;
-use crate::backend::aloop::AloopBackend;
 use crate::backend::{ControllerBackend, StreamEvent};
-use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::camilladsp::websocket::{
-    parse_processing_state, parse_stop_reason, CamillaClient, CamillaWs, CommandReason,
-    ProcessingState, StopReason, WsError,
+    parse_processing_state, parse_stop_reason, CamillaClient, CommandReason, ProcessingState,
+    StopReason, WsError,
 };
 use crate::core::adaptation::adapt_config;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
-use crate::core::errors::{app_error, AppResult};
+use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -169,6 +166,29 @@ pub struct Controller<B: ControllerBackend, C> {
 }
 
 impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
+    /// Construct a controller with explicit backend/client wiring.
+    pub fn new(
+        client: C,
+        stream_backend: B,
+        adapt_path: PathBuf,
+        fallback_wave: WaveFormat,
+        current_wave: WaveFormat,
+        log_level: LogLevel,
+    ) -> Self {
+        Self {
+            client,
+            stream_backend,
+            config_fp: ConfigFingerprint::sample(&adapt_path),
+            adapt_path,
+            fallback_wave,
+            current_wave,
+            retry: RetryState::new(),
+            pending_since: None,
+            idle_stop_since: None,
+            log_level,
+        }
+    }
+
     // ── Internal helpers ────────────────────────────────────────────────
 
     fn stop_cdsp(&mut self) -> AppResult<()> {
@@ -694,45 +714,6 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
     }
 }
 
-/// Concrete constructor using the production ALSA listener and WebSocket client.
-impl Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs> {
-    pub fn new(args: &Args) -> AppResult<(Self, DeviceSnapshot)> {
-        let listener = AlsaLoopbackListener::new(&args.device, args.log_level)?;
-        let initial = listener.read_snapshot()?;
-        let client = CamillaWs::connect(&args.host, args.port)?;
-
-        let fallback_wave = WaveFormat {
-            sample_rate: args.initial_rate,
-            sample_format: args.initial_format.clone(),
-            channels: args.initial_channels,
-        };
-        let adapt_path = args
-            .adapt
-            .clone()
-            .ok_or_else(|| app_error("--adapt is required in controller mode"))?;
-
-        // Set current_wave from the initial snapshot so start_cdsp uses the
-        // correct format even on the very first GetState → Inactive path.
-        let current_wave = initial.wave.with_fallback(&fallback_wave);
-        let config_fp = ConfigFingerprint::sample(&adapt_path);
-        let stream_backend = AloopBackend::new(listener, initial.clone(), fallback_wave.clone());
-
-        let controller = Self {
-            client,
-            stream_backend,
-            adapt_path,
-            fallback_wave,
-            current_wave,
-            retry: RetryState::new(),
-            pending_since: None,
-            idle_stop_since: None,
-            config_fp,
-            log_level: args.log_level,
-        };
-        Ok((controller, initial))
-    }
-}
-
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -846,7 +827,7 @@ mod tests {
             self.snapshots
                 .front()
                 .cloned()
-                .ok_or_else(|| app_error("MockListener: no more snapshots"))
+                .ok_or_else(|| crate::core::errors::app_error("MockListener: no more snapshots"))
         }
     }
 
