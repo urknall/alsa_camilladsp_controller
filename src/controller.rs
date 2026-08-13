@@ -1,6 +1,8 @@
 use crate::adapt::adapt_config;
 use crate::alsa_listener::{AlsaLoopbackListener, DeviceListener};
 use crate::args::Args;
+use crate::backend::aloop::AloopBackend;
+use crate::backend::StreamEvent;
 use crate::camilla_ws::{
     parse_processing_state, parse_stop_reason, CamillaClient, CamillaWs, CommandReason,
     ProcessingState, StopReason, WsError,
@@ -12,11 +14,8 @@ use serde_json::Value as JsonValue;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Matches the Python listener's 50 ms debounce before reading ALSA controls.
-const ALSA_DEBOUNCE_MS: u64 = 50;
 /// Matches the Python controller's 200 ms event-queue poll interval.
 const CONTROL_LOOP_MS: u32 = 200;
 /// Maximum time (seconds) the controller waits for CamillaDSP to consume a
@@ -138,9 +137,9 @@ impl ConfigFingerprint {
 ///
 /// Generic over `D: DeviceListener` and `C: CamillaClient` to allow mock
 /// injection for unit-testing the state machine.
-pub struct Controller<D, C> {
+pub struct Controller<D: DeviceListener, C> {
     client: C,
-    listener: D,
+    stream_backend: AloopBackend<D>,
     adapt_path: PathBuf,
     fallback_wave: WaveFormat,
     /// The effective wave format used for the last (or pending) adaptation.
@@ -342,7 +341,7 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                     ),
                 );
                 // Re-read the loopback snapshot for a fresh format/channels.
-                let current = self.listener.read_snapshot()?;
+                let current = self.stream_backend.read_snapshot()?;
                 if !current.active {
                     log(
                         LogLevel::Info,
@@ -584,13 +583,13 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
     /// 4. Read a fresh snapshot unconditionally.
     /// 5. Handle active/inactive transitions and wave-format changes.
     /// 6. Query CamillaDSP state; handle `Inactive` if not start-pending.
-    pub fn run(mut self, mut previous: DeviceSnapshot) -> AppResult<()> {
+    pub fn run(mut self, initial: DeviceSnapshot) -> AppResult<()> {
         log(
             LogLevel::Info,
             self.log_level,
             "Starting ALSA loopback controller",
         );
-        self.bootstrap_initial_config(&previous)?;
+        self.bootstrap_initial_config(&initial)?;
         loop {
             // ── Config fingerprint check (issue 10) ──────────────────────
             let fp = ConfigFingerprint::sample(&self.adapt_path);
@@ -609,39 +608,37 @@ impl<D: DeviceListener, C: CamillaClient> Controller<D, C> {
                 self.config_fp = fp;
             }
 
-            // ── ALSA event wait ──────────────────────────────────────────
-            if self.listener.wait_for_event(CONTROL_LOOP_MS)? {
-                thread::sleep(Duration::from_millis(ALSA_DEBOUNCE_MS));
-                self.listener.handle_events()?;
+            // ── ALSA stream event detection ──────────────────────────────
+            let stream_event = self.stream_backend.poll_event(CONTROL_LOOP_MS)?;
+            let current = self.stream_backend.current_snapshot().clone();
+            if let Some(event) = stream_event {
+                match event {
+                    StreamEvent::Started(_) => {
+                        self.handle_started(&current)?;
+                    }
+                    StreamEvent::Stopped => {
+                        log(LogLevel::Info, self.log_level, "Device stopped");
+                        self.stop_cdsp()?;
+                        self.idle_stop_since = Some(Instant::now());
+                        // Reset retry so the next start attempt is immediate.
+                        self.retry.reset();
+                        self.pending_since = None;
+                    }
+                    StreamEvent::Changed(_) => {
+                        // Mirrors the Python listener's STOPPED-then-STARTED pair.
+                        log(
+                            LogLevel::Info,
+                            self.log_level,
+                            format!("Device wave format changed to {}", current.wave),
+                        );
+                        self.stop_cdsp()?;
+                        self.current_wave = current.wave.with_fallback(&self.fallback_wave);
+                        self.retry.reset();
+                        self.pending_since = None;
+                        self.start_cdsp()?;
+                    }
+                }
             }
-
-            let current = self.listener.read_snapshot()?;
-
-            // ── ALSA state transitions ───────────────────────────────────
-            if !previous.active && current.active {
-                self.handle_started(&current)?;
-            } else if previous.active && !current.active {
-                log(LogLevel::Info, self.log_level, "Device stopped");
-                self.stop_cdsp()?;
-                self.idle_stop_since = Some(Instant::now());
-                // Reset retry so the next start attempt is immediate.
-                self.retry.reset();
-                self.pending_since = None;
-            } else if previous.active && current.active && previous.wave != current.wave {
-                // Mirrors the Python listener's STOPPED-then-STARTED pair.
-                log(
-                    LogLevel::Info,
-                    self.log_level,
-                    format!("Device wave format changed to {}", current.wave),
-                );
-                self.stop_cdsp()?;
-                self.current_wave = current.wave.with_fallback(&self.fallback_wave);
-                self.retry.reset();
-                self.pending_since = None;
-                self.start_cdsp()?;
-            }
-
-            previous = current.clone();
 
             // ── CamillaDSP state ─────────────────────────────────────────
             let state = parse_processing_state(self.client.query("GetState", None)?)?;
@@ -718,10 +715,11 @@ impl Controller<AlsaLoopbackListener, CamillaWs> {
         // correct format even on the very first GetState → Inactive path.
         let current_wave = initial.wave.with_fallback(&fallback_wave);
         let config_fp = ConfigFingerprint::sample(&adapt_path);
+        let stream_backend = AloopBackend::new(listener, initial.clone(), fallback_wave.clone());
 
         let controller = Self {
             client,
-            listener,
+            stream_backend,
             adapt_path,
             fallback_wave,
             current_wave,
@@ -874,15 +872,17 @@ mod tests {
         listener: MockListener,
         adapt_path: PathBuf,
     ) -> Controller<MockListener, MockClient> {
+        let initial = MockListener::inactive();
+        let fallback_wave = WaveFormat::default();
         Controller {
             client,
-            listener,
+            stream_backend: AloopBackend::new(listener, initial, fallback_wave.clone()),
             current_wave: WaveFormat {
                 sample_rate: Some(44100),
                 sample_format: Some("S32_LE".to_owned()),
                 channels: Some(2),
             },
-            fallback_wave: WaveFormat::default(),
+            fallback_wave,
             adapt_path: adapt_path.clone(),
             retry: RetryState::new(),
             pending_since: None,

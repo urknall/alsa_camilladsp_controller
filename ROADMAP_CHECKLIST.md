@@ -35,12 +35,12 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 - [x] Define `StreamParams` struct (`rate`, `format`, `channels`)
 - [x] Define `StreamEvent` enum (`Started`, `Changed`, `Stopped`)
 - [x] Define `StreamBackend` trait (`next_event`)
-- [ ] Separate all "stream detection" code from "what piCoreDSP does with a stream"
-- [ ] Wrap existing HCTL code as `AloopBackend` implementing `StreamBackend`
-- [ ] Add stub `IoplugBackend` placeholder (reads IPC, produces `StreamEvent`)
+- [x] Separate all "stream detection" code from "what piCoreDSP does with a stream"
+- [x] Wrap existing HCTL code as `AloopBackend` implementing `StreamBackend`
+- [x] Add stub `IoplugBackend` placeholder (reads IPC, produces `StreamEvent`)
 - [ ] Introduce target Rust module layout:
   - [ ] `core/` — state_machine, config, adaptation, persistence, errors, logging
-  - [ ] `backend/` — mod, aloop, ioplug
+  - [x] `backend/` — mod, aloop, ioplug
   - [ ] `camilladsp/` — websocket, supervisor, alsa_capture, stdin_capture
   - [ ] `ipc/` — protocol, unix_socket
 - [ ] ✅ **Gate 1 passed**: `backend=aloop` behaves identically to today — no regressions, no new features
