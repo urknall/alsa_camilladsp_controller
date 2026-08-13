@@ -1,0 +1,146 @@
+Start testing: Aug 13 23:10 UTC
+----------------------------------------------------------
+1/4 Testing: test_ringbuffer
+1/4 Test: test_ringbuffer
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_ringbuffer"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_ringbuffer" start time: Aug 13 23:10 UTC
+Output:
+----------------------------------------------------------
+test_ringbuffer
+  init_free ... ok
+  init_rejects_non_power_of_two ... ok
+  init_rejects_zero_frame_bytes ... ok
+  empty_buffer_has_zero_read_avail ... ok
+  write_read_single_period ... ok
+  write_fills_to_capacity ... ok
+  wrap_around ... ok
+  drop_advances_read_pos ... ok
+  reset_empties_buffer ... ok
+  partial_write_at_boundary ... ok
+  partial_read_at_boundary ... ok
+
+11 passed, 0 failed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_ringbuffer" end time: Aug 13 23:10 UTC
+"test_ringbuffer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/4 Testing: test_format
+2/4 Test: test_format
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_format"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_format" start time: Aug 13 23:10 UTC
+Output:
+----------------------------------------------------------
+test_format
+  s16_le_phys_bytes ... ok
+  s24_3le_phys_bytes ... ok
+  s24_le_phys_bytes ... ok
+  s32_le_phys_bytes ... ok
+  float_le_phys_bytes ... ok
+  unknown_format_einval ... ok
+  frame_bytes_stereo_s16 ... ok
+  frame_bytes_8ch_s32 ... ok
+  frame_bytes_unknown_einval ... ok
+  supported_returns_1_for_known ... ok
+  supported_returns_0_for_unknown ... ok
+  format_list_returns_all_known ... ok
+  format_list_respects_max_count ... ok
+
+13 passed, 0 failed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"test_format" end time: Aug 13 23:10 UTC
+"test_format" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/4 Testing: test_timing
+3/4 Test: test_timing
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_timing"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_timing" start time: Aug 13 23:10 UTC
+Output:
+----------------------------------------------------------
+test_timing
+  clock_now_nonzero ... ok
+  clock_now_monotonic ... ok
+  timer_elapsed_zero_when_not_started ... ok
+  timer_elapsed_grows_after_start ... ok
+  timer_elapsed_zero_after_stop ... ok
+  timer_restart_resets_origin ... ok
+
+6 passed, 0 failed
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"test_timing" end time: Aug 13 23:10 UTC
+"test_timing" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/4 Testing: test_ipc
+4/4 Test: test_ipc
+Command: "/home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/test_ipc"
+Directory: /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build
+"test_ipc" start time: Aug 13 23:10 UTC
+Output:
+----------------------------------------------------------
+test_ipc
+
+[connection tests]
+  connect_fails_when_controller_absent ... ok
+  connect_fails_when_server_closes_before_hello ... ok
+  connect_fails_when_server_never_replies ... ok
+  connect_fails_when_server_sends_wrong_message_type ... ok
+  connect_fails_when_version_below_minimum ... ok
+  connect_succeeds_with_valid_hello ... ok
+  connect_negotiates_lower_daemon_version ... ok
+
+[protocol tests — send]
+  send_start_sends_correct_wire_bytes ... ok
+  send_start_sends_correct_wire_bytes_96k ... ok
+  send_stop_sends_correct_wire_bytes ... ok
+  send_start_fails_when_not_connected ... ok
+  send_stop_fails_when_not_connected ... ok
+  send_start_on_closed_fd_returns_error ... ok
+
+[protocol tests — recv_ready]
+  recv_ready_succeeds_on_ready_message ... ok
+  recv_ready_returns_error_code_on_error_config ... ok
+  recv_ready_returns_error_code_on_error_playback_device ... ok
+  recv_ready_returns_error_code_on_error_internal ... ok
+  recv_ready_fails_on_disconnect_before_type_byte ... ok
+  recv_ready_fails_on_disconnect_after_type_byte ... ok
+  recv_ready_fails_on_wrong_message_type ... ok
+  recv_ready_fails_when_not_connected ... ok
+  recv_ready_with_pipe_fd_via_scm_rights ... ok
+
+[protocol tests — misc]
+  close_is_idempotent ... ok
+
+[Gate 10 M10 failure scenarios]
+  failure_controller_absent_returns_meaningful_error ... ok
+  failure_error_config_propagates_error_code ... ok
+  failure_error_playback_device_propagates_error_code ... ok
+  failure_socket_disconnect_returns_epipe ... ok
+  failure_protocol_mismatch_returns_eproto ... ok
+
+[integration flow]
+  full_ipc_flow_connect_start_ready_stop ... ok
+
+30 passed, 0 failed
+<end of output>
+Test time =   1.04 sec
+----------------------------------------------------------
+Test Passed.
+"test_ipc" end time: Aug 13 23:10 UTC
+"test_ipc" time elapsed: 00:00:01
+----------------------------------------------------------
+
+End testing: Aug 13 23:10 UTC

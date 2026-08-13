@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_format.dir/link.d CMakeFiles/test_format.dir/tests/test_format.c.o -o test_format  libpcdsp_internals.a -lasound -lpthread
