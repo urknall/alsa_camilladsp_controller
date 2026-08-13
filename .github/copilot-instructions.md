@@ -20,6 +20,7 @@ Before implementing any feature or making a significant change:
 2. **Research upstream references** — check the official documentation and source code for all relevant projects:
    - [CamillaDSP](https://github.com/HEnquist/camilladsp) and its [pycamilladsp](https://github.com/HEnquist/pycamilladsp) Python client
    - [ALSA](https://www.alsa-project.org/wiki/Main_Page) documentation
+   - [BlueALSA](https://github.com/Arkq/bluez-alsa) documentation and source code
    - [piCorePlayer](https://www.picoreplayer.org/) documentation
    - Any other library or API being used
 3. **Search for existing solutions** in the codebase before writing new code.
