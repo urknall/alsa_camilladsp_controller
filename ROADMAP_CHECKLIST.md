@@ -61,19 +61,19 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ## Phase 2 entry gate — Quality checks before continuing
 
-- [ ] Run `cargo fmt` and apply formatting fixes
-- [ ] Run `cargo clippy --fix` and resolve remaining warnings/errors
-- [ ] Run the full test suite
-- [ ] Fix failing tests and re-run format, Clippy, and tests until all checks pass
-- [ ] Continue with Phase 2 only after all checks are green
+- [x] Run `cargo fmt` and apply formatting fixes
+- [x] Run `cargo clippy --fix` and resolve remaining warnings/errors
+- [x] Run the full test suite
+- [x] Fix failing tests and re-run format, Clippy, and tests until all checks pass
+- [x] Continue with Phase 2 only after all checks are green
 
 ---
 
 ## Phase 2 — Separate stream detection from audio transport
 
-- [ ] Model detector and transport explicitly per backend:
-  - [ ] Aloop: `detector = AloopHctl`, `transport = AlsaCapture`
-  - [ ] ioplug: `detector = IoplugIpc`, `transport = StdinPipe`
+- [x] Model detector and transport explicitly per backend:
+  - [x] Aloop: `detector = AloopHctl`, `transport = AlsaCapture`
+  - [x] ioplug: `detector = IoplugIpc`, `transport = StdinPipe`
 - [ ] Remove all backend-specific branching from the common core
 
 ---
