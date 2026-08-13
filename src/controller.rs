@@ -1,6 +1,6 @@
 use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
-use crate::camilladsp::alsa_capture::{AlsaLoopbackListener, DeviceListener};
+use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::camilladsp::websocket::CamillaWs;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};

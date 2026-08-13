@@ -5,7 +5,7 @@ use crate::camilladsp::websocket::{
 };
 use crate::core::adaptation::adapt_config;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
-use crate::core::errors::{app_error, AppResult};
+use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
 use serde_json::Value as JsonValue;
 use std::fs;
@@ -827,7 +827,7 @@ mod tests {
             self.snapshots
                 .front()
                 .cloned()
-                .ok_or_else(|| app_error("MockListener: no more snapshots"))
+                .ok_or_else(|| crate::core::errors::app_error("MockListener: no more snapshots"))
         }
     }
 
