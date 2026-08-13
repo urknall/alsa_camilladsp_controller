@@ -9,8 +9,11 @@ use crate::core::adaptation::RuntimeBackend;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};
 use crate::core::logging::{log, LogLevel};
+use crate::core::recovery::{ConfigFingerprint, RetryState};
 pub use crate::core::state_machine::Controller;
 use crate::ipc::protocol::ErrorCode;
+use std::thread;
+use std::time::Duration;
 
 pub type AloopController = Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs>;
 
@@ -45,15 +48,26 @@ pub fn new_aloop_controller(args: &Args) -> AppResult<(AloopController, DeviceSn
     ))
 }
 
-/// Run the ioplug controller loop (Gate 8).
+/// How long after spawning CamillaDSP to verify it is still running.
+const STARTUP_CHECK_TIMEOUT: Duration = Duration::from_millis(500);
+/// Poll interval used during the startup health-check.
+const STARTUP_CHECK_POLL: Duration = Duration::from_millis(50);
+
+/// Run the ioplug controller loop (Gate 8 + M9 recovery).
 ///
 /// For each stream:
-/// 1. Wait for the plugin to connect and send START.
-/// 2. Adapt the CamillaDSP config for the negotiated stream parameters.
-/// 3. Spawn CamillaDSP with the pipe read-end as stdin.
-/// 4. Send READY to the plugin, delivering the pipe write-end via SCM_RIGHTS.
-/// 5. Monitor the stream; wait for STOP or plugin disconnect.
-/// 6. Close our copy of the pipe write-end → CamillaDSP sees EOF → exits.
+/// 1. Respect any active retry backoff (exponential, 500 ms–30 s).
+/// 2. Wait for the plugin to connect and send START.
+/// 3. Adapt the CamillaDSP config for the negotiated stream parameters.
+///    — Validation failure latches the retry state until the config changes.
+/// 4. Spawn CamillaDSP with the pipe read-end as stdin.
+/// 5. Startup timeout check: verify the process is still alive after a short
+///    delay; an immediate exit is treated as a transient failure.
+/// 6. Send READY to the plugin, delivering the pipe write-end via SCM_RIGHTS.
+/// 7. Monitor the stream; wait for STOP or plugin disconnect.
+///    — Unexpected CamillaDSP exit is recorded as a transient failure.
+/// 8. Close our copy of the pipe write-end → CamillaDSP sees EOF → exits.
+///    — Clean STOP resets the retry counter.
 pub fn run_ioplug(args: &Args) -> AppResult<()> {
     let socket_path = args
         .socket_path
@@ -72,6 +86,9 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
     let mut backend = IoplugBackend::new(&socket_path, log_level)?;
     let mut supervisor = StdinSupervisor::new(&camilladsp_binary, &adapt_path, log_level);
 
+    let mut retry = RetryState::new();
+    let mut last_fingerprint = ConfigFingerprint::sample(&adapt_path);
+
     log(
         LogLevel::Info,
         log_level,
@@ -83,6 +100,28 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
     );
 
     loop {
+        // ── Respect backoff / check for config changes ─────────────────
+        //
+        // If a retry latch or backoff window is active we spin here,
+        // polling the config fingerprint to detect a file change that would
+        // clear a permanent latch.  We also accept new plugin connections
+        // during the wait so that the plugin receives an immediate error
+        // rather than timing out.
+        while !retry.should_attempt() {
+            let new_fp = ConfigFingerprint::sample(&adapt_path);
+            if new_fp != last_fingerprint {
+                last_fingerprint = new_fp;
+                log(
+                    LogLevel::Info,
+                    log_level,
+                    "ioplug: config file changed — clearing retry latch",
+                );
+                retry.reset();
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
         // ── Wait for a plugin to connect and send START ────────────────
         let wave = loop {
             use crate::backend::ControllerBackend;
@@ -94,7 +133,23 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                         channels: Some(params.channels),
                     };
                 }
-                _ => continue,
+                _ => {
+                    // While waiting for a new START, check if a config change
+                    // cleared a latch so we can re-enter the backoff check.
+                    if retry.latch_until_change {
+                        let new_fp = ConfigFingerprint::sample(&adapt_path);
+                        if new_fp != last_fingerprint {
+                            last_fingerprint = new_fp;
+                            log(
+                                LogLevel::Info,
+                                log_level,
+                                "ioplug: config file changed — clearing retry latch",
+                            );
+                            retry.reset();
+                        }
+                    }
+                    continue;
+                }
             }
         };
 
@@ -102,7 +157,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             LogLevel::Info,
             log_level,
             format!(
-                "ioplug: adapting config for rate={} format={} channels={}",
+                "ioplug: START received — rate={} format={} channels={}",
                 wave.sample_rate.unwrap_or(0),
                 wave.sample_format.as_deref().unwrap_or("?"),
                 wave.channels.unwrap_or(0),
@@ -111,13 +166,19 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
 
         // ── Adapt the baseline config ──────────────────────────────────
         match adapt_config_for_backend(&adapt_path, &wave, RuntimeBackend::Ioplug) {
-            Ok(_adapted) => {}
+            Ok(_adapted) => {
+                // Refresh fingerprint after a successful write so a
+                // self-induced mtime bump does not look like a user change.
+                last_fingerprint = ConfigFingerprint::sample(&adapt_path);
+            }
             Err(err) => {
                 log(
                     LogLevel::Error,
                     log_level,
                     format!("ioplug: config adaptation failed: {err}"),
                 );
+                // Permanent latch — do not retry until the config changes.
+                retry.latch();
                 backend.send_error_to_plugin(ErrorCode::Config);
                 continue;
             }
@@ -132,10 +193,34 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                     log_level,
                     format!("ioplug: failed to spawn CamillaDSP: {err}"),
                 );
+                retry.record_attempt();
                 backend.send_error_to_plugin(ErrorCode::Internal);
                 continue;
             }
         };
+
+        // ── Startup timeout check ──────────────────────────────────────
+        //
+        // Wait a short window to detect an immediate crash (bad config,
+        // device unavailable, wrong binary, etc.).  A genuine startup takes
+        // milliseconds; if the process exits within the window it failed.
+        if !supervisor.startup_check(STARTUP_CHECK_TIMEOUT, STARTUP_CHECK_POLL) {
+            log(
+                LogLevel::Error,
+                log_level,
+                "ioplug: CamillaDSP exited immediately after spawn — treating as transient failure",
+            );
+            retry.record_attempt();
+            supervisor.stop_stream();
+            backend.send_error_to_plugin(ErrorCode::Internal);
+            continue;
+        }
+
+        log(
+            LogLevel::Debug,
+            log_level,
+            "ioplug: CamillaDSP startup check passed",
+        );
 
         // ── Send READY + pipe write-end to the plugin ─────────────────
         if let Err(err) = backend.send_ready_with_fd_to_plugin(pipe_write_fd) {
@@ -144,6 +229,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                 log_level,
                 format!("ioplug: failed to send READY+fd: {err}"),
             );
+            retry.record_attempt();
             supervisor.stop_stream();
             continue;
         }
@@ -155,6 +241,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         );
 
         // ── Monitor stream health and wait for STOP ────────────────────
+        let mut clean_stop = false;
         loop {
             use crate::backend::ControllerBackend;
 
@@ -163,23 +250,48 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                 log(
                     LogLevel::Error,
                     log_level,
-                    "ioplug: CamillaDSP exited unexpectedly",
+                    "ioplug: CamillaDSP exited unexpectedly during stream",
                 );
-                // Drop back to Idle; the plugin will get a write error on its
-                // pipe fd and should report EPIPE to the ALSA layer.
+                // The plugin will get a write error on its pipe fd and
+                // should report EPIPE to the ALSA layer.
                 break;
             }
 
             match backend.poll_event(200)? {
-                Some(crate::backend::StreamEvent::Stopped) => break,
+                Some(crate::backend::StreamEvent::Stopped) => {
+                    clean_stop = true;
+                    break;
+                }
                 _ => continue,
             }
         }
 
-        log(LogLevel::Info, log_level, "ioplug: stream stopped");
+        log(
+            LogLevel::Info,
+            log_level,
+            format!("ioplug: stream ended (clean={})", clean_stop),
+        );
 
         // ── Shut down CamillaDSP ───────────────────────────────────────
         // Closing our write-end sends EOF once the plugin also closes its copy.
         supervisor.stop_stream();
+
+        if clean_stop {
+            // Normal end-of-stream: clear backoff counters for the next stream.
+            retry.reset();
+        } else {
+            // CamillaDSP exited mid-stream: record a transient failure and
+            // apply backoff before accepting the next connection.
+            retry.record_attempt();
+            log(
+                LogLevel::Warning,
+                log_level,
+                format!(
+                    "ioplug: transient failure #{} — next attempt in ~{}s",
+                    retry.consecutive,
+                    retry.consecutive.min(6) * 5,
+                ),
+            );
+        }
     }
 }

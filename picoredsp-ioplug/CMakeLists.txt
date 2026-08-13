@@ -119,3 +119,29 @@ endfunction()
 pcdsp_add_test(test_ringbuffer tests/test_ringbuffer.c)
 pcdsp_add_test(test_format     tests/test_format.c)
 pcdsp_add_test(test_timing     tests/test_timing.c)
+
+# test_ipc links against the ipc object directly; it also needs pthread for
+# the mock-server thread used by the connection tests.
+add_executable(test_ipc tests/test_ipc.c src/ipc.c)
+target_include_directories(test_ipc PRIVATE ${ALSA_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_ipc PRIVATE ${ALSA_LIBRARIES} pthread)
+# test_ipc creates AF_UNIX sockets with unique paths in /tmp so tests are
+# fully isolated and can run in parallel.
+add_test(NAME test_ipc COMMAND test_ipc)
+set_tests_properties(test_ipc PROPERTIES TIMEOUT 60)
+
+# ---------------------------------------------------------------------------
+# Optional: clang-tidy static analysis
+# ---------------------------------------------------------------------------
+option(CLANG_TIDY "Run clang-tidy static analysis during build" OFF)
+
+if(CLANG_TIDY)
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy)
+    if(CLANG_TIDY_EXE)
+        set_target_properties(asound_module_pcm_picoredsp PROPERTIES
+            C_CLANG_TIDY "${CLANG_TIDY_EXE};--warnings-as-errors=*"
+        )
+    else()
+        message(WARNING "CLANG_TIDY requested but clang-tidy not found")
+    endif()
+endif()

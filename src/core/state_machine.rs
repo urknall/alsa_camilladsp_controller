@@ -7,11 +7,10 @@ use crate::core::adaptation::adapt_config;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
+use crate::core::recovery::{ConfigFingerprint, RetryState};
 use serde_json::Value as JsonValue;
-use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Matches the Python controller's 200 ms event-queue poll interval.
 const CONTROL_LOOP_MS: u32 = 200;
@@ -29,102 +28,6 @@ const STARTING_DEADLINE_SECS: u64 = 30;
 /// CamillaDSP permanently running while the source stays inactive, without
 /// causing Stop flooding every 200 ms.
 const IDLE_STOP_RETRY_SECS: u64 = 2;
-
-// ─── Retry/backoff state ───────────────────────────────────────────────────
-
-/// Exponential-backoff state for CamillaDSP restart attempts.
-///
-/// `latch_until_change` is set for permanent errors (e.g. config validation
-/// failures) where retrying without a config change would be pointless.
-/// It is cleared when the config file fingerprint changes.
-struct RetryState {
-    /// How many start attempts have been made since the last reset.
-    consecutive: u32,
-    /// Earliest time the next attempt may be made.
-    next_at: Option<Instant>,
-    /// Permanent failure latch — cleared by a config file change.
-    latch_until_change: bool,
-}
-
-impl RetryState {
-    fn new() -> Self {
-        Self {
-            consecutive: 0,
-            next_at: None,
-            latch_until_change: false,
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::new();
-    }
-
-    /// Returns `true` if enough time has elapsed since the last attempt and
-    /// the permanent latch is not set.
-    fn should_attempt(&self) -> bool {
-        if self.latch_until_change {
-            return false;
-        }
-        self.next_at.map(|t| Instant::now() >= t).unwrap_or(true)
-    }
-
-    /// Record a start attempt, setting the next backoff window.
-    ///
-    /// Backoff sequence: 500 ms → 1 s → 2 s → 5 s → 10 s → 30 s (cap).
-    fn record_attempt(&mut self) {
-        const DELAYS_MS: &[u64] = &[500, 1000, 2000, 5000, 10_000, 30_000];
-        let delay = DELAYS_MS[self.consecutive.min(5) as usize];
-        self.next_at = Some(Instant::now() + Duration::from_millis(delay));
-        self.consecutive += 1;
-    }
-
-    /// Mark a permanent error; no further attempts until the latch clears.
-    fn latch(&mut self) {
-        self.latch_until_change = true;
-    }
-}
-
-// ─── Config fingerprint ────────────────────────────────────────────────────
-
-/// Lightweight fingerprint for detecting active config file changes without
-/// polling the entire YAML content.
-///
-/// Tracks the canonicalized symlink target (catches CamillaGUI config
-/// switches), the target file's mtime/size (catches in-place edits), and the
-/// inode number (distinguishes files with identical size and visible mtime).
-#[derive(Eq, PartialEq)]
-struct ConfigFingerprint {
-    target: PathBuf,
-    modified: Option<SystemTime>,
-    size: u64,
-    ino: u64,
-}
-
-impl ConfigFingerprint {
-    #[allow(dead_code)]
-    fn absent() -> Self {
-        Self {
-            target: PathBuf::new(),
-            modified: None,
-            size: 0,
-            ino: 0,
-        }
-    }
-
-    fn sample(path: &PathBuf) -> Self {
-        let target = path.canonicalize().unwrap_or_else(|_| path.clone());
-        let meta = fs::metadata(path);
-        let modified = meta.as_ref().ok().and_then(|m| m.modified().ok());
-        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        let ino = meta.as_ref().map(|m| m.ino()).unwrap_or(0);
-        Self {
-            target,
-            modified,
-            size,
-            ino,
-        }
-    }
-}
 
 // ─── Controller ───────────────────────────────────────────────────────────
 

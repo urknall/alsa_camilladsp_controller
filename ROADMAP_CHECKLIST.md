@@ -175,25 +175,25 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M8: Implement stdin pipe + FD handoff**
 
-- [ ] Rust creates a `pipe()`
-- [ ] Rust spawns CamillaDSP with pipe read fd as stdin
-- [ ] Rust passes write fd to plugin over Unix socket using `SCM_RIGHTS`
-- [ ] Plugin writes PCM directly into the fd (no Rust in the data path)
-- [ ] Data path verified: Plugin → kernel pipe → CamillaDSP (never via Rust userspace)
+- [x] Rust creates a `pipe()`
+- [x] Rust spawns CamillaDSP with pipe read fd as stdin
+- [x] Rust passes write fd to plugin over Unix socket using `SCM_RIGHTS`
+- [x] Plugin writes PCM directly into the fd (no Rust in the data path)
+- [x] Data path verified: Plugin → kernel pipe → CamillaDSP (never via Rust userspace)
 
 **Milestone M9: Add Rust stdin CamillaDSP supervisor**
 
-- [ ] Rust supervises CamillaDSP process lifecycle for ioplug backend:
-  - [ ] Per-stream process model: `START → spawn → READY → PCM → stream ends → EOF → shutdown`
-- [ ] ioplug backend reuses existing Rust recovery logic:
-  - [ ] Validation failures
-  - [ ] Transient failures + retry/backoff
-  - [ ] Startup timeout
-  - [ ] Process failure handling
-  - [ ] Config fingerprint changes
-  - [ ] Logging and state transitions
-  - [ ] Shutdown
-- [ ] C plugin does NOT implement policy (no retry logic, no config decisions)
+- [x] Rust supervises CamillaDSP process lifecycle for ioplug backend:
+  - [x] Per-stream process model: `START → spawn → READY → PCM → stream ends → EOF → shutdown`
+- [x] ioplug backend reuses existing Rust recovery logic:
+  - [x] Validation failures
+  - [x] Transient failures + retry/backoff
+  - [x] Startup timeout
+  - [x] Process failure handling
+  - [x] Config fingerprint changes
+  - [x] Logging and state transitions
+  - [x] Shutdown
+- [x] C plugin does NOT implement policy (no retry logic, no config decisions)
 
 ---
 
@@ -202,10 +202,10 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 **Milestone M10: Run complete ioplug functional suite**
 
 Failure scenarios:
-- [ ] Rust controller absent: plugin fails cleanly with meaningful ALSA error, no silent sample discard
-- [ ] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
-- [ ] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
-- [ ] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
+- [x] Rust controller absent: plugin fails cleanly with meaningful ALSA error, no silent sample discard
+- [x] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
+- [x] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
+- [x] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
 - [ ] Plugin/application disappears: Rust cleans up CamillaDSP (control socket close + PCM fd close)
 - [ ] Rust daemon restarts mid-stream: active stream fails cleanly (reconnect not required for v1)
 
@@ -213,24 +213,24 @@ Unit/integration tests:
 - [ ] open/close
 - [ ] hw_params negotiation
 - [ ] Unsupported format / channels
-- [ ] 44.1, 48, 88.2, 96, 176.4, 192 kHz
+- [x] 44.1, 48, 88.2, 96, 176.4, 192 kHz
 - [ ] Period wrap / buffer wrap
 - [ ] Buffer size not divisible by period
 - [ ] Partial write / EINTR / EPIPE
 - [ ] Poll descriptors / poll revents
 - [ ] Pause / resume / drain / drop / XRUN
 - [ ] Rapid open/close / rapid format change
-- [ ] Controller unavailable / controller timeout
-- [ ] Invalid READY / protocol mismatch / socket disconnect
+- [x] Controller unavailable / controller timeout
+- [x] Invalid READY / protocol mismatch / socket disconnect
 - [ ] CamillaDSP early exit / delayed startup / DAC unavailable
 
 CI requirements:
-- [ ] ASAN enabled
-- [ ] UBSAN enabled
-- [ ] TSAN enabled where practical
-- [ ] clang and gcc warnings enabled
-- [ ] Static analysis enabled
-- [ ] Compiled with `-Wall -Wextra -Wpedantic -Werror` for all supported configurations
+- [x] ASAN enabled
+- [x] UBSAN enabled
+- [x] TSAN enabled where practical
+- [x] clang and gcc warnings enabled
+- [x] Static analysis enabled
+- [x] Compiled with `-Wall -Wextra -Wpedantic -Werror` for all supported configurations
 
 **Milestone M11: Run audio-integrity tests**
 
@@ -250,12 +250,12 @@ CI requirements:
 
 ## Phase 13 — Cross-backend Rust tests
 
-- [ ] Rust tests decoupled from `snd-aloop` assumption
-- [ ] Behavioural suite runs against abstract `StreamEvent` inputs:
-  - [ ] `Started(44100, S16, 2)` → correct runtime config
-  - [ ] `Changed(48000, S24, 2)` → correct restart/adaptation
-  - [ ] `Stopped` → correct idle state
-- [ ] Same suite runs for both `AloopBackend` and `IoplugBackend` event sources
+- [x] Rust tests decoupled from `snd-aloop` assumption
+- [x] Behavioural suite runs against abstract `StreamEvent` inputs:
+  - [x] `Started(44100, S16, 2)` → correct runtime config
+  - [x] `Changed(48000, S24, 2)` → correct restart/adaptation
+  - [x] `Stopped` → correct idle state
+- [x] Same suite runs for both `AloopBackend` and `IoplugBackend` event sources
 
 ---
 
