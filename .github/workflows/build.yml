@@ -6,9 +6,22 @@ on:
       - 'v*.*.*'
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'install_picoredsp.sh'
+      - '.github/workflows/build.yml'
   pull_request:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'install_picoredsp.sh'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
 
 jobs:
   # ─── Formatting check ────────────────────────────────────────────────────

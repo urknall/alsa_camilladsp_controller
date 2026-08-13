@@ -150,7 +150,7 @@ see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
 
 ## CI/CD
 
-`.github/workflows/build.yml` runs in two modes:
+`.github/workflows/build.yml` runs when Rust/controller-related files change (`src/**`, `Cargo.toml`, `Cargo.lock`, `install_picoredsp.sh`, workflow file itself), plus manual dispatch and version tags:
 
 - Pushes to `main` run tests, cross-build both ARM binaries, and refresh the rolling `installer-latest` GitHub release used by the installer.
 - Pull requests run tests and cross-build both ARM binaries as GitHub Actions artifacts for CI verification.
