@@ -1,5 +1,5 @@
-use crate::error::{app_error, AppResult};
-use crate::wave::{DeviceSnapshot, WaveFormat};
+use crate::core::errors::{app_error, AppResult};
+use crate::core::config::{DeviceSnapshot, WaveFormat};
 
 pub mod aloop;
 pub mod ioplug;

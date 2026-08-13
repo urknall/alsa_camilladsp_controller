@@ -1,5 +1,5 @@
 use crate::backend::{StreamBackend, StreamEvent};
-use crate::error::{app_error, AppResult};
+use crate::core::errors::{app_error, AppResult};
 
 /// Placeholder backend for future ioplug IPC stream events.
 #[derive(Default)]

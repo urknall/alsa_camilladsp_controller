@@ -1,7 +1,7 @@
-use crate::alsa_listener::DeviceListener;
+use crate::camilladsp::alsa_capture::DeviceListener;
 use crate::backend::{detect_stream_event, StreamBackend, StreamEvent};
-use crate::error::AppResult;
-use crate::wave::{DeviceSnapshot, WaveFormat};
+use crate::core::errors::AppResult;
+use crate::core::config::{DeviceSnapshot, WaveFormat};
 use std::thread;
 use std::time::Duration;
 
@@ -64,7 +64,7 @@ impl<D: DeviceListener> StreamBackend for AloopBackend<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{app_error, AppResult};
+    use crate::core::errors::{app_error, AppResult};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
