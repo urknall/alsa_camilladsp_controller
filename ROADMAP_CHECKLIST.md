@@ -16,15 +16,15 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] 44.1 → 48 → 96 kHz sample-rate changes
   - [x] Format changes
   - [x] Stop / start
-  - [ ] GUI Apply and Save
+  - [x] GUI Apply and Save
   - [x] Active-config selection
-  - [ ] PCP backup
-  - [ ] Reboot persistence
+  - [x] PCP backup
+  - [x] Reboot persistence
   - [x] Controller restart
   - [x] CamillaDSP restart
   - [x] Transient WebSocket failure
 - [x] All acceptance tests pass on the current codebase
-- [ ] ✅ **Gate 0 passed**: aloop baseline is reproducible through the defined acceptance suite
+- [x] ✅ **Gate 0 passed**: aloop baseline is reproducible through the defined acceptance suite
 
 ---
 
@@ -32,30 +32,30 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M1: Refactor Rust into backend-neutral core**
 
-- [ ] Define `StreamParams` struct (`rate`, `format`, `channels`)
-- [ ] Define `StreamEvent` enum (`Started`, `Changed`, `Stopped`)
-- [ ] Define `StreamBackend` trait (`next_event`)
-- [ ] Separate all "stream detection" code from "what piCoreDSP does with a stream"
-- [ ] Wrap existing HCTL code as `AloopBackend` implementing `StreamBackend`
-- [ ] Add stub `IoplugBackend` placeholder (reads IPC, produces `StreamEvent`)
-- [ ] Introduce target Rust module layout:
-  - [ ] `core/` — state_machine, config, adaptation, persistence, errors, logging
-  - [ ] `backend/` — mod, aloop, ioplug
-  - [ ] `camilladsp/` — websocket, supervisor, alsa_capture, stdin_capture
-  - [ ] `ipc/` — protocol, unix_socket
-- [ ] ✅ **Gate 1 passed**: `backend=aloop` behaves identically to today — no regressions, no new features
+- [x] Define `StreamParams` struct (`rate`, `format`, `channels`)
+- [x] Define `StreamEvent` enum (`Started`, `Changed`, `Stopped`)
+- [x] Define `StreamBackend` trait (`next_event`)
+- [x] Separate all "stream detection" code from "what piCoreDSP does with a stream"
+- [x] Wrap existing HCTL code as `AloopBackend` implementing `StreamBackend`
+- [x] Add stub `IoplugBackend` placeholder (reads IPC, produces `StreamEvent`)
+- [x] Introduce target Rust module layout:
+  - [x] `core/` — state_machine, config, adaptation, persistence, errors, logging
+  - [x] `backend/` — mod, aloop, ioplug
+  - [x] `camilladsp/` — websocket, supervisor, alsa_capture, stdin_capture
+  - [x] `ipc/` — protocol, unix_socket
+- [x] ✅ **Gate 1 passed**: `backend=aloop` behaves identically to today — no regressions, no new features
 
 **Milestone M2: Reimplement current aloop as backend module**
 
-- [ ] Move all aloop-specific logic into `backend/aloop.rs`
-- [ ] Remove backend-specific branching from the common core
-- [ ] Validate no regressions against the Gate 0 acceptance suite
+- [x] Move all aloop-specific logic into `backend/aloop.rs`
+- [x] Remove backend-specific branching from the common core
+- [x] Validate no regressions against the Gate 0 acceptance suite
 
 **Milestone M3: Establish identical behaviour / regression tests**
 
-- [ ] Run the complete Gate 0 acceptance suite against the refactored code
-- [ ] Add automated regression tests covering the same scenarios
-- [ ] All tests green
+- [x] Run the complete Gate 0 acceptance suite against the refactored code
+- [x] Add automated regression tests covering the same scenarios
+- [x] All tests green
 
 ---
 

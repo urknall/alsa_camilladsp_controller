@@ -1,11 +1,16 @@
 mod adapt;
 mod alsa_listener;
 mod args;
+mod backend;
 mod camilla_ws;
 mod controller;
 mod error;
 mod logging;
 mod wave;
+
+pub mod camilladsp;
+pub mod core;
+pub mod ipc;
 
 use adapt::{
     adapt_config, get_config_path, get_playback_device, get_state_fragment, make_bypass_config,
