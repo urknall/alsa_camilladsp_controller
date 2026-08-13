@@ -1,6 +1,7 @@
 mod adapt;
 mod alsa_listener;
 mod args;
+mod backend;
 mod camilla_ws;
 mod controller;
 mod error;

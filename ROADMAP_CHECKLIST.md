@@ -32,9 +32,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 **Milestone M1: Refactor Rust into backend-neutral core**
 
-- [ ] Define `StreamParams` struct (`rate`, `format`, `channels`)
-- [ ] Define `StreamEvent` enum (`Started`, `Changed`, `Stopped`)
-- [ ] Define `StreamBackend` trait (`next_event`)
+- [x] Define `StreamParams` struct (`rate`, `format`, `channels`)
+- [x] Define `StreamEvent` enum (`Started`, `Changed`, `Stopped`)
+- [x] Define `StreamBackend` trait (`next_event`)
 - [ ] Separate all "stream detection" code from "what piCoreDSP does with a stream"
 - [ ] Wrap existing HCTL code as `AloopBackend` implementing `StreamBackend`
 - [ ] Add stub `IoplugBackend` placeholder (reads IPC, produces `StreamEvent`)
