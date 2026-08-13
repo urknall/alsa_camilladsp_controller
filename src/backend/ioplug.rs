@@ -2,11 +2,12 @@ use crate::backend::{StreamBackend, StreamEvent};
 use crate::error::{app_error, AppResult};
 
 /// Placeholder backend for future ioplug IPC stream events.
+#[derive(Default)]
 pub struct IoplugBackend;
 
 impl IoplugBackend {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 

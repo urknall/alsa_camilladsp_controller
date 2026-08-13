@@ -7,8 +7,9 @@ use std::time::Duration;
 
 /// Matches the Python listener's 50 ms debounce before reading ALSA controls.
 const ALSA_DEBOUNCE_MS: u64 = 50;
-/// Matches the Python controller's 200 ms event-queue poll interval.
-const CONTROL_LOOP_MS: u32 = 200;
+/// Tiny guard delay used by `next_event()` to avoid a busy-spin if an
+/// implementation returns immediate no-event polls repeatedly.
+const NO_EVENT_SPIN_GUARD_MS: u64 = 1;
 
 /// Stream backend adapter that turns HCTL snapshots into backend-neutral events.
 pub struct AloopBackend<D: DeviceListener> {
@@ -50,10 +51,12 @@ impl<D: DeviceListener> AloopBackend<D> {
 
 impl<D: DeviceListener> StreamBackend for AloopBackend<D> {
     fn next_event(&mut self) -> AppResult<StreamEvent> {
+        const DEFAULT_POLL_TIMEOUT_MS: u32 = 200;
         loop {
-            if let Some(event) = self.poll_event(CONTROL_LOOP_MS)? {
+            if let Some(event) = self.poll_event(DEFAULT_POLL_TIMEOUT_MS)? {
                 return Ok(event);
             }
+            thread::sleep(Duration::from_millis(NO_EVENT_SPIN_GUARD_MS));
         }
     }
 }
