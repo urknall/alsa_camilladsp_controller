@@ -18,7 +18,7 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] Stop / start
   - [x] GUI Apply and Save
   - [x] Active-config selection
-  - [ ] PCP backup
+  - [x] PCP backup
   - [ ] Reboot persistence
   - [x] Controller restart
   - [x] CamillaDSP restart

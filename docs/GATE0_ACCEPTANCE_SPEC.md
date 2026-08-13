@@ -22,7 +22,7 @@ Scope: current Rust controller + `snd-aloop` + CamillaDSP websocket behavior.
 | Stop / start | Source stop triggers CamillaDSP stop path; next start re-applies config with live wave | Automated: `normal_source_stop_arms_idle_stop_guard`, `idle_invariant_clears_on_source_active_and_applies_config` |
 | GUI Apply and Save | Unsaved in-memory GUI state is not treated as persistent baseline; persisted file/symlink changes are re-read on restart | Automated: `acceptance_gui_apply_and_save_rereads_saved_active_file`; Manual: GUI Apply vs Save workflow check |
 | Active-config selection | Controller follows active symlink target and uses selected config on next start | Automated: `start_cdsp_follows_symlink_retarget` |
-| PCP backup | Persisted config changes survive reboot only after `pcp backup` | Manual on piCorePlayer target |
+| PCP backup | piCorePlayer persists saved config changes across reboot only after `pcp backup`; without backup the saved change is not restored after reboot | Manual: `pcp backup` persistence workflow below |
 | Reboot persistence | Controller restart/boot reads persisted active config and applies only when source becomes active | Automated: bootstrap tests above + Manual reboot verification |
 | Controller restart | Restart while source inactive remains idle; restart while source active applies live-adapted config | Automated: bootstrap tests + first-playback test |
 | CamillaDSP restart | If CamillaDSP becomes inactive while source remains active, controller re-applies runtime config | Automated: `acceptance_cdsp_restart_with_active_source_restarts_processing` |
@@ -37,7 +37,8 @@ Run on piCorePlayer hardware with `snd-aloop` enabled:
 3. Switch tracks to 48 kHz then 96 kHz; confirm each transition is reflected.
 4. Stop playback; confirm controller enforces idle state.
 5. In CamillaGUI, use Apply without Save; force restart/format change; confirm unsaved state is not persisted.
-6. Use Apply and Save; run `pcp backup`; reboot; confirm saved state persists.
-7. Restart controller while source inactive and while source active; verify expected behavior.
-8. Restart/kill CamillaDSP while source active; confirm controller restarts processing.
-9. Simulate transient websocket disruption; confirm controller exits/errors for supervisor recovery.
+6. In CamillaGUI, make a recognizable DSP change and use Apply and Save, but do **not** run `pcp backup`; reboot; confirm the saved change is **not** restored.
+7. Repeat the same saved change, run `pcp backup`, reboot again, and confirm the saved change **is** restored.
+8. Restart controller while source inactive and while source active; verify expected behavior.
+9. Restart/kill CamillaDSP while source active; confirm controller restarts processing.
+10. Simulate transient websocket disruption; confirm controller exits/errors for supervisor recovery.
