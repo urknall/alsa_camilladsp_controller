@@ -82,9 +82,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 - [x] Define and document **user-owned** config fields (filters, mixers, pipeline, playback device, etc.)
 - [x] Define and document **runtime/backend-managed** config fields (samplerate, capture type/device/format/channels, stop_on_inactive, enable_rate_adjust)
-- [ ] Verify that the same persistent DSP baseline config works with both backends
-- [ ] Runtime config generation for `aloop` — injects ALSA capture section
-- [ ] Runtime config generation for `ioplug` — injects Stdin capture section
+- [x] Verify that the same persistent DSP baseline config works with both backends
+- [x] Runtime config generation for `aloop` — injects ALSA capture section
+- [x] Runtime config generation for `ioplug` — injects Stdin capture section
 
 ---
 

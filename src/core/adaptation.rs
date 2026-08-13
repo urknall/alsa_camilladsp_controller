@@ -173,122 +173,137 @@ fn make_filter_paths_absolute(root: &mut YamlValue, config_dir: &Path) {
                     *filename_val = YamlValue::String(resolved.to_string_lossy().into_owned());
                 }
             }
-
-            fn runtime_managed_capture_field(name: &str) -> bool {
-                matches!(name, "type" | "device" | "format" | "channels" | "stop_on_inactive")
-            }
-
-            fn existing_capture_mapping<'a>(devices: &'a Mapping) -> AppResult<Option<&'a Mapping>> {
-                devices
-                    .get(yaml_key("capture"))
-                    .map(|value| mapping(value, "devices.capture"))
-                    .transpose()
-            }
-
-            fn existing_capture_format(existing_capture: Option<&Mapping>) -> AppResult<Option<String>> {
-                let Some(capture) = existing_capture else {
-                    return Ok(None);
-                };
-                let Some(value) = capture.get(yaml_key("format")) else {
-                    return Ok(None);
-                };
-                if value.is_null() {
-                    return Ok(None);
-                }
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| app_error("devices.capture.format must be a string"))
-            }
-
-            fn existing_capture_channels(existing_capture: Option<&Mapping>) -> AppResult<Option<u32>> {
-                let Some(capture) = existing_capture else {
-                    return Ok(None);
-                };
-                let Some(value) = capture.get(yaml_key("channels")) else {
-                    return Ok(None);
-                };
-                if value.is_null() {
-                    return Ok(None);
-                }
-                yaml_u32(value).ok_or_else(|| app_error("devices.capture.channels is missing or invalid"))
-            }
-
-            fn resolve_capture_channels(existing_capture: Option<&Mapping>, wave: &WaveFormat) -> AppResult<u32> {
-                let configured = existing_capture_channels(existing_capture)?;
-                if let (Some(configured), Some(channels)) = (configured, wave.channels) {
-                    if configured != channels {
-                        return Err(app_error(format!(
-                            "changing capture channels is not implemented \
-                             (config={configured}, stream={channels})"
-                        )));
-                    }
-                }
-                Ok(wave.channels.or(configured).unwrap_or(2))
-            }
-
-            fn base_runtime_capture(existing_capture: Option<&Mapping>) -> Mapping {
-                let mut capture = Mapping::new();
-                let Some(existing_capture) = existing_capture else {
-                    return capture;
-                };
-
-                for (key, value) in existing_capture {
-                    let preserve = key
-                        .as_str()
-                        .map(|name| !runtime_managed_capture_field(name))
-                        .unwrap_or(true);
-                    if preserve {
-                        capture.insert(key.clone(), value.clone());
-                    }
-                }
-
-                capture
-            }
-
-            fn build_runtime_capture(
-                existing_capture: Option<&Mapping>,
-                wave: &WaveFormat,
-                backend: RuntimeBackend,
-            ) -> AppResult<Mapping> {
-                let mut capture = base_runtime_capture(existing_capture);
-                let channels = resolve_capture_channels(existing_capture, wave)?;
-                let explicit_format = existing_capture_format(existing_capture)?;
-
-                match backend {
-                    RuntimeBackend::Aloop => {
-                        capture.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
-                        capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
-                        capture.insert(
-                            yaml_key("device"),
-                            YamlValue::String(ALOOP_CAPTURE_DEVICE.to_owned()),
-                        );
-                        capture.insert(yaml_key("stop_on_inactive"), YamlValue::Bool(true));
-
-                        if let Some(format) = wave.sample_format.clone().or(explicit_format) {
-                            let format_was_explicit = existing_capture
-                                .and_then(|capture| capture.get(yaml_key("format")))
-                                .map(|value| !value.is_null())
-                                .unwrap_or(false);
-                            if format_was_explicit {
-                                capture.insert(yaml_key("format"), YamlValue::String(format));
-                            }
-                        }
-                    }
-                    RuntimeBackend::Ioplug => {
-                        let format = wave.sample_format.clone().or(explicit_format).ok_or_else(|| {
-                            app_error("ioplug runtime capture format is missing and no fallback is configured")
-                        })?;
-                        capture.insert(yaml_key("type"), YamlValue::String("Stdin".to_owned()));
-                        capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
-                        capture.insert(yaml_key("format"), YamlValue::String(format));
-                    }
-                }
-
-                Ok(capture)
-            }
         }
     }
+}
+
+fn runtime_managed_capture_field(name: &str) -> bool {
+    matches!(
+        name,
+        "type" | "device" | "format" | "channels" | "stop_on_inactive"
+    )
+}
+
+fn existing_capture_mapping(devices: &Mapping) -> AppResult<Option<&Mapping>> {
+    devices
+        .get(yaml_key("capture"))
+        .map(|value| mapping(value, "devices.capture"))
+        .transpose()
+}
+
+fn existing_capture_format(existing_capture: Option<&Mapping>) -> AppResult<Option<String>> {
+    let Some(capture) = existing_capture else {
+        return Ok(None);
+    };
+    let Some(value) = capture.get(yaml_key("format")) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .map(str::to_owned)
+        .map(Some)
+        .ok_or_else(|| app_error("devices.capture.format must be a string"))
+}
+
+fn existing_capture_channels(existing_capture: Option<&Mapping>) -> AppResult<Option<u32>> {
+    let Some(capture) = existing_capture else {
+        return Ok(None);
+    };
+    let Some(value) = capture.get(yaml_key("channels")) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    yaml_u32(value)
+        .map(Some)
+        .ok_or_else(|| app_error("devices.capture.channels is missing or invalid"))
+}
+
+fn resolve_capture_channels(
+    existing_capture: Option<&Mapping>,
+    wave: &WaveFormat,
+) -> AppResult<u32> {
+    let configured = existing_capture_channels(existing_capture)?;
+    if let (Some(configured), Some(channels)) = (configured, wave.channels) {
+        if configured != channels {
+            return Err(app_error(format!(
+                "changing capture channels is not implemented \
+                 (config={configured}, stream={channels})"
+            )));
+        }
+    }
+    Ok(wave.channels.or(configured).unwrap_or(2))
+}
+
+fn base_runtime_capture(existing_capture: Option<&Mapping>) -> Mapping {
+    let mut capture = Mapping::new();
+    let Some(existing_capture) = existing_capture else {
+        return capture;
+    };
+
+    for (key, value) in existing_capture {
+        let preserve = key
+            .as_str()
+            .map(|name| !runtime_managed_capture_field(name))
+            .unwrap_or(true);
+        if preserve {
+            capture.insert(key.clone(), value.clone());
+        }
+    }
+
+    capture
+}
+
+fn build_runtime_capture(
+    existing_capture: Option<&Mapping>,
+    wave: &WaveFormat,
+    backend: RuntimeBackend,
+) -> AppResult<Mapping> {
+    let mut capture = base_runtime_capture(existing_capture);
+    let channels = resolve_capture_channels(existing_capture, wave)?;
+    let explicit_format = existing_capture_format(existing_capture)?;
+
+    match backend {
+        RuntimeBackend::Aloop => {
+            capture.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
+            capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
+            capture.insert(
+                yaml_key("device"),
+                YamlValue::String(ALOOP_CAPTURE_DEVICE.to_owned()),
+            );
+            capture.insert(yaml_key("stop_on_inactive"), YamlValue::Bool(true));
+
+            let format_was_explicit = existing_capture
+                .and_then(|capture| capture.get(yaml_key("format")))
+                .map(|value| !value.is_null())
+                .unwrap_or(false);
+            if format_was_explicit {
+                if let Some(format) = wave.sample_format.clone().or(explicit_format) {
+                    capture.insert(yaml_key("format"), YamlValue::String(format));
+                }
+            }
+        }
+        RuntimeBackend::Ioplug => {
+            let format = wave
+                .sample_format
+                .clone()
+                .or(explicit_format)
+                .ok_or_else(|| {
+                    app_error(
+                        "ioplug runtime capture format is missing and no fallback is configured",
+                    )
+                })?;
+            capture.insert(yaml_key("type"), YamlValue::String("Stdin".to_owned()));
+            capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
+            capture.insert(yaml_key("format"), YamlValue::String(format));
+        }
+    }
+
+    Ok(capture)
 }
 
 // ─── Installer utility functions ───────────────────────────────────────────
@@ -491,6 +506,7 @@ pub fn make_bypass_config(playback_device: &str) -> AppResult<String> {
 pub fn adapt_config(path: &Path, wave: &WaveFormat) -> AppResult<String> {
     adapt_config_for_backend(path, wave, RuntimeBackend::Aloop)
 }
+
 /// Adapt a CamillaDSP YAML config for the current wave format and runtime
 /// backend, returning the updated YAML string.
 ///
@@ -804,7 +820,10 @@ mod tests {
             Some("Input_L")
         );
 
-        assert_eq!(ioplug_parsed["devices"]["samplerate"].as_u64(), Some(96_000));
+        assert_eq!(
+            ioplug_parsed["devices"]["samplerate"].as_u64(),
+            Some(96_000)
+        );
         assert_eq!(
             ioplug_parsed["devices"]["capture"]["type"].as_str(),
             Some("Stdin")
@@ -830,8 +849,14 @@ mod tests {
             ioplug_parsed["devices"]["playback"]["device"].as_str(),
             Some("hw:DAC,0")
         );
-        assert_eq!(aloop_parsed["filters"]["Gain"]["type"].as_str(), Some("Gain"));
-        assert_eq!(ioplug_parsed["filters"]["Gain"]["type"].as_str(), Some("Gain"));
+        assert_eq!(
+            aloop_parsed["filters"]["Gain"]["type"].as_str(),
+            Some("Gain")
+        );
+        assert_eq!(
+            ioplug_parsed["filters"]["Gain"]["type"].as_str(),
+            Some("Gain")
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -861,16 +886,15 @@ mod tests {
         let adapted = adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).unwrap();
         let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
 
-        assert_eq!(
-            parsed["devices"]["capture"]["type"].as_str(),
-            Some("Stdin")
-        );
+        assert_eq!(parsed["devices"]["capture"]["type"].as_str(), Some("Stdin"));
         assert_eq!(
             parsed["devices"]["capture"]["format"].as_str(),
             Some("S32_LE")
         );
         assert!(parsed["devices"]["capture"].get("device").is_none());
-        assert!(parsed["devices"]["capture"].get("stop_on_inactive").is_none());
+        assert!(parsed["devices"]["capture"]
+            .get("stop_on_inactive")
+            .is_none());
         assert_eq!(
             parsed["devices"]["capture"]["labels"][0].as_str(),
             Some("Input_L")
