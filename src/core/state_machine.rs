@@ -1,15 +1,15 @@
-use crate::core::adaptation::adapt_config;
-use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
 use crate::backend::{ControllerBackend, StreamEvent};
+use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::camilladsp::websocket::{
     parse_processing_state, parse_stop_reason, CamillaClient, CamillaWs, CommandReason,
     ProcessingState, StopReason, WsError,
 };
+use crate::core::adaptation::adapt_config;
+use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};
 use crate::core::logging::{log, LogLevel};
-use crate::core::config::{DeviceSnapshot, WaveFormat};
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -739,9 +739,9 @@ impl Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs> {
 mod tests {
     use super::*;
     use crate::camilladsp::websocket::{CamillaClient, CommandReason, WsError};
+    use crate::core::config::{DeviceSnapshot, WaveFormat};
     use crate::core::errors::AppResult;
     use crate::core::logging::LogLevel;
-    use crate::core::config::{DeviceSnapshot, WaveFormat};
     use serde_json::Value as JsonValue;
     use std::collections::VecDeque;
     use std::fs;

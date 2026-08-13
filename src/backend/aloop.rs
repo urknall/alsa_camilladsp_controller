@@ -1,7 +1,7 @@
-use crate::camilladsp::alsa_capture::DeviceListener;
 use crate::backend::{detect_stream_event, ControllerBackend, StreamBackend, StreamEvent};
-use crate::core::errors::AppResult;
+use crate::camilladsp::alsa_capture::DeviceListener;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
+use crate::core::errors::AppResult;
 use std::thread;
 use std::time::Duration;
 

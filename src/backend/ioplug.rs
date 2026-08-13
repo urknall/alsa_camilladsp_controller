@@ -7,7 +7,7 @@ pub struct IoplugBackend;
 
 impl IoplugBackend {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 
