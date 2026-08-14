@@ -2,6 +2,7 @@ mod adapt;
 mod alsa_listener;
 mod args;
 mod backend;
+mod benchmark;
 mod camilla_ws;
 mod controller;
 mod error;
@@ -18,6 +19,7 @@ use adapt::{
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Backend, Mode};
+use benchmark::{make_benchmark_plan_template, validate_benchmark_plan};
 use camilla_ws::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
 use error::{app_error, AppResult};
@@ -138,6 +140,31 @@ fn run_main() -> AppResult<()> {
             let yaml = make_statefile(config_path, args.existing_state.as_deref())?;
             std::fs::write(output, &yaml)
                 .map_err(|err| app_error(format!("unable to write {}: {err}", output.display())))?;
+            Ok(())
+        }
+
+        Mode::MakeBenchmarkPlan => {
+            let yaml = make_benchmark_plan_template()?;
+            if let Some(output) = args.output.as_deref() {
+                std::fs::write(output, &yaml).map_err(|err| {
+                    app_error(format!("unable to write {}: {err}", output.display()))
+                })?;
+            } else {
+                print!("{yaml}");
+            }
+            Ok(())
+        }
+
+        Mode::ValidateBenchmarkPlan => {
+            let path = args
+                .benchmark_path
+                .as_deref()
+                .expect("validated: --validate-benchmark-plan requires a path");
+            let plan = validate_benchmark_plan(path)?;
+            println!(
+                "Benchmark plan OK: backends=aloop,ioplug sample_rates={:?} chunksize={} queuelimit={}",
+                plan.environment.sample_rates_hz, plan.environment.chunksize, plan.environment.queuelimit
+            );
             Ok(())
         }
 

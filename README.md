@@ -172,7 +172,13 @@ picoredsp-controller --ws-check --host 127.0.0.1 --port 1234
 picoredsp-controller --adapt-check \
   --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
   --rate 48000 --format S32_LE --channels 2
+
+# Generate and validate the A/B benchmark plan used for roadmap milestone M12:
+picoredsp-controller --make-benchmark-plan --output /tmp/benchmark-plan.yml
+picoredsp-controller --validate-benchmark-plan /tmp/benchmark-plan.yml
 ```
+
+See [docs/BENCHMARK_FRAMEWORK.md](docs/BENCHMARK_FRAMEWORK.md) for the benchmark plan schema and validation rules.
 
 ## References
 

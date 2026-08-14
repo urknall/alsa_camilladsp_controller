@@ -608,8 +608,8 @@ mod tests {
         let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
 
         // Write a tiny dummy config for the supervisor (cat ignores its args).
-        let cfg = std::env::temp_dir()
-            .join(format!("picoredsp-disappear-{}.txt", std::process::id()));
+        let cfg =
+            std::env::temp_dir().join(format!("picoredsp-disappear-{}.txt", std::process::id()));
         std::fs::write(&cfg, "dummy").unwrap();
         let mut supervisor = StdinSupervisor::new("/bin/cat", &cfg, LogLevel::Error);
 
@@ -707,9 +707,7 @@ mod tests {
         unsafe { libc::close(read_fd) };
 
         // Write to the write-end → must fail with EPIPE.
-        let n = unsafe {
-            libc::write(write_fd, b"x".as_ptr() as *const libc::c_void, 1)
-        };
+        let n = unsafe { libc::write(write_fd, b"x".as_ptr() as *const libc::c_void, 1) };
         assert_eq!(n, -1, "write to dead pipe should fail");
         let err = std::io::Error::last_os_error();
         assert_eq!(
