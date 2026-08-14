@@ -234,17 +234,17 @@ CI requirements:
 
 **Milestone M11: Run audio-integrity tests**
 
-- [ ] Known PCM pattern sent through plugin → output captured → binary comparison
-- [ ] All intended sample formats tested: S16_LE, S24_3LE, S24_4LE, S32_LE, F32_LE
-- [ ] All intended sample rates tested
-- [ ] No accidental resampling
-- [ ] No accidental channel swap
-- [ ] No byte-order error
-- [ ] No 24-bit alignment error
-- [ ] No truncation
-- [ ] No gain modification
-- [ ] No padding corruption
-- [ ] ✅ Invariant established: ioplug transport is bit-transparent before CamillaDSP processing
+- [x] Known PCM pattern sent through plugin → output captured → binary comparison
+- [x] All intended sample formats tested: S16_LE, S24_3LE, S24_4LE, S32_LE, F32_LE
+- [x] All intended sample rates tested
+- [x] No accidental resampling
+- [x] No accidental channel swap
+- [x] No byte-order error
+- [x] No 24-bit alignment error
+- [x] No truncation
+- [x] No gain modification
+- [x] No padding corruption
+- [x] ✅ Invariant established: ioplug transport is bit-transparent before CamillaDSP processing
 
 ---
 
@@ -263,7 +263,7 @@ CI requirements:
 
 **Milestone M12: Run A/B latency and performance benchmarks**
 
-- [ ] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
+- [x] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
 - [ ] All metrics measured for both `aloop` and `ioplug`:
   - [ ] Playback start latency
   - [ ] 44.1 → 48 kHz transition time

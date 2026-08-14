@@ -5,6 +5,7 @@ CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/tests/test_audio_integrity.c
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/pcm_worker.h
  /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/src/ringbuffer.h
+ /usr/include/alloca.h
  /usr/include/assert.h
  /usr/include/endian.h
  /usr/include/fcntl.h
@@ -16,6 +17,7 @@ CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
  /usr/include/stdc-predef.h
  /usr/include/stdint.h
  /usr/include/stdio.h
+ /usr/include/stdlib.h
  /usr/include/string.h
  /usr/include/strings.h
  /usr/include/unistd.h
@@ -55,6 +57,7 @@ CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
  /usr/include/x86_64-linux-gnu/bits/stdint-least.h
  /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h
  /usr/include/x86_64-linux-gnu/bits/stdio_lim.h
+ /usr/include/x86_64-linux-gnu/bits/stdlib-float.h
  /usr/include/x86_64-linux-gnu/bits/struct_mutex.h
  /usr/include/x86_64-linux-gnu/bits/struct_rwlock.h
  /usr/include/x86_64-linux-gnu/bits/struct_stat.h
@@ -90,6 +93,8 @@ CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
  /usr/include/x86_64-linux-gnu/bits/typesizes.h
  /usr/include/x86_64-linux-gnu/bits/uintn-identity.h
  /usr/include/x86_64-linux-gnu/bits/unistd_ext.h
+ /usr/include/x86_64-linux-gnu/bits/waitflags.h
+ /usr/include/x86_64-linux-gnu/bits/waitstatus.h
  /usr/include/x86_64-linux-gnu/bits/wchar.h
  /usr/include/x86_64-linux-gnu/bits/wordsize.h
  /usr/include/x86_64-linux-gnu/gnu/stubs-64.h
@@ -102,4 +107,22 @@ CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stdatomic.h
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h
  /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h
+
+test_audio_integrity
+ /lib/x86_64-linux-gnu/libc.so.6
+ /lib64/ld-linux-x86-64.so.2
+ /usr/lib/x86_64-linux-gnu/Scrt1.o
+ /usr/lib/x86_64-linux-gnu/crti.o
+ /usr/lib/x86_64-linux-gnu/crtn.o
+ /usr/lib/x86_64-linux-gnu/libasound.so
+ /usr/lib/x86_64-linux-gnu/libc.so
+ /usr/lib/x86_64-linux-gnu/libgcc_s.so.1
+ /usr/lib/x86_64-linux-gnu/libpthread.a
+ /usr/lib/gcc/x86_64-linux-gnu/13/crtbeginS.o
+ /usr/lib/gcc/x86_64-linux-gnu/13/crtendS.o
+ /usr/lib/gcc/x86_64-linux-gnu/13/libgcc.a
+ /usr/lib/gcc/x86_64-linux-gnu/13/libgcc_s.so
+ /usr/lib/x86_64-linux-gnu/libc_nonshared.a
+ /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/CMakeFiles/test_audio_integrity.dir/tests/test_audio_integrity.c.o
+ /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller/picoredsp-ioplug/build/libpcdsp_internals.a
 

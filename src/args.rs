@@ -1,5 +1,6 @@
 use crate::error::{app_error, AppResult};
 use crate::logging::LogLevel;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;
 
@@ -35,10 +36,13 @@ pub struct Args {
     pub statefile_config_path: Option<String>,
     /// Path to the existing statefile to read mute/volume from (`--existing-state`).
     pub existing_state: Option<PathBuf>,
+    /// Benchmark plan path used by `--validate-benchmark-plan`.
+    pub benchmark_path: Option<PathBuf>,
 }
 
 /// Stream-detection and PCM-transport backend.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// snd-aloop loopback device (stable, default).
     Aloop,
@@ -71,6 +75,10 @@ pub enum Mode {
     WsGetConfigPath,
     /// Write a CamillaDSP statefile (first install or reinstall preserving mute/volume).
     MakeStatefile,
+    /// Write a benchmark plan template for A/B backend measurements.
+    MakeBenchmarkPlan,
+    /// Validate a benchmark plan before collecting measurements.
+    ValidateBenchmarkPlan,
 }
 
 impl Mode {
@@ -87,6 +95,8 @@ impl Mode {
             Self::MakeBypass => "--make-bypass",
             Self::WsGetConfigPath => "--ws-get-config-path",
             Self::MakeStatefile => "--make-statefile",
+            Self::MakeBenchmarkPlan => "--make-benchmark-plan",
+            Self::ValidateBenchmarkPlan => "--validate-benchmark-plan",
         }
     }
 }
@@ -108,6 +118,7 @@ impl Default for Args {
             output: None,
             statefile_config_path: None,
             existing_state: None,
+            benchmark_path: None,
             backend: Backend::Aloop,
             socket_path: None,
             camilladsp_binary: None,
@@ -132,7 +143,9 @@ Usage:\n\
   picoredsp-controller --get-state-fragment STATEFILE\n\
   picoredsp-controller --make-bypass --playback-device DEVICE [--output FILE]\n\
   picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\
-  picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\n\
+  picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\
+  picoredsp-controller --make-benchmark-plan [--output FILE]\n\
+  picoredsp-controller --validate-benchmark-plan FILE\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
@@ -156,12 +169,14 @@ Options:\n\
       --make-statefile          Write a CamillaDSP statefile (first install or reinstall)\n\
       --config-path PATH        config_path value to embed in the new statefile (--make-statefile)\n\
       --existing-state FILE     Existing statefile to preserve mute/volume from (--make-statefile)\n\
+      --make-benchmark-plan     Write an A/B benchmark plan template\n\
+      --validate-benchmark-plan FILE  Validate an A/B benchmark plan YAML file\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version\n\
       --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
       --socket-path PATH        AF_UNIX socket path for ioplug IPC (required with --backend ioplug)\n\
       --camilladsp PATH         Path to camilladsp binary (required with --backend ioplug)"
-    );
+   );
 }
 
 // ─── Argument parser ───────────────────────────────────────────────────────
@@ -169,8 +184,15 @@ Options:\n\
 /// Parse `std::env::args()`, returning `Ok(None)` when `--help` or `--version`
 /// consumed the arguments and `Ok(Some(args))` otherwise.
 pub fn parse_args() -> AppResult<Option<Args>> {
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from<I>(iterable: I) -> AppResult<Option<Args>>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut args = Args::default();
-    let mut iter = env::args().skip(1);
+    let mut iter = iterable.into_iter();
 
     while let Some(arg) = iter.next() {
         let mut next_value = |name: &str| -> AppResult<String> {
@@ -280,6 +302,25 @@ pub fn parse_args() -> AppResult<Option<Args>> {
                 }
                 args.mode = Mode::MakeStatefile;
             }
+            "--make-benchmark-plan" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --make-benchmark-plan",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::MakeBenchmarkPlan;
+            }
+            "--validate-benchmark-plan" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --validate-benchmark-plan",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::ValidateBenchmarkPlan;
+                args.benchmark_path = Some(PathBuf::from(next_value("--validate-benchmark-plan")?));
+            }
             "--config-path" => {
                 args.statefile_config_path = Some(next_value("--config-path")?);
             }
@@ -360,9 +401,14 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             "--playback-device is only valid with --make-bypass",
         ));
     }
-    if args.output.is_some() && !matches!(args.mode, Mode::MakeBypass | Mode::MakeStatefile) {
+    if args.output.is_some()
+        && !matches!(
+            args.mode,
+            Mode::MakeBypass | Mode::MakeStatefile | Mode::MakeBenchmarkPlan
+        )
+    {
         return Err(app_error(
-            "--output is only valid with --make-bypass or --make-statefile",
+            "--output is only valid with --make-bypass, --make-statefile or --make-benchmark-plan",
         ));
     }
     if args.mode == Mode::MakeStatefile {
@@ -383,6 +429,11 @@ pub fn parse_args() -> AppResult<Option<Args>> {
             "--existing-state is only valid with --make-statefile",
         ));
     }
+    if args.benchmark_path.is_some() && args.mode != Mode::ValidateBenchmarkPlan {
+        return Err(app_error(
+            "--benchmark-path is only valid with --validate-benchmark-plan",
+        ));
+    }
     if args.mode == Mode::MakeStatefile {
         if args.adapt.is_some() {
             return Err(app_error("--adapt is not valid with --make-statefile"));
@@ -395,6 +446,53 @@ pub fn parse_args() -> AppResult<Option<Args>> {
         }
         if args.initial_channels.is_some() {
             return Err(app_error("--channels is not valid with --make-statefile"));
+        }
+    }
+    if matches!(
+        args.mode,
+        Mode::MakeBenchmarkPlan | Mode::ValidateBenchmarkPlan
+    ) {
+        if args.adapt.is_some() {
+            return Err(app_error(format!(
+                "--adapt is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_rate.is_some() {
+            return Err(app_error(format!(
+                "--rate is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_format.is_some() {
+            return Err(app_error(format!(
+                "--format is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.initial_channels.is_some() {
+            return Err(app_error(format!(
+                "--channels is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.playback_device.is_some() {
+            return Err(app_error(format!(
+                "--playback-device is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.statefile_config_path.is_some() {
+            return Err(app_error(format!(
+                "--config-path is not valid with {}",
+                args.mode.name()
+            )));
+        }
+        if args.existing_state.is_some() {
+            return Err(app_error(format!(
+                "--existing-state is not valid with {}",
+                args.mode.name()
+            )));
         }
     }
     if matches!(
@@ -427,4 +525,47 @@ pub fn parse_args() -> AppResult<Option<Args>> {
         }
     }
     Ok(Some(args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(argv: &[&str]) -> AppResult<Option<Args>> {
+        parse_args_from(argv.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn parse_make_benchmark_plan_mode() {
+        let args = parse(&["--make-benchmark-plan", "--output", "plan.yml"])
+            .expect("parse ok")
+            .expect("args");
+        assert_eq!(args.mode, Mode::MakeBenchmarkPlan);
+        assert_eq!(args.output, Some(PathBuf::from("plan.yml")));
+    }
+
+    #[test]
+    fn parse_validate_benchmark_plan_mode() {
+        let args = parse(&["--validate-benchmark-plan", "plan.yml"])
+            .expect("parse ok")
+            .expect("args");
+        assert_eq!(args.mode, Mode::ValidateBenchmarkPlan);
+        assert_eq!(args.benchmark_path, Some(PathBuf::from("plan.yml")));
+    }
+
+    #[test]
+    fn reject_output_with_validate_benchmark_plan() {
+        let err = parse(&[
+            "--validate-benchmark-plan",
+            "plan.yml",
+            "--output",
+            "ignored.yml",
+        ])
+        .expect_err("output must be rejected");
+        assert!(
+            err.to_string()
+                .contains("--output is only valid with --make-bypass, --make-statefile or --make-benchmark-plan"),
+            "unexpected error: {err}"
+        );
+    }
 }
