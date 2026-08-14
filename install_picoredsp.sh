@@ -506,37 +506,41 @@ fi
 mkdir -p "${BUILD_DIR}" "${STAGE_CONFIG_DIR}"
 
 ###############################################################################
-# Test ALSA Loopback support
+# Test ALSA Loopback support (aloop backend only)
 ###############################################################################
 
-echo "Testing ALSA Loopback support..."
+if [ "${INSTALL_BACKEND}" = "aloop" ]; then
+    echo "Testing ALSA Loopback support..."
 
-if ! sudo modprobe snd-aloop; then
-    echo
-    echo "ERROR: snd-aloop could not be loaded."
-    echo "This piCorePlayer kernel/image needs ALSA Loopback support."
-    exit 1
-fi
-
-i=0
-
-while [ "${i}" -lt 10 ]
-do
-    if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
-        break
+    if ! sudo modprobe snd-aloop; then
+        echo
+        echo "ERROR: snd-aloop could not be loaded."
+        echo "This piCorePlayer kernel/image needs ALSA Loopback support."
+        exit 1
     fi
 
-    i=$((i + 1))
-    sleep 1
-done
+    i=0
 
-if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
-    echo
-    echo "ERROR: snd-aloop loaded, but the Loopback card did not appear."
-    exit 1
+    while [ "${i}" -lt 10 ]
+    do
+        if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+            break
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+        echo
+        echo "ERROR: snd-aloop loaded, but the Loopback card did not appear."
+        exit 1
+    fi
+
+    echo "ALSA Loopback is available."
+else
+    echo "Skipping ALSA Loopback probe for ioplug backend."
 fi
-
-echo "ALSA Loopback is available."
 
 ###############################################################################
 # Download picoredsp-controller
@@ -609,8 +613,12 @@ fi
 
 # Verify the binary can open the exact snd-aloop HCTL device used at runtime,
 # find the expected PCM controls, and read their values on this kernel.
-echo "Probing snd-aloop controls with picoredsp-controller..."
-"${RUST_RUNTIME_BIN}" --probe --device hw:Loopback,0
+if [ "${INSTALL_BACKEND}" = "aloop" ]; then
+    echo "Probing snd-aloop controls with picoredsp-controller..."
+    "${RUST_RUNTIME_BIN}" --probe --device hw:Loopback,0
+else
+    echo "Skipping snd-aloop controller probe for ioplug backend."
+fi
 
 ###############################################################################
 # Download picoredsp ioplug ALSA module

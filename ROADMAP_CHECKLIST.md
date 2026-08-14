@@ -228,11 +228,11 @@ Unit/integration tests:
 - [x] CamillaDSP early exit / delayed startup / DAC unavailable
 
 CI requirements:
-- [x] ASAN enabled
-- [x] UBSAN enabled
-- [x] TSAN enabled where practical
+- [ ] ASAN enabled
+- [ ] UBSAN enabled
+- [ ] TSAN enabled where practical
 - [x] clang and gcc warnings enabled
-- [x] Static analysis enabled
+- [ ] Static analysis enabled
 - [x] Compiled with `-Wall -Wextra -Wpedantic -Werror` for all supported configurations
 
 **Milestone M11: Run audio-integrity tests**

@@ -260,11 +260,40 @@ jobs:
             /tmp/bench_pcm_worker.txt
           if-no-files-found: warn
 
+  native_c_tests:
+    name: Native C tests (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev clang
+
+      - name: Configure native test build
+        env:
+          CC: ${{ matrix.compiler }}
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_${{ matrix.compiler }} \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build native test binaries
+        run: cmake --build picoredsp-ioplug/build_${{ matrix.compiler }} --parallel
+
+      - name: Run CTest suite
+        run: ctest --test-dir picoredsp-ioplug/build_${{ matrix.compiler }} --output-on-failure
+
   # ─── Cross-compile release binaries ──────────────────────────────────────
   build:
     name: Build (${{ matrix.binary_suffix }})
     runs-on: ubuntu-24.04
-    needs: [fmt, clippy, msrv, test, installer_shell_syntax]
+    needs: [fmt, clippy, msrv, test, installer_shell_syntax, native_c_tests]
     permissions:
       contents: read
 

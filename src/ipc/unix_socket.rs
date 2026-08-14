@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::RawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -285,11 +286,24 @@ fn send_fd_via_scm_rights(socket_fd: RawFd, fd: RawFd) -> io::Result<()> {
 }
 
 fn remove_stale_socket_file(path: &Path) -> AppResult<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                return Err(app_error(format!(
+                    "refusing to remove non-socket path {}",
+                    path.display()
+                )));
+            }
+            fs::remove_file(path).map_err(|err| {
+                app_error(format!(
+                    "unable to remove stale socket {}: {err}",
+                    path.display()
+                ))
+            })
+        }
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(app_error(format!(
-            "unable to remove stale socket {}: {err}",
+            "unable to inspect socket path {}: {err}",
             path.display()
         ))),
     }
@@ -371,6 +385,50 @@ mod tests {
             }
         );
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn bind_refuses_to_remove_regular_file() {
+        let path = test_socket_path("regular-file");
+        fs::write(&path, b"not a socket").unwrap();
+
+        let err = match IpcServer::bind(&path, IpcServerConfig::default()) {
+            Ok(_) => panic!("bind unexpectedly succeeded for regular file"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("refusing to remove non-socket path"),
+            "unexpected error: {err}"
+        );
+
+        assert!(path.is_file());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn bind_refuses_to_remove_symlink() {
+        let target = test_socket_path("symlink-target");
+        let path = test_socket_path("symlink");
+        fs::write(&target, b"target").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let err = match IpcServer::bind(&path, IpcServerConfig::default()) {
+            Ok(_) => panic!("bind unexpectedly succeeded for symlink"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("refusing to remove non-socket path"),
+            "unexpected error: {err}"
+        );
+
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_file(path).unwrap();
+        fs::remove_file(target).unwrap();
     }
 
     #[test]
