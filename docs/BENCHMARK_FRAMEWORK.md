@@ -10,11 +10,14 @@ cargo run -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
 
 # Validate a filled-in plan before collecting measurements.
 cargo run -- --validate-benchmark-plan /tmp/benchmark-plan.yml
+
+# Render a benchmark report with Gate 12 coverage and tuning hints.
+cargo run -- --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
 ```
 
 ## Current status
 
-These commands only create and validate the benchmark record format.
+These commands create, validate, and summarize the benchmark record format.
 They do **not** currently:
 
 - start or stop playback automatically
@@ -66,6 +69,15 @@ The generated YAML contains:
 
 This establishes a reproducible benchmark scaffold before real hardware measurements are added.
 
+CI now also runs a software-visible benchmark harness for both backends:
+
+- `aloop` control-path snapshot/event detection
+- `ioplug` IPC decode / handshake control-path operations
+- benchmark-plan serialization and validation overhead
+
+Those CI measurements are useful for controller-side regressions and automated
+reports, but they are not a replacement for real Pi / DAC playback latency data.
+
 ## Running the full local verification suite
 
 The benchmark plan is separate from the controller's normal correctness checks.
@@ -89,10 +101,10 @@ cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
 cargo +1.71 check --locked
 ```
 
-## Scope for a future automated benchmark harness
+## Scope for the hardware benchmark harness
 
-Yes — an automated benchmark runner can be built, but it is a larger feature
-than the current schema/validation support.
+Yes — a fuller automated hardware benchmark runner can be built, but it is a
+larger feature than the current schema/reporting support.
 
 A useful harness would:
 
@@ -101,6 +113,7 @@ A useful harness would:
 - automate start/stop and rate-transition scenarios
 - run soak tests for 24-hour and 7-day stability
 - record host-side metrics into the benchmark YAML automatically
+- regenerate the markdown benchmark report after each measurement pass
 
 Examples of metrics that are good candidates for automatic collection:
 

@@ -18,6 +18,14 @@
  * benchmark_plan_validate
  *     Run the full field-validation pass on an in-memory plan (no file I/O).
  *
+ * aloop_detect_started / aloop_detect_changed
+ *     Benchmark the aloop control-path snapshot diffing used to turn loopback
+ *     state into backend-neutral events.
+ *
+ * ioplug_decode_start / ioplug_negotiate_hello
+ *     Benchmark the ioplug control-path IPC frame decode and HELLO version
+ *     negotiation used before READY is sent.
+ *
  * bypass_config_serialize
  *     Serialise a minimal CamillaDSP bypass pipeline config to YAML.
  *     This mirrors `make_bypass_config()` in adaptation.rs.
@@ -84,6 +92,33 @@ struct BenchmarkPlan {
     runs: Vec<BenchmarkRun>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WaveFormat {
+    sample_rate: Option<u32>,
+    sample_format: Option<String>,
+    channels: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeviceSnapshot {
+    active: bool,
+    wave: WaveFormat,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StreamParams {
+    rate: u32,
+    format: String,
+    channels: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StreamEvent {
+    Started(StreamParams),
+    Changed(StreamParams),
+    Stopped,
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_plan() -> BenchmarkPlan {
@@ -130,6 +165,43 @@ fn validate_plan(plan: &BenchmarkPlan) -> bool {
     let backends: BTreeSet<Backend> = plan.runs.iter().map(|r| r.backend).collect();
     let req_be: BTreeSet<Backend> = [Backend::Aloop, Backend::Ioplug].iter().copied().collect();
     backends == req_be
+}
+
+fn detect_stream_event(
+    previous: &DeviceSnapshot,
+    current: &DeviceSnapshot,
+) -> Option<StreamEvent> {
+    let to_params = |wave: &WaveFormat| StreamParams {
+        rate: wave.sample_rate.expect("sample rate"),
+        format: wave.sample_format.clone().expect("sample format"),
+        channels: wave.channels.expect("channels"),
+    };
+    if !previous.active && current.active {
+        Some(StreamEvent::Started(to_params(&current.wave)))
+    } else if previous.active && !current.active {
+        Some(StreamEvent::Stopped)
+    } else if previous.active && current.active && previous.wave != current.wave {
+        Some(StreamEvent::Changed(to_params(&current.wave)))
+    } else {
+        None
+    }
+}
+
+fn decode_start_frame(frame: &[u8]) -> Option<(u8, u32, u8, u8)> {
+    if frame.len() != 8 || frame[0] != 0x02 {
+        return None;
+    }
+    Some((
+        frame[1],
+        u32::from_le_bytes([frame[2], frame[3], frame[4], frame[5]]),
+        frame[6],
+        frame[7],
+    ))
+}
+
+fn negotiate_hello(plugin_version: u8, controller_version: u8, min_supported: u8) -> Option<u8> {
+    let negotiated = plugin_version.min(controller_version);
+    (negotiated >= min_supported).then_some(negotiated)
 }
 
 // ─── Statistics ──────────────────────────────────────────────────────────────
@@ -220,6 +292,95 @@ fn bench_validate() {
     bench_stats("benchmark_plan_validate", &mut samples);
 }
 
+fn bench_aloop_detect_started() {
+    let previous = DeviceSnapshot {
+        active: false,
+        wave: WaveFormat {
+            sample_rate: None,
+            sample_format: None,
+            channels: None,
+        },
+    };
+    let current = DeviceSnapshot {
+        active: true,
+        wave: WaveFormat {
+            sample_rate: Some(48_000),
+            sample_format: Some("S32_LE".to_owned()),
+            channels: Some(2),
+        },
+    };
+    for _ in 0..WARMUP {
+        let _ = detect_stream_event(&previous, &current).unwrap();
+    }
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let t0 = Instant::now();
+        let event = detect_stream_event(&previous, &current).unwrap();
+        samples.push(t0.elapsed());
+        assert!(matches!(event, StreamEvent::Started(_)));
+    }
+    bench_stats("aloop_detect_started", &mut samples);
+}
+
+fn bench_aloop_detect_changed() {
+    let previous = DeviceSnapshot {
+        active: true,
+        wave: WaveFormat {
+            sample_rate: Some(44_100),
+            sample_format: Some("S16_LE".to_owned()),
+            channels: Some(2),
+        },
+    };
+    let current = DeviceSnapshot {
+        active: true,
+        wave: WaveFormat {
+            sample_rate: Some(96_000),
+            sample_format: Some("S24_4_LE".to_owned()),
+            channels: Some(2),
+        },
+    };
+    for _ in 0..WARMUP {
+        let _ = detect_stream_event(&previous, &current).unwrap();
+    }
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let t0 = Instant::now();
+        let event = detect_stream_event(&previous, &current).unwrap();
+        samples.push(t0.elapsed());
+        assert!(matches!(event, StreamEvent::Changed(_)));
+    }
+    bench_stats("aloop_detect_changed", &mut samples);
+}
+
+fn bench_ioplug_decode_start() {
+    let frame = [0x02, 0x01, 0x80, 0xbb, 0x00, 0x00, 0x0a, 0x02];
+    for _ in 0..WARMUP {
+        let _ = decode_start_frame(&frame).unwrap();
+    }
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let t0 = Instant::now();
+        let decoded = decode_start_frame(&frame).unwrap();
+        samples.push(t0.elapsed());
+        assert_eq!(decoded, (1, 48_000, 0x0a, 0x02));
+    }
+    bench_stats("ioplug_decode_start", &mut samples);
+}
+
+fn bench_ioplug_negotiate_hello() {
+    for _ in 0..WARMUP {
+        let _ = negotiate_hello(1, 1, 1).unwrap();
+    }
+    let mut samples = Vec::with_capacity(ITERS);
+    for _ in 0..ITERS {
+        let t0 = Instant::now();
+        let version = negotiate_hello(1, 1, 1).unwrap();
+        samples.push(t0.elapsed());
+        assert_eq!(version, 1);
+    }
+    bench_stats("ioplug_negotiate_hello", &mut samples);
+}
+
 fn bench_roundtrip() {
     // warm-up
     let plan = make_plan();
@@ -255,6 +416,14 @@ fn main() {
 
     bench_section("BenchmarkPlan validation");
     bench_validate();
+
+    bench_section("Aloop backend control path");
+    bench_aloop_detect_started();
+    bench_aloop_detect_changed();
+
+    bench_section("Ioplug backend control path");
+    bench_ioplug_decode_start();
+    bench_ioplug_negotiate_hello();
 
     println!("\npicoredsp_bench done");
 }

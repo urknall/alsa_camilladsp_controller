@@ -267,6 +267,8 @@ CI requirements:
 - [x] Automated benchmark harness created and integrated into CI:
   - [x] C microbenchmark harness (`picoredsp-ioplug/bench/`) covering ring buffer, timing, PCM worker
   - [x] Rust benchmark runner (`benches/picoredsp_bench.rs`) covering YAML serialisation / plan validation
+  - [x] Rust benchmark runner covers both `aloop` and `ioplug` control-path microbenchmarks
+  - [x] Benchmark report generator creates automated Gate 12 coverage and comparison reports
   - [x] CI jobs `ioplug_bench` and `rust_bench` build and run benchmarks on every push
 - [ ] All metrics measured for both `aloop` and `ioplug`:
   - [ ] Playback start latency

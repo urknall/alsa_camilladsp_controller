@@ -30,7 +30,7 @@ pub struct Args {
     pub config_path: Option<PathBuf>,
     /// Playback device string supplied to `--make-bypass`.
     pub playback_device: Option<String>,
-    /// Output file path for `--make-bypass` and `--make-statefile` (stdout when absent for bypass).
+    /// Output file path for writer/report modes.
     pub output: Option<PathBuf>,
     /// Config path value written into the statefile by `--make-statefile`.
     pub statefile_config_path: Option<String>,
@@ -79,6 +79,8 @@ pub enum Mode {
     MakeBenchmarkPlan,
     /// Validate a benchmark plan before collecting measurements.
     ValidateBenchmarkPlan,
+    /// Render a benchmark report from a benchmark plan.
+    MakeBenchmarkReport,
 }
 
 impl Mode {
@@ -97,6 +99,7 @@ impl Mode {
             Self::MakeStatefile => "--make-statefile",
             Self::MakeBenchmarkPlan => "--make-benchmark-plan",
             Self::ValidateBenchmarkPlan => "--validate-benchmark-plan",
+            Self::MakeBenchmarkReport => "--make-benchmark-report",
         }
     }
 }
@@ -145,7 +148,8 @@ Usage:\n\
   picoredsp-controller --ws-get-config-path [--host HOST] [--port PORT]\n\
   picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\
   picoredsp-controller --make-benchmark-plan [--output FILE]\n\
-  picoredsp-controller --validate-benchmark-plan FILE\n\n\
+  picoredsp-controller --validate-benchmark-plan FILE\n\
+  picoredsp-controller --make-benchmark-report FILE [--output FILE]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
@@ -164,13 +168,14 @@ Options:\n\
       --get-state-fragment STATEFILE  Print validated mute/volume YAML from a CamillaDSP statefile\n\
       --make-bypass             Write a piCoreDSP bypass CamillaDSP config\n\
       --playback-device DEVICE  Playback device for --make-bypass\n\
-      --output FILE             Output file for --make-bypass (default: stdout) or --make-statefile\n\
+      --output FILE             Output file for --make-bypass, --make-statefile, --make-benchmark-plan, or --make-benchmark-report\n\
       --ws-get-config-path      Query GetConfigFilePath from CamillaDSP via WebSocket\n\
       --make-statefile          Write a CamillaDSP statefile (first install or reinstall)\n\
       --config-path PATH        config_path value to embed in the new statefile (--make-statefile)\n\
       --existing-state FILE     Existing statefile to preserve mute/volume from (--make-statefile)\n\
       --make-benchmark-plan     Write an A/B benchmark plan template\n\
       --validate-benchmark-plan FILE  Validate an A/B benchmark plan YAML file\n\
+      --make-benchmark-report FILE  Render a benchmark report from a benchmark plan\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version\n\
       --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
@@ -321,6 +326,16 @@ where
                 args.mode = Mode::ValidateBenchmarkPlan;
                 args.benchmark_path = Some(PathBuf::from(next_value("--validate-benchmark-plan")?));
             }
+            "--make-benchmark-report" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --make-benchmark-report",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::MakeBenchmarkReport;
+                args.benchmark_path = Some(PathBuf::from(next_value("--make-benchmark-report")?));
+            }
             "--config-path" => {
                 args.statefile_config_path = Some(next_value("--config-path")?);
             }
@@ -404,11 +419,14 @@ where
     if args.output.is_some()
         && !matches!(
             args.mode,
-            Mode::MakeBypass | Mode::MakeStatefile | Mode::MakeBenchmarkPlan
+            Mode::MakeBypass
+                | Mode::MakeStatefile
+                | Mode::MakeBenchmarkPlan
+                | Mode::MakeBenchmarkReport
         )
     {
         return Err(app_error(
-            "--output is only valid with --make-bypass, --make-statefile or --make-benchmark-plan",
+            "--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan or --make-benchmark-report",
         ));
     }
     if args.mode == Mode::MakeStatefile {
@@ -429,9 +447,14 @@ where
             "--existing-state is only valid with --make-statefile",
         ));
     }
-    if args.benchmark_path.is_some() && args.mode != Mode::ValidateBenchmarkPlan {
+    if args.benchmark_path.is_some()
+        && !matches!(
+            args.mode,
+            Mode::ValidateBenchmarkPlan | Mode::MakeBenchmarkReport
+        )
+    {
         return Err(app_error(
-            "--benchmark-path is only valid with --validate-benchmark-plan",
+            "--benchmark-path is only valid with --validate-benchmark-plan or --make-benchmark-report",
         ));
     }
     if args.mode == Mode::MakeStatefile {
@@ -450,7 +473,7 @@ where
     }
     if matches!(
         args.mode,
-        Mode::MakeBenchmarkPlan | Mode::ValidateBenchmarkPlan
+        Mode::MakeBenchmarkPlan | Mode::ValidateBenchmarkPlan | Mode::MakeBenchmarkReport
     ) {
         if args.adapt.is_some() {
             return Err(app_error(format!(
@@ -554,6 +577,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_make_benchmark_report_mode() {
+        let args = parse(&["--make-benchmark-report", "plan.yml", "--output", "report.md"])
+            .expect("parse ok")
+            .expect("args");
+        assert_eq!(args.mode, Mode::MakeBenchmarkReport);
+        assert_eq!(args.benchmark_path, Some(PathBuf::from("plan.yml")));
+        assert_eq!(args.output, Some(PathBuf::from("report.md")));
+    }
+
+    #[test]
     fn reject_output_with_validate_benchmark_plan() {
         let err = parse(&[
             "--validate-benchmark-plan",
@@ -564,7 +597,7 @@ mod tests {
         .expect_err("output must be rejected");
         assert!(
             err.to_string()
-                .contains("--output is only valid with --make-bypass, --make-statefile or --make-benchmark-plan"),
+                .contains("--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan or --make-benchmark-report"),
             "unexpected error: {err}"
         );
     }

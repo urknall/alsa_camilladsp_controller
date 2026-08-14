@@ -179,6 +179,11 @@ jobs:
       - name: Build and run Rust benchmark suite
         run: cargo bench --locked 2>&1 | tee /tmp/rust_bench.txt
 
+      - name: Generate benchmark coverage report
+        run: |
+          cargo run --locked -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
+          cargo run --locked -- --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
+
       - name: Write benchmark results to job summary
         if: always()
         run: |
@@ -186,6 +191,20 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/rust_bench.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '## Benchmark coverage report' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/benchmark-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rust benchmark artefacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-bench-results
+          path: |
+            /tmp/rust_bench.txt
+            /tmp/benchmark-plan.yml
+            /tmp/benchmark-report.md
+          if-no-files-found: warn
 
   # ─── C ioplug microbenchmarks ─────────────────────────────────────────────
   ioplug_bench:
