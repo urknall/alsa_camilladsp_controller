@@ -236,10 +236,9 @@ mod tests {
     #[test]
     fn stdin_pipe_process_spawns_cat_and_shuts_down_cleanly() {
         // Use `cat` as a stand-in for CamillaDSP: it reads stdin until EOF.
-        let tmp = std::env::temp_dir().join("picoredsp-test-stdin-pipe-cfg.txt");
-        std::fs::write(&tmp, "dummy").unwrap();
-
-        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp, &[]).unwrap();
+        // Pass /dev/stdin so that `cat /dev/stdin` reads from the pipe rather
+        // than exiting immediately after reading a regular file argument.
+        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         assert!(proc.write_fd_raw() >= 0);
 
         // Write some bytes through the write-end.
@@ -258,10 +257,7 @@ mod tests {
 
     #[test]
     fn stdin_pipe_process_exits_after_shutdown() {
-        let tmp = std::env::temp_dir().join("picoredsp-test-stdin-pipe-cfg2.txt");
-        std::fs::write(&tmp, "dummy").unwrap();
-
-        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp, &[]).unwrap();
+        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         proc.shutdown(Duration::from_secs(5)).unwrap();
         // If shutdown returned Ok, the child exited cleanly.
     }
