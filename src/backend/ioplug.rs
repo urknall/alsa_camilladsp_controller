@@ -62,11 +62,9 @@ impl IoplugBackend {
         })
     }
 
-    /// Notify the plugin that CamillaDSP is ready.  Transitions the backend
-    /// from `AwaitingAck` → `Active`.
-    ///
-    /// For Gate 7 this sends a plain `READY` message (no pipe fd).  Gate 8
-    /// will extend this to also pass the pipe write-end via `SCM_RIGHTS`.
+    /// Test-only helper for Gate 7 style unit tests that still exercise the
+    /// plain `READY` handshake without passing a pipe fd.
+    #[cfg(test)]
     pub fn send_ready_to_plugin(&mut self) -> AppResult<()> {
         let prev = std::mem::replace(&mut self.state, IoplugState::Idle);
         match prev {
