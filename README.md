@@ -190,8 +190,9 @@ If you have **not yet run the installer** (e.g. you want to diagnose the system 
 ```sh
 # On piCorePlayer, as user tc:
 
-# 1. Detect your architecture
-ARCH=$(uname -m)   # aarch64 or armv7l
+# 1. Detect your architecture (uname -m returns armv7l on 32-bit; releases use armv7)
+ARCH=$(uname -m)
+case "$ARCH" in armv7l) ARCH=armv7 ;; esac
 
 # 2. Download the pre-built binary from the rolling release
 wget -O picoredsp-controller \
@@ -201,9 +202,6 @@ chmod +x picoredsp-controller
 # 3. Load snd-aloop if it is not already loaded (required for --probe)
 sudo modprobe snd-aloop
 ```
-
-> **Note:** `armv7l` maps to the `armv7` binary; if the download URL returns 404,
-> replace `armv7l` with `armv7` and retry.
 
 Each diagnostic command has its own runtime prerequisite:
 
