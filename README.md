@@ -73,6 +73,26 @@ The installer performs these steps in order:
 
 After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
 
+### Troubleshooting: `syntax error: unexpected newline`
+
+If you see `./install_picoredsp.sh: line N: syntax error: unexpected newline` immediately
+after running the script, the most likely cause is a **stale or corrupt download**.
+Some older piCorePlayer `wget` builds cache redirect responses without following them,
+leaving an HTML error page saved as the script file.
+
+Fix:
+
+```sh
+rm -f install_picoredsp.sh
+wget -O install_picoredsp.sh \
+  https://raw.githubusercontent.com/urknall/alsa_camilladsp_controller/main/install_picoredsp.sh
+chmod +x install_picoredsp.sh
+sh -n install_picoredsp.sh && echo "syntax OK"
+./install_picoredsp.sh
+```
+
+The `sh -n` dry-run will report any remaining parse error before the script actually runs.
+
 ## CamillaGUI — Apply without Save
 
 CamillaGUI lets you click **Apply** to send a configuration directly to CamillaDSP
@@ -160,6 +180,39 @@ The installer downloads `picoredsp-controller` from the rolling `installer-lates
 Pushes to `main` refresh that release, while version tags still create immutable `v*.*.*` releases for manual versioned downloads.
 
 ## Diagnostics
+
+### Prerequisites
+
+Before running any diagnostic command you need the `picoredsp-controller` binary available on `$PATH` (or provide the full path).  The installer places it at `/usr/local/bin/picoredsp-controller`, so after a successful install the binary is already present.
+
+If you have **not yet run the installer** (e.g. you want to diagnose the system first), download the binary manually:
+
+```sh
+# On piCorePlayer, as user tc:
+
+# 1. Detect your architecture (uname -m returns armv7l on 32-bit; releases use armv7)
+ARCH=$(uname -m)
+case "$ARCH" in armv7l) ARCH=armv7 ;; esac
+
+# 2. Download the pre-built binary from the rolling release
+wget -O picoredsp-controller \
+  "https://github.com/urknall/alsa_camilladsp_controller/releases/download/installer-latest/picoredsp-controller-${ARCH}"
+chmod +x picoredsp-controller
+
+# 3. Load snd-aloop if it is not already loaded (required for --probe)
+sudo modprobe snd-aloop
+```
+
+Each diagnostic command has its own runtime prerequisite:
+
+| Command | What must be running / loaded |
+|---------|-------------------------------|
+| `--probe` | `snd-aloop` kernel module loaded (`lsmod \| grep snd_aloop`) |
+| `--ws-check` | CamillaDSP process running and listening on the given host:port |
+| `--adapt-check` | The `active_config.yml` file (or symlink target) must exist on disk |
+| `--make-benchmark-plan` / `--validate-benchmark-plan` | No runtime dependencies |
+
+### Diagnostic commands
 
 ```sh
 # Probe snd-aloop controls (requires snd-aloop loaded):
