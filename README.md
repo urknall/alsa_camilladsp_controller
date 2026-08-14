@@ -233,6 +233,7 @@ picoredsp-controller --make-benchmark-report /tmp/benchmark-plan.yml --output /t
 ```
 
 See [docs/BENCHMARK_FRAMEWORK.md](docs/BENCHMARK_FRAMEWORK.md) for the benchmark plan schema and validation rules.
+See [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) for the end-to-end walkthrough of running automatic measurements and generating a report.
 
 ## Benchmarking and full local verification
 
