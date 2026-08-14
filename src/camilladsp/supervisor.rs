@@ -33,8 +33,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct StdinSupervisor {
     /// Path to the `camilladsp` binary.
     binary_path: PathBuf,
-    /// Path to the runtime-adapted YAML config (symlink or direct path).
-    adapt_path: PathBuf,
+    /// Path to the transient runtime-adapted YAML config file.
+    runtime_config_path: PathBuf,
     /// Extra command-line arguments forwarded to CamillaDSP on every spawn
     /// (e.g. `--port 1234 --address 127.0.0.1 --statefile /…/statefile.yml`).
     cdsp_extra_args: Vec<String>,
@@ -47,16 +47,16 @@ impl StdinSupervisor {
     /// Create a new supervisor.
     ///
     /// `binary_path`: path to the `camilladsp` executable.
-    /// `adapt_path`: path to the runtime-adapted YAML config (will be
-    ///   canonicalised before being passed to CamillaDSP).
+    /// `runtime_config_path`: path to the transient runtime-adapted YAML config
+    ///   (will be canonicalised before being passed to CamillaDSP).
     pub fn new(
         binary_path: impl AsRef<Path>,
-        adapt_path: impl AsRef<Path>,
+        runtime_config_path: impl AsRef<Path>,
         log_level: LogLevel,
     ) -> Self {
         Self {
             binary_path: binary_path.as_ref().to_path_buf(),
-            adapt_path: adapt_path.as_ref().to_path_buf(),
+            runtime_config_path: runtime_config_path.as_ref().to_path_buf(),
             cdsp_extra_args: Vec::new(),
             active: None,
             log_level,
@@ -79,7 +79,7 @@ impl StdinSupervisor {
 
     /// Spawn a new CamillaDSP process for the current stream.
     ///
-    /// The config at `adapt_path` must already have been written/updated by
+    /// The transient runtime config must already have been written/updated by
     /// the caller before invoking this method.
     ///
     /// Returns the raw fd of the pipe write-end, which the caller must pass
@@ -89,7 +89,8 @@ impl StdinSupervisor {
         // Stop any leftover process from a previous (unexpected) stream.
         self.stop_stream_inner();
 
-        let config_path = crate::camilladsp::stdin_capture::resolve_config_path(&self.adapt_path)?;
+        let config_path =
+            crate::camilladsp::stdin_capture::resolve_config_path(&self.runtime_config_path)?;
 
         log(
             LogLevel::Info,

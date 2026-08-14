@@ -13,6 +13,7 @@ use crate::core::recovery::{ConfigFingerprint, RetryState};
 pub use crate::core::state_machine::Controller;
 use crate::ipc::protocol::ErrorCode;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
@@ -53,6 +54,52 @@ pub fn new_aloop_controller(args: &Args) -> AppResult<(AloopController, DeviceSn
 const STARTUP_CHECK_TIMEOUT: Duration = Duration::from_millis(500);
 /// Poll interval used during the startup health-check.
 const STARTUP_CHECK_POLL: Duration = Duration::from_millis(50);
+/// Transient per-stream runtime YAML written for the ioplug backend.
+const IOPLUG_RUNTIME_CONFIG_NAME: &str = "camilladsp_runtime.yml";
+
+fn ioplug_runtime_config_path(socket_path: &Path) -> PathBuf {
+    socket_path
+        .parent()
+        .unwrap_or_else(|| Path::new("/run/picoredsp"))
+        .join(IOPLUG_RUNTIME_CONFIG_NAME)
+}
+
+fn write_runtime_config(path: &Path, yaml: &str) -> AppResult<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("/"));
+    fs::create_dir_all(parent).map_err(|err| {
+        app_error(format!(
+            "unable to create runtime config directory '{}': {err}",
+            parent.display()
+        ))
+    })?;
+
+    let tmp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("runtime"),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    fs::write(&tmp_path, yaml).map_err(|err| {
+        app_error(format!(
+            "unable to write runtime config '{}': {err}",
+            tmp_path.display()
+        ))
+    })?;
+
+    fs::rename(&tmp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&tmp_path);
+        app_error(format!(
+            "unable to install runtime config '{}': {err}",
+            path.display()
+        ))
+    })?;
+
+    Ok(())
+}
 
 /// Run the ioplug controller loop (Gate 8 + M9 recovery).
 ///
@@ -83,6 +130,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         .clone()
         .ok_or_else(|| app_error("--camilladsp is required for --backend ioplug"))?;
     let log_level = args.log_level;
+    let runtime_config_path = ioplug_runtime_config_path(&socket_path);
 
     let mut backend = IoplugBackend::new(&socket_path, log_level)?;
     let mut supervisor = {
@@ -96,7 +144,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             cdsp_extra_args.push("--statefile".to_owned());
             cdsp_extra_args.push(sf.to_string_lossy().into_owned());
         }
-        StdinSupervisor::new(&camilladsp_binary, &adapt_path, log_level)
+        StdinSupervisor::new(&camilladsp_binary, &runtime_config_path, log_level)
             .with_cdsp_args(cdsp_extra_args)
     };
 
@@ -107,8 +155,10 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         LogLevel::Info,
         log_level,
         format!(
-            "ioplug controller started; socket={} camilladsp={}",
+            "ioplug controller started; socket={} baseline={} runtime={} camilladsp={}",
             socket_path.display(),
+            adapt_path.display(),
+            runtime_config_path.display(),
             camilladsp_binary.display(),
         ),
     );
@@ -178,29 +228,26 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             ),
         );
 
-        // ── Adapt the baseline config and write it to disk ────────────
+        // ── Adapt the baseline config and write a transient runtime copy ──
         // adapt_config_for_backend is a pure function — it returns the
-        // adapted YAML string without modifying the file.  For the ioplug
+        // adapted YAML string without modifying the file. For the ioplug
         // backend CamillaDSP is spawned from a file on disk, so the adapted
-        // YAML must be written back to adapt_path before the spawn.
+        // YAML must be written to a transient runtime path before the spawn.
         match adapt_config_for_backend(&adapt_path, &wave, RuntimeBackend::Ioplug) {
             Ok(adapted) => {
-                if let Err(err) = fs::write(&adapt_path, &adapted) {
+                if let Err(err) = write_runtime_config(&runtime_config_path, &adapted) {
                     log(
                         LogLevel::Error,
                         log_level,
                         format!(
-                            "ioplug: failed to write adapted config to '{}': {err}",
-                            adapt_path.display()
+                            "ioplug: failed to write runtime config to '{}': {err}",
+                            runtime_config_path.display()
                         ),
                     );
                     retry.latch();
                     backend.send_error_to_plugin(ErrorCode::Config);
                     continue;
                 }
-                // Refresh fingerprint after the write so the self-induced
-                // mtime bump is not mistaken for a user config change.
-                last_fingerprint = ConfigFingerprint::sample(&adapt_path);
             }
             Err(err) => {
                 log(
@@ -324,5 +371,54 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                 ),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_dir(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = env::temp_dir().join(format!("picoredsp-controller-{name}-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn ioplug_runtime_config_path_uses_socket_directory() {
+        let runtime = ioplug_runtime_config_path(Path::new("/run/picoredsp/control.sock"));
+        assert_eq!(runtime, Path::new("/run/picoredsp/camilladsp_runtime.yml"));
+    }
+
+    #[test]
+    fn writing_runtime_config_does_not_overwrite_active_config_symlink_target() {
+        let dir = test_dir("runtime-config");
+        let baseline = dir.join("MyDSP.yml");
+        let active = dir.join("active_config.yml");
+        let runtime = dir.join("camilladsp_runtime.yml");
+
+        fs::write(&baseline, "devices:\n  samplerate: 44100\n").unwrap();
+        symlink(&baseline, &active).unwrap();
+
+        write_runtime_config(&runtime, "devices:\n  samplerate: 96000\n").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&baseline).unwrap(),
+            "devices:\n  samplerate: 44100\n"
+        );
+        assert_eq!(active.canonicalize().unwrap(), baseline.canonicalize().unwrap());
+        assert_eq!(
+            fs::read_to_string(&runtime).unwrap(),
+            "devices:\n  samplerate: 96000\n"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

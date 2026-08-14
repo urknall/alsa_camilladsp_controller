@@ -173,7 +173,10 @@ while CamillaGUI's live status shows:
 This is expected. The live CamillaGUI status reflects the stream currently processed
 by CamillaDSP and is authoritative for current runtime parameters.
 
-Runtime adaptations are not written back to the YAML file.
+Runtime adaptations are not written back to the YAML file. On the ioplug
+backend, `picoredsp-controller` writes each adapted runtime copy to a transient
+file under `/run/picoredsp/` before spawning CamillaDSP, leaving
+`active_config.yml` and its selected baseline target untouched.
 
 Use **Apply and Save** for DSP or filter changes that must persist across sample-rate
 changes or reboots. On piCorePlayer, run:

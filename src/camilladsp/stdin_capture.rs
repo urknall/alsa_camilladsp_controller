@@ -190,14 +190,13 @@ fn wait_for_child(child: &mut Child, timeout: Duration) -> AppResult<()> {
 
 /// Resolve and canonicalise the runtime config path for CamillaDSP.
 ///
-/// `adapt_path` is a symlink or direct path to the adapted runtime YAML.
-/// We canonicalise it so CamillaDSP receives a stable absolute path even
-/// if the symlink is later updated.
-pub fn resolve_config_path(adapt_path: &Path) -> AppResult<PathBuf> {
-    fs::canonicalize(adapt_path).map_err(|err| {
+/// `runtime_config_path` is the transient runtime YAML written for the active
+/// stream. We canonicalise it so CamillaDSP receives a stable absolute path.
+pub fn resolve_config_path(runtime_config_path: &Path) -> AppResult<PathBuf> {
+    fs::canonicalize(runtime_config_path).map_err(|err| {
         app_error(format!(
             "cannot resolve config path '{}': {err}",
-            adapt_path.display()
+            runtime_config_path.display()
         ))
     })
 }
