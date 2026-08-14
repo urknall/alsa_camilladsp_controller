@@ -60,7 +60,8 @@ const IOPLUG_RUNTIME_CONFIG_NAME: &str = "camilladsp_runtime.yml";
 fn ioplug_runtime_config_path(socket_path: &Path) -> PathBuf {
     socket_path
         .parent()
-        .unwrap_or_else(|| Path::new("/run/picoredsp"))
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
         .join(IOPLUG_RUNTIME_CONFIG_NAME)
 }
 
@@ -400,6 +401,12 @@ mod tests {
     fn ioplug_runtime_config_path_uses_socket_directory() {
         let runtime = ioplug_runtime_config_path(Path::new("/run/picoredsp/control.sock"));
         assert_eq!(runtime, Path::new("/run/picoredsp/camilladsp_runtime.yml"));
+    }
+
+    #[test]
+    fn ioplug_runtime_config_path_falls_back_to_current_directory_for_bare_socket_name() {
+        let runtime = ioplug_runtime_config_path(Path::new("control.sock"));
+        assert_eq!(runtime, Path::new("./camilladsp_runtime.yml"));
     }
 
     #[test]
