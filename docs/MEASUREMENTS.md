@@ -186,6 +186,9 @@ real hardware playback measurements.
 ```sh
 cd /path/to/alsa_camilladsp_controller
 
+# Native 64-bit Raspberry Pi / aarch64-unknown-linux-gnu hosts
+export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
+
 # Build and run the Criterion/custom benchmark harness
 cargo bench
 ```
