@@ -309,12 +309,12 @@ Sequence: correctness → stability → measurement → latency optimisation
 **Milestone M13: Integrate both backends into installer**
 
 - [ ] Installer installs both binaries:
-  - [ ] `/usr/local/bin/picoredsp-controller`
-  - [ ] `/usr/local/lib/alsa-lib/libasound_module_pcm_picoredsp.so`
-- [ ] User-facing backend selection in installer (snd-aloop recommended/stable vs. direct ioplug experimental)
-- [ ] Default = aloop
-- [ ] Installer generates correct ALSA config for the selected backend
-- [ ] Backend switch requires explicit restart/reboot (no dynamic in-stream switching)
+  - [x] `/usr/local/bin/picoredsp-controller`
+  - [x] `/usr/local/lib/alsa-lib/libasound_module_pcm_picoredsp.so`
+- [x] User-facing backend selection in installer (snd-aloop recommended/stable vs. direct ioplug experimental)
+- [x] Default = aloop
+- [x] Installer generates correct ALSA config for the selected backend
+- [x] Backend switch requires explicit restart/reboot (no dynamic in-stream switching)
 
 ## Phase 18 — Configuration migration
 

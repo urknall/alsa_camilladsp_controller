@@ -320,6 +320,8 @@ jobs:
             "${{ matrix.libasound_arch }}" | sudo tee -a /etc/apt/sources.list.d/cross-ports.list
           sudo apt-get update -qq
           sudo apt-get install -y \
+            cmake \
+            pkg-config \
             ${{ matrix.cross_gcc }} \
             libasound2-dev:${{ matrix.libasound_arch }}
 
@@ -339,15 +341,30 @@ jobs:
           PKG_CONFIG_PATH: ${{ matrix.pkg_config_path }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Build ioplug release module
+        env:
+          CC: ${{ matrix.cross_gcc }}
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: ${{ matrix.pkg_config_path }}
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_${{ matrix.binary_suffix }} \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build picoredsp-ioplug/build_${{ matrix.binary_suffix }} \
+            --target asound_module_pcm_picoredsp
+
       - name: Stage binary with architecture suffix
         run: |
           cp target/${{ matrix.target }}/release/picoredsp-controller \
              picoredsp-controller-${{ matrix.binary_suffix }}
+          cp picoredsp-ioplug/build_${{ matrix.binary_suffix }}/libasound_module_pcm_picoredsp.so \
+             libasound_module_pcm_picoredsp-${{ matrix.binary_suffix }}.so
 
       - name: Generate SHA256 checksum
         run: |
           sha256sum picoredsp-controller-${{ matrix.binary_suffix }} \
             > picoredsp-controller-${{ matrix.binary_suffix }}.sha256
+          sha256sum libasound_module_pcm_picoredsp-${{ matrix.binary_suffix }}.so \
+            > libasound_module_pcm_picoredsp-${{ matrix.binary_suffix }}.so.sha256
 
       - name: Upload build artefact
         uses: actions/upload-artifact@v6
@@ -356,6 +373,8 @@ jobs:
           path: |
             picoredsp-controller-${{ matrix.binary_suffix }}
             picoredsp-controller-${{ matrix.binary_suffix }}.sha256
+            libasound_module_pcm_picoredsp-${{ matrix.binary_suffix }}.so
+            libasound_module_pcm_picoredsp-${{ matrix.binary_suffix }}.so.sha256
           if-no-files-found: error
 
   # ─── Publish a rolling release for the installer on main ──────────────────
@@ -402,6 +421,10 @@ jobs:
             picoredsp-controller-aarch64.sha256
             picoredsp-controller-armv7
             picoredsp-controller-armv7.sha256
+            libasound_module_pcm_picoredsp-aarch64.so
+            libasound_module_pcm_picoredsp-aarch64.so.sha256
+            libasound_module_pcm_picoredsp-armv7.so
+            libasound_module_pcm_picoredsp-armv7.so.sha256
           fail_on_unmatched_files: true
 
   # ─── Create immutable GitHub releases on version tags ─────────────────────
@@ -447,5 +470,9 @@ jobs:
             picoredsp-controller-aarch64.sha256
             picoredsp-controller-armv7
             picoredsp-controller-armv7.sha256
+            libasound_module_pcm_picoredsp-aarch64.so
+            libasound_module_pcm_picoredsp-aarch64.so.sha256
+            libasound_module_pcm_picoredsp-armv7.so
+            libasound_module_pcm_picoredsp-armv7.so.sha256
           generate_release_notes: true
           fail_on_unmatched_files: true
