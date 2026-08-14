@@ -77,8 +77,11 @@ target_link_libraries(asound_module_pcm_picoredsp
         pthread
 )
 
-# ALSA modules must not have a 'lib' prefix
+# ALSA discovers external PCM modules as `libasound_module_pcm_<type>.so`.
+# Keep the CMake target name stable for build scripts, but emit the real
+# runtime filename directly instead of relying on a build-tree symlink.
 set_target_properties(asound_module_pcm_picoredsp PROPERTIES
+    OUTPUT_NAME "libasound_module_pcm_picoredsp"
     PREFIX ""
 )
 
@@ -86,17 +89,6 @@ set_target_properties(asound_module_pcm_picoredsp PROPERTIES
 include(GNUInstallDirs)
 install(TARGETS asound_module_pcm_picoredsp
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/alsa-lib
-)
-
-# Create a `lib`-prefixed symlink in the build directory so that the ALSA
-# runtime can find the module when ALSA_PLUGIN_DIR points to the build tree.
-# ALSA searches for `libasound_module_pcm_<type>.so` (with the lib prefix).
-add_custom_command(TARGET asound_module_pcm_picoredsp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-        asound_module_pcm_picoredsp.so
-        libasound_module_pcm_picoredsp.so
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Creating lib-prefixed ALSA plugin symlink for test discovery"
 )
 
 # ---------------------------------------------------------------------------

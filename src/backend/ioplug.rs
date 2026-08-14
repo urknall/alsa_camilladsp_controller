@@ -138,21 +138,23 @@ impl IoplugBackend {
     /// On success performs the HELLO handshake and reads the START message.
     /// Returns `None` if no client is waiting.
     fn try_accept_and_start(&mut self) -> AppResult<Option<(IpcConnection, DeviceSnapshot)>> {
-        let conn = match self.server.try_accept()? {
+        let mut conn = match self.server.try_accept()? {
             Some(c) => c,
             None => return Ok(None),
         };
-        self.handshake_and_start(conn).map(Some)
-    }
 
-    fn handshake_and_start(
-        &mut self,
-        mut conn: IpcConnection,
-    ) -> AppResult<(IpcConnection, DeviceSnapshot)> {
         // HELLO negotiation — stores negotiated_version on `conn`.
-        let negotiated = conn
-            .perform_hello_handshake()
-            .map_err(|e| app_error(format!("IPC HELLO failed: {e}")))?;
+        let negotiated = match conn.perform_hello_handshake() {
+            Ok(version) => version,
+            Err(err) => {
+                log(
+                    LogLevel::Warning,
+                    self.log_level,
+                    format!("ioplug: rejecting client during HELLO: {err}"),
+                );
+                return Ok(None);
+            }
+        };
 
         log(
             LogLevel::Debug,
@@ -161,9 +163,18 @@ impl IoplugBackend {
         );
 
         // Receive the first plugin message; must be START.
-        let msg = conn
-            .recv_plugin_message()
-            .map_err(|e| app_error(format!("IPC recv after HELLO: {e}")))?;
+        let msg = match conn.recv_plugin_message() {
+            Ok(msg) => msg,
+            Err(err) => {
+                let _ = conn.send_error(ErrorCode::Protocol);
+                log(
+                    LogLevel::Warning,
+                    self.log_level,
+                    format!("ioplug: rejecting client after HELLO: {err}"),
+                );
+                return Ok(None);
+            }
+        };
 
         let snapshot = match msg {
             PluginMessage::Start {
@@ -177,10 +188,16 @@ impl IoplugBackend {
                 // `negotiated` during HELLO; a different version here means
                 // the peer violated the protocol.
                 if version != negotiated {
-                    return Err(app_error(format!(
-                        "IPC START: version mismatch \
-                         (negotiated {negotiated}, got {version})"
-                    )));
+                    let _ = conn.send_error(ErrorCode::Protocol);
+                    log(
+                        LogLevel::Warning,
+                        self.log_level,
+                        format!(
+                            "ioplug: rejecting client START with version mismatch \
+                             (negotiated {negotiated}, got {version})"
+                        ),
+                    );
+                    return Ok(None);
                 }
 
                 // Fix: enforce the stereo-only contract at every trust
@@ -188,17 +205,40 @@ impl IoplugBackend {
                 // negotiation to 2 channels, but validate here as a
                 // defence-in-depth check (e.g. future clients, tests).
                 if channels != 2 {
-                    return Err(app_error(format!(
-                        "IPC START: only stereo (2 channels) is supported, \
-                         got {channels}"
-                    )));
+                    let _ = conn.send_error(ErrorCode::Protocol);
+                    log(
+                        LogLevel::Warning,
+                        self.log_level,
+                        format!(
+                            "ioplug: rejecting client START with unsupported channel count {channels}"
+                        ),
+                    );
+                    return Ok(None);
                 }
 
-                let fmt_str = alsa_format_to_camilladsp(format as i32)
-                    .map_err(|e| app_error(format!("IPC START format {format}: {e}")))?
-                    .ok_or_else(|| {
-                        app_error(format!("IPC START: unsupported ALSA format byte {format}"))
-                    })?;
+                let fmt_str = match alsa_format_to_camilladsp(format as i32) {
+                    Ok(Some(fmt)) => fmt,
+                    Ok(None) => {
+                        let _ = conn.send_error(ErrorCode::Protocol);
+                        log(
+                            LogLevel::Warning,
+                            self.log_level,
+                            format!(
+                                "ioplug: rejecting client START with unsupported ALSA format byte {format}"
+                            ),
+                        );
+                        return Ok(None);
+                    }
+                    Err(err) => {
+                        let _ = conn.send_error(ErrorCode::Protocol);
+                        log(
+                            LogLevel::Warning,
+                            self.log_level,
+                            format!("ioplug: rejecting client START format {format}: {err}"),
+                        );
+                        return Ok(None);
+                    }
+                };
 
                 log(
                     LogLevel::Info,
@@ -218,14 +258,20 @@ impl IoplugBackend {
                 }
             }
             other => {
-                return Err(app_error(format!(
-                    "IPC expected START, got {:?}",
-                    other.message_type()
-                )));
+                let _ = conn.send_error(ErrorCode::Protocol);
+                log(
+                    LogLevel::Warning,
+                    self.log_level,
+                    format!(
+                        "ioplug: rejecting client after HELLO: expected START, got {:?}",
+                        other.message_type()
+                    ),
+                );
+                return Ok(None);
             }
         };
 
-        Ok((conn, snapshot))
+        Ok(Some((conn, snapshot)))
     }
 
     /// Receive one message from an active connection.  Returns `Ok(None)` on
@@ -454,6 +500,70 @@ mod tests {
         assert_eq!(snap.wave.channels, Some(2));
 
         let _ = client_handle.join();
+    }
+
+    #[test]
+    fn malformed_client_does_not_poison_listener_for_next_client() {
+        let path = test_socket_path("malformed-then-valid");
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+
+        let bad_path = path.clone();
+        let bad_client = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&bad_path);
+            client
+                .write_all(&PluginMessage::Stop { version: 1 }.encode())
+                .unwrap();
+            let mut err_buf = [0u8; 3];
+            client.read_exact(&mut err_buf).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&err_buf).unwrap(),
+                PluginMessage::Error {
+                    version: 1,
+                    code: ErrorCode::Protocol,
+                }
+            );
+        });
+
+        for _ in 0..10 {
+            assert!(backend.poll_event(50).unwrap().is_none());
+        }
+        bad_client.join().unwrap();
+
+        let good_path = path.clone();
+        let good_client = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&good_path);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            client
+        });
+
+        let event = loop {
+            if let Some(event) = backend.poll_event(200).unwrap() {
+                break event;
+            }
+        };
+
+        assert_eq!(
+            event,
+            StreamEvent::Started(crate::backend::StreamParams {
+                rate: 48_000,
+                format: "S32_LE".to_owned(),
+                channels: 2,
+            })
+        );
+
+        let _ = good_client.join();
     }
 
     #[test]

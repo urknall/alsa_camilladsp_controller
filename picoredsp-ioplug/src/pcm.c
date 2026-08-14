@@ -241,6 +241,25 @@ done:
     return NULL;
 }
 
+static int pcdsp_map_ready_error(int ipc_rc, pcdsp_error_code_t err_code)
+{
+    if (ipc_rc != -EPROTO)
+        return ipc_rc;
+
+    switch (err_code) {
+    case PCDSP_ERR_CONFIG:
+        return -EINVAL;
+    case PCDSP_ERR_PLAYBACK_DEVICE:
+        return -ENODEV;
+    case PCDSP_ERR_PROTOCOL:
+        return -EPROTO;
+    case PCDSP_ERR_INTERNAL:
+    case PCDSP_ERR_OK:
+    default:
+        return -EIO;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * ioplug callbacks
  * ---------------------------------------------------------------------- */
@@ -255,9 +274,10 @@ static int pcdsp_start(snd_pcm_ioplug_t *io)
     /* Start worker if not already running. */
     if (!atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         atomic_store_explicit(&pcdsp->worker_running, true, memory_order_release);
-        if (pthread_create(&pcdsp->worker, NULL, worker_thread, pcdsp) != 0) {
+        int thread_rc = pthread_create(&pcdsp->worker, NULL, worker_thread, pcdsp);
+        if (thread_rc != 0) {
             atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
-            return -ENOMEM;
+            return -thread_rc;
         }
     }
 
@@ -433,7 +453,7 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
             SNDERR("picoredsp: failed waiting for READY (%d): %s",
                    -ipc_rc, strerror(-ipc_rc));
         pcdsp_ipc_close(&pcdsp->conn);
-        return -EINVAL;
+        return pcdsp_map_ready_error(ipc_rc, err_code);
     }
 
     return 0;
@@ -492,6 +512,11 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     }
 
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
+    {
+        int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+        if (serr != 0)
+            return serr;
+    }
     return 0;
 }
 
@@ -592,6 +617,9 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
 static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0)
+        return serr;
     /* Delay = frames currently in the ring buffer awaiting consumption. */
     *delayp = (snd_pcm_sframes_t)pcdsp_rb_read_avail(&pcdsp->rb);
     return 0;

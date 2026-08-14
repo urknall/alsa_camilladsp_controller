@@ -25,6 +25,8 @@ pub struct RetryState {
     pub latch_until_change: bool,
 }
 
+const RETRY_DELAYS_MS: &[u64] = &[500, 1000, 2000, 5000, 10_000, 30_000];
+
 impl RetryState {
     pub fn new() -> Self {
         Self {
@@ -51,10 +53,22 @@ impl RetryState {
     ///
     /// Backoff sequence: 500 ms → 1 s → 2 s → 5 s → 10 s → 30 s (cap).
     pub fn record_attempt(&mut self) {
-        const DELAYS_MS: &[u64] = &[500, 1000, 2000, 5000, 10_000, 30_000];
-        let delay = DELAYS_MS[self.consecutive.min(5) as usize];
+        let delay =
+            RETRY_DELAYS_MS[self.consecutive.min((RETRY_DELAYS_MS.len() - 1) as u32) as usize];
         self.next_at = Some(Instant::now() + Duration::from_millis(delay));
         self.consecutive += 1;
+    }
+
+    /// Duration scheduled by the most recent `record_attempt` call.
+    pub fn scheduled_delay(&self) -> Option<Duration> {
+        if self.consecutive == 0 {
+            None
+        } else {
+            Some(Duration::from_millis(
+                RETRY_DELAYS_MS
+                    [(self.consecutive - 1).min((RETRY_DELAYS_MS.len() - 1) as u32) as usize],
+            ))
+        }
     }
 
     /// Mark a permanent error; no further attempts until the latch clears.
@@ -141,6 +155,21 @@ mod tests {
         for i in 1..=6 {
             r.record_attempt();
             assert_eq!(r.consecutive, i);
+        }
+    }
+
+    #[test]
+    fn retry_state_reports_scheduled_delay_sequence() {
+        let mut r = RetryState::new();
+        let expected_ms = [500, 1000, 2000, 5000, 10_000, 30_000, 30_000];
+        for expected in expected_ms {
+            r.record_attempt();
+            assert_eq!(
+                r.scheduled_delay(),
+                Some(Duration::from_millis(expected)),
+                "unexpected scheduled delay after {} attempts",
+                r.consecutive
+            );
         }
     }
 

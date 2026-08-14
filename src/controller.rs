@@ -390,13 +390,16 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             // CamillaDSP exited mid-stream: record a transient failure and
             // apply backoff before accepting the next connection.
             retry.record_attempt();
+            let backoff = retry
+                .scheduled_delay()
+                .unwrap_or_else(|| std::time::Duration::from_secs(0));
             log(
                 LogLevel::Warning,
                 log_level,
                 format!(
-                    "ioplug: transient failure #{} — next attempt in ~{}s",
+                    "ioplug: transient failure #{} — next attempt in ~{}ms",
                     retry.consecutive,
-                    retry.consecutive.min(6) * 5,
+                    backoff.as_millis(),
                 ),
             );
         }

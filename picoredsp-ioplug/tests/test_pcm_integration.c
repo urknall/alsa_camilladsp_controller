@@ -178,6 +178,33 @@ typedef struct {
     pcdsp_error_code_t  response;   /* PCDSP_ERR_OK → send READY; else send ERROR */
 } server_args_t;
 
+static int send_fd_with_ready(int socket_fd, int send_fd)
+{
+    char dummy = 0;
+    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    struct iovec iov = {
+        .iov_base = &dummy,
+        .iov_len  = 1,
+    };
+    struct msghdr msg = {
+        .msg_iov        = &iov,
+        .msg_iovlen     = 1,
+        .msg_control    = cmsgbuf,
+        .msg_controllen = sizeof(cmsgbuf),
+    };
+
+    memset(cmsgbuf, 0, sizeof(cmsgbuf));
+    struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+    if (!cm)
+        return -1;
+    cm->cmsg_level = SOL_SOCKET;
+    cm->cmsg_type = SCM_RIGHTS;
+    cm->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cm), &send_fd, sizeof(send_fd));
+
+    return sendmsg(socket_fd, &msg, MSG_NOSIGNAL) == 1 ? 0 : -1;
+}
+
 /*
  * Simple one-shot IPC server: accept one connection, complete the HELLO
  * handshake, then send READY or an ERROR depending on `args->response`.
@@ -226,12 +253,17 @@ static void *mock_server_thread(void *arg)
     }
 
     if (a->response == PCDSP_ERR_OK) {
-        /* Send a plain READY (no SCM_RIGHTS pipe for simplicity in tests) */
         pcdsp_msg_ready_t ready = {
             .type    = PCDSP_MSG_READY,
             .version = hello.version,
         };
         send(cfd, &ready, sizeof(ready), MSG_NOSIGNAL);
+        int pipefd[2];
+        if (pipe(pipefd) == 0) {
+            (void)send_fd_with_ready(cfd, pipefd[1]);
+            close(pipefd[0]);
+            close(pipefd[1]);
+        }
     } else {
         pcdsp_msg_error_t err = {
             .type    = PCDSP_MSG_ERROR,
@@ -322,22 +354,9 @@ TEST(hw_params_fails_when_no_controller_present)
 TEST(hw_params_succeeds_with_mock_controller_and_ready)
 {
     /*
-     * With a mock controller that responds with READY, hw_params must
+     * With a mock controller that responds with READY plus the required
+     * SCM_RIGHTS pipe fd, hw_params must
      * succeed (return 0).
-     *
-     * Note: the mock server sends a plain READY (no SCM_RIGHTS pipe fd).
-     * The plugin's hw_params calls pcdsp_ipc_recv_ready with pipe_fd != NULL
-     * (Gate 8 path), but the mock does not send an fd.  The plugin will try
-     * to receive the fd via recvmsg and fail with -EPROTO because no
-     * ancillary data is present.
-     *
-     * To avoid this, the test socket path used here is deliberately absent
-     * so that hw_params fails at the IPC connect step rather than the fd
-     * receive step.  A future test with a full Gate-8-compliant mock server
-     * (passing SCM_RIGHTS) would verify the READY+fd success path.
-     *
-     * For this test we just verify the error is a clean failure, not a crash
-     * or hang.
      */
     init_sock_path("hw-ready");
     server_args_t args = { .sock_path = g_sock_path, .response = PCDSP_ERR_OK };
@@ -346,11 +365,8 @@ TEST(hw_params_succeeds_with_mock_controller_and_ready)
     snd_pcm_t *pcm = NULL;
     CHECK(open_plugin(&pcm, g_sock_path) == 0);
 
-    /* Intentional: will fail cleanly because the mock server doesn't send
-     * an SCM_RIGHTS fd (plain READY only).  The important property is that
-     * the plugin fails gracefully (no crash, no hang). */
     int rc = set_hw_params(pcm);
-    (void)rc; /* may be 0 (Gate 7 path) or -EPROTO (Gate 8 missing fd) */
+    CHECK(rc == 0);
 
     snd_pcm_close(pcm);
     pthread_join(srv, NULL);
@@ -361,7 +377,7 @@ TEST(hw_params_fails_with_error_config_from_controller)
 {
     /*
      * With a mock controller that responds with ERROR_CONFIG, hw_params
-     * must fail with a negative return code.
+     * must fail with -EINVAL.
      */
     init_sock_path("hw-cfg-err");
     server_args_t args = {
@@ -374,7 +390,7 @@ TEST(hw_params_fails_with_error_config_from_controller)
     CHECK(open_plugin(&pcm, g_sock_path) == 0);
 
     int rc = set_hw_params(pcm);
-    CHECK(rc < 0);
+    CHECK(rc == -EINVAL);
 
     snd_pcm_close(pcm);
     pthread_join(srv, NULL);
@@ -385,7 +401,7 @@ TEST(hw_params_fails_with_error_playback_device_from_controller)
 {
     /*
      * With a mock controller that responds with ERROR_PLAYBACK_DEVICE,
-     * hw_params must fail with a negative return code.  This simulates
+     * hw_params must fail with -ENODEV.  This simulates
      * the "CamillaDSP cannot open DAC" failure scenario.
      */
     init_sock_path("hw-dac-err");
@@ -399,7 +415,7 @@ TEST(hw_params_fails_with_error_playback_device_from_controller)
     CHECK(open_plugin(&pcm, g_sock_path) == 0);
 
     int rc = set_hw_params(pcm);
-    CHECK(rc < 0);
+    CHECK(rc == -ENODEV);
 
     snd_pcm_close(pcm);
     pthread_join(srv, NULL);
