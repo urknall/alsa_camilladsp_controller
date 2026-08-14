@@ -81,6 +81,8 @@ pub enum Mode {
     ValidateBenchmarkPlan,
     /// Render a benchmark report from a benchmark plan.
     MakeBenchmarkReport,
+    /// Automatically collect metrics for both backends and write a populated benchmark plan.
+    RunBenchmark,
 }
 
 impl Mode {
@@ -100,6 +102,7 @@ impl Mode {
             Self::MakeBenchmarkPlan => "--make-benchmark-plan",
             Self::ValidateBenchmarkPlan => "--validate-benchmark-plan",
             Self::MakeBenchmarkReport => "--make-benchmark-report",
+            Self::RunBenchmark => "--run-benchmark",
         }
     }
 }
@@ -149,7 +152,8 @@ Usage:\n\
   picoredsp-controller --make-statefile --config-path PATH --output FILE [--existing-state OLD]\n\
   picoredsp-controller --make-benchmark-plan [--output FILE]\n\
   picoredsp-controller --validate-benchmark-plan FILE\n\
-  picoredsp-controller --make-benchmark-report FILE [--output FILE]\n\n\
+  picoredsp-controller --make-benchmark-report FILE [--output FILE]\n\
+  picoredsp-controller --run-benchmark [--host HOST] [--port PORT] [--device DEVICE] [--output FILE]\n\n\
 Options:\n\
   -a, --adapt PATH              Active config path/symlink to adapt\n\
   -d, --device DEVICE           ALSA control device (default: hw:Loopback,0)\n\
@@ -176,6 +180,7 @@ Options:\n\
       --make-benchmark-plan     Write an A/B benchmark plan template\n\
       --validate-benchmark-plan FILE  Validate an A/B benchmark plan YAML file\n\
       --make-benchmark-report FILE  Render a benchmark report from a benchmark plan\n\
+      --run-benchmark           Auto-collect metrics for both backends and write populated plan\n\
   -h, --help                    Show this help\n\
   -V, --version                 Show version\n\
       --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
@@ -336,6 +341,15 @@ where
                 args.mode = Mode::MakeBenchmarkReport;
                 args.benchmark_path = Some(PathBuf::from(next_value("--make-benchmark-report")?));
             }
+            "--run-benchmark" => {
+                if args.mode != Mode::Run {
+                    return Err(app_error(format!(
+                        "conflicting mode flags: {} and --run-benchmark",
+                        args.mode.name()
+                    )));
+                }
+                args.mode = Mode::RunBenchmark;
+            }
             "--config-path" => {
                 args.statefile_config_path = Some(next_value("--config-path")?);
             }
@@ -423,10 +437,11 @@ where
                 | Mode::MakeStatefile
                 | Mode::MakeBenchmarkPlan
                 | Mode::MakeBenchmarkReport
+                | Mode::RunBenchmark
         )
     {
         return Err(app_error(
-            "--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan or --make-benchmark-report",
+            "--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan, --make-benchmark-report or --run-benchmark",
         ));
     }
     if args.mode == Mode::MakeStatefile {
@@ -473,7 +488,10 @@ where
     }
     if matches!(
         args.mode,
-        Mode::MakeBenchmarkPlan | Mode::ValidateBenchmarkPlan | Mode::MakeBenchmarkReport
+        Mode::MakeBenchmarkPlan
+            | Mode::ValidateBenchmarkPlan
+            | Mode::MakeBenchmarkReport
+            | Mode::RunBenchmark
     ) {
         if args.adapt.is_some() {
             return Err(app_error(format!(
@@ -602,7 +620,53 @@ mod tests {
         .expect_err("output must be rejected");
         assert!(
             err.to_string()
-                .contains("--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan or --make-benchmark-report"),
+                .contains("--output is only valid with --make-bypass, --make-statefile, --make-benchmark-plan, --make-benchmark-report or --run-benchmark"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_run_benchmark_mode() {
+        let args = parse(&["--run-benchmark"])
+            .expect("parse ok")
+            .expect("args");
+        assert_eq!(args.mode, Mode::RunBenchmark);
+        assert_eq!(args.output, None);
+    }
+
+    #[test]
+    fn parse_run_benchmark_mode_with_output() {
+        let args = parse(&["--run-benchmark", "--output", "plan.yml"])
+            .expect("parse ok")
+            .expect("args");
+        assert_eq!(args.mode, Mode::RunBenchmark);
+        assert_eq!(args.output, Some(PathBuf::from("plan.yml")));
+    }
+
+    #[test]
+    fn parse_run_benchmark_mode_with_host_port_device() {
+        let args = parse(&[
+            "--run-benchmark",
+            "--host",
+            "192.168.1.1",
+            "--port",
+            "5678",
+            "--device",
+            "hw:Loopback,0",
+        ])
+        .expect("parse ok")
+        .expect("args");
+        assert_eq!(args.mode, Mode::RunBenchmark);
+        assert_eq!(args.host, "192.168.1.1");
+        assert_eq!(args.port, 5678);
+        assert_eq!(args.device, "hw:Loopback,0");
+    }
+
+    #[test]
+    fn run_benchmark_rejects_conflicting_mode_flag() {
+        let err = parse(&["--run-benchmark", "--probe"]).expect_err("conflicting modes must fail");
+        assert!(
+            err.to_string().contains("conflicting mode flags"),
             "unexpected error: {err}"
         );
     }

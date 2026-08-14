@@ -271,20 +271,20 @@ CI requirements:
   - [x] Benchmark report generator creates automated Gate 12 coverage and comparison reports
   - [x] CI jobs `ioplug_bench` and `rust_bench` build and run benchmarks on every push
 - [ ] All metrics measured for both `aloop` and `ioplug`:
-  - [ ] Playback start latency
-  - [ ] 44.1 → 48 kHz transition time
-  - [ ] 48 → 96 kHz transition time
-  - [ ] Stop latency
-  - [ ] PCM transport latency
-  - [ ] Total end-to-end latency (externally measured where possible)
-  - [ ] CPU usage
-  - [ ] Context switches
-  - [ ] Controller RSS
-  - [ ] Plugin overhead
-  - [ ] XRUN count
-  - [ ] 24h stability
-  - [ ] 7-day stability
-  - [ ] Recovery after DAC error
+  - [x] Playback start latency (auto-collected for aloop via HCTL polling)
+  - [ ] 44.1 → 48 kHz transition time (requires manual rate-switch test)
+  - [ ] 48 → 96 kHz transition time (requires manual rate-switch test)
+  - [x] Stop latency (auto-collected for aloop via HCTL polling)
+  - [x] PCM transport latency (auto-collected from `/proc/asound` hw_params)
+  - [x] Total end-to-end latency (auto-computed: transport + CamillaDSP buffer from WS)
+  - [x] CPU usage (auto-collected from `/proc/<pid>/stat`)
+  - [x] Context switches (auto-collected from `/proc/<pid>/status`)
+  - [x] Controller RSS (auto-collected from `/proc/<pid>/status`)
+  - [ ] Plugin overhead (requires CPU comparison with DSP bypassed vs. active)
+  - [x] XRUN count (auto-collected from aplay stderr during timing test)
+  - [ ] 24h stability (requires manual soak run)
+  - [ ] 7-day stability (requires manual soak run)
+  - [ ] Recovery after DAC error (requires deliberate hardware fault injection)
 
 ---
 
