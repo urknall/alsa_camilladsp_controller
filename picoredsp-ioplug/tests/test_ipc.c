@@ -258,7 +258,7 @@ static int start_mock_server(mock_server_t *s, srv_cmd_t cmd)
         return -1;
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    strncpy(addr.sun_path, s->path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", s->path);
 
     if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(s->listen_fd);

@@ -179,7 +179,8 @@ TEST(drain_period_partial_ring_buffer_writes_available_frames)
 
     /* Drain pipe to avoid blocking */
     uint8_t tmp[3 * 2];
-    (void)read(pipefd[0], tmp, sizeof(tmp));
+    ssize_t drained = read(pipefd[0], tmp, sizeof(tmp));
+    CHECK(drained >= 0);
 
     close(pipefd[0]);
     close(pipefd[1]);

@@ -8,6 +8,7 @@ This repository contains:
 |------|---------|
 | `install_picoredsp.sh` | Installer script — run once on the piCorePlayer device |
 | `src/` | Rust source for `picoredsp-controller` |
+| `picoredsp-ioplug/` | ALSA ioplug PCM module for the direct experimental backend |
 | `Cargo.toml` | Rust package manifest |
 | `.github/workflows/build.yml` | GitHub Actions CI/CD — builds and releases binaries |
 
@@ -21,6 +22,8 @@ This repository contains:
 ## Audio path
 
 ```
+Default / recommended backend (aloop):
+
 Squeezelite / AirPlay / Bluetooth
               │
               ▼
@@ -41,14 +44,37 @@ Squeezelite / AirPlay / Bluetooth
              DAC
 ```
 
+```
+Experimental backend (direct ioplug):
+
+Squeezelite / AirPlay / Bluetooth
+              │
+              ▼
+        pcm.picoredsp
+              │
+              ▼
+libasound_module_pcm_picoredsp.so
+              │
+              ▼
+      AF_UNIX + stdin pipe
+              │
+              ▼
+          CamillaDSP
+              │
+              ▼
+             DAC
+```
+
 > **Note:** The `pcm.picoredsp` routing is fixed to **stereo (2 channels)**. Only
 > stereo audio sources are supported. The controller rejects ALSA events that
 > indicate a channel count other than 2.
 
-The `picoredsp-controller` binary sits entirely outside the audio path. It
-monitors the `snd-aloop` ALSA HCTL controls (`PCM Slave Active`, `PCM Slave
-Rate`, `PCM Slave Format`, `PCM Slave Channels`) and drives CamillaDSP through
-its WebSocket API (`GetState`, `GetStopReason`, `SetConfig`, `Stop`).
+The `picoredsp-controller` binary sits entirely outside the audio path. With
+the default `aloop` backend it monitors the `snd-aloop` ALSA HCTL controls
+(`PCM Slave Active`, `PCM Slave Rate`, `PCM Slave Format`, `PCM Slave Channels`)
+and drives CamillaDSP through its WebSocket API. With the experimental `ioplug`
+backend it manages the plugin handshake and per-stream CamillaDSP lifecycle
+without entering the PCM data path.
 
 ## Installation
 
@@ -57,21 +83,41 @@ its WebSocket API (`GetState`, `GetStopReason`, `SetConfig`, `Stop`).
 wget https://github.com/urknall/alsa_camilladsp_controller/raw/main/install_picoredsp.sh
 chmod +x install_picoredsp.sh
 ./install_picoredsp.sh
+# or explicitly:
+./install_picoredsp.sh --backend aloop
+./install_picoredsp.sh --backend ioplug
 ```
 
 The installer performs these steps in order:
 
 1. Tests `snd-aloop` availability.
 2. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
-3. Probes the snd-aloop ALSA controls with the downloaded binary.
-4. Detects the physical DAC selected in Squeezelite Settings.
-5. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.
-6. Generates default/bypass/null configs and ALSA PCM definitions.
-7. Validates all staged configs with `camilladsp --check`.
-8. Bundles everything into a Tiny Core `.tcz` extension.
-9. Routes Squeezelite through `pcm.picoredsp` and reboots.
+3. Downloads and SHA256-verifies the pre-built `libasound_module_pcm_picoredsp.so` ALSA module from GitHub Releases.
+4. Probes the snd-aloop ALSA controls with the downloaded controller binary.
+5. Lets you select the backend (`aloop` by default, `ioplug` optional/experimental).
+6. Detects the physical DAC selected in Squeezelite Settings.
+7. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.
+8. Generates default/bypass/null configs, backend selection state, and ALSA PCM definitions.
+9. Validates all staged configs with `camilladsp --check`.
+10. Bundles everything into a Tiny Core `.tcz` extension.
+11. Routes Squeezelite through `pcm.picoredsp` and reboots.
 
 After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
+
+### Switching backend after installation
+
+The installer stores the selected backend in `/mnt/mmcblk0p2/tce/camilladsp/backend.conf`.
+
+To switch later:
+
+```sh
+/usr/local/bin/picoredsp-switch-backend aloop
+/usr/local/bin/picoredsp-switch-backend ioplug
+```
+
+or run `/usr/local/bin/picoredsp-switch-backend` with no argument for an interactive prompt.
+
+Backend changes are only applied after an explicit reboot. Dynamic in-stream switching is intentionally unsupported.
 
 ### Troubleshooting: `syntax error: unexpected newline`
 

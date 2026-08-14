@@ -1508,7 +1508,7 @@ case "\${target}" in
         ;;
 esac
 
-sudo mkdir -p "$(dirname "\${BACKEND_FILE}")"
+sudo mkdir -p "\$(dirname "\${BACKEND_FILE}")"
 printf '%s\n' "\${target}" | sudo tee "\${BACKEND_FILE}" >/dev/null
 sudo chown tc:staff "\${BACKEND_FILE}" 2>/dev/null || true
 sudo chmod 664 "\${BACKEND_FILE}" 2>/dev/null || true

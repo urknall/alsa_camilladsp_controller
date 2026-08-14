@@ -121,6 +121,14 @@ typedef struct pcdsp_pcm {
     char                socket_path[108]; /* UNIX_PATH_MAX */
 } pcdsp_pcm_t;
 
+static void pcdsp_signal_event_fd(int event_fd)
+{
+    uint64_t val = 1;
+    ssize_t  rc  = write(event_fd, &val, sizeof(val));
+    if (rc < 0 && errno != EAGAIN && errno != EINTR)
+        SNDERR("picoredsp: failed to signal eventfd: %s", strerror(errno));
+}
+
 #define io_to_pcdsp(io_ptr) ((pcdsp_pcm_t *)(io_ptr))
 
 /* -----------------------------------------------------------------------
@@ -252,8 +260,7 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 
     if (was_running) {
         /* Wake the worker so it sees the flag. */
-        uint64_t val = 1;
-        (void)write(pcdsp->event_fd, &val, sizeof(val));
+        pcdsp_signal_event_fd(pcdsp->event_fd);
 
         pthread_join(pcdsp->worker, NULL);
     }
@@ -444,8 +451,7 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
     /* Ensure the worker is stopped. */
     if (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
-        uint64_t val = 1;
-        (void)write(pcdsp->event_fd, &val, sizeof(val));
+        pcdsp_signal_event_fd(pcdsp->event_fd);
         pthread_join(pcdsp->worker, NULL);
     }
 
