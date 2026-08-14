@@ -1360,7 +1360,69 @@ mod tests {
         }
     }
 
-    /// Statefile with an unexpected extra key must be rejected even though all
+    /// Regression test for the symlink baseline preservation invariant.
+    ///
+    /// Finding #1 identified that if `--adapt` points to a symlink
+    /// (`active_config.yml → MyDSP.yml`) and the controller were to call
+    /// `fs::write(&adapt_path, …)`, the write would follow the symlink and
+    /// permanently corrupt the user's configuration.
+    ///
+    /// This test verifies that `adapt_config_for_backend` — the function used
+    /// in the ioplug controller — is a **pure** reader: it resolves the symlink
+    /// to read the baseline but never writes back to either the symlink or its
+    /// target, across multiple successive adaptations.
+    #[test]
+    fn adapt_config_for_backend_via_symlink_never_writes_baseline() {
+        let dir = test_dir("symlink-baseline");
+        let baseline = dir.join("MyDSP.yml");
+        let active   = dir.join("active_config.yml");
+
+        // Write a minimal config with a fixed sample rate.
+        let original_content = base_config("hw:DAC,0", Some("S32_LE"));
+        fs::write(&baseline, &original_content).unwrap();
+
+        // Simulate the installer: active_config.yml is a symlink → MyDSP.yml.
+        symlink(&baseline, &active).unwrap();
+
+        // Simulate three successive streams at different sample rates.
+        for rate in [44_100u32, 96_000, 48_000] {
+            let wave = WaveFormat {
+                sample_rate:   Some(rate),
+                sample_format: Some("S32_LE".to_owned()),
+                channels:      Some(2),
+            };
+            // The controller reads through the symlink to build an adapted string.
+            let adapted = adapt_config_for_backend(&active, &wave, RuntimeBackend::Ioplug)
+                .unwrap_or_else(|e| panic!("adapt_config_for_backend failed at {rate} Hz: {e}"));
+
+            // The adapted string must contain the stream's rate (sanity check).
+            let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
+            let adapted_rate = parsed["devices"]["capture_samplerate"]
+                .as_u64()
+                .or_else(|| parsed["devices"]["samplerate"].as_u64())
+                .expect("adapted YAML has no samplerate");
+            assert_eq!(adapted_rate, rate as u64, "adapted rate mismatch at {rate} Hz");
+        }
+
+        // After all three adaptations the baseline file must be byte-for-byte unchanged.
+        let after = fs::read_to_string(&baseline)
+            .expect("baseline file should still exist after adaptations");
+        assert_eq!(
+            after, original_content,
+            "adapt_config_for_backend must not modify the baseline file"
+        );
+
+        // The symlink must still point to the original target (not been replaced).
+        assert_eq!(
+            active.canonicalize().unwrap(),
+            baseline.canonicalize().unwrap(),
+            "active_config.yml symlink must still resolve to the original baseline"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Regression test for the statefile with an unexpected extra key must be rejected even though all
     /// known fields are present and valid.  This mirrors CamillaDSP's own
     /// `#[serde(deny_unknown_fields)]` behaviour so that our installer treats
     /// an unknown-field statefile as invalid rather than silently ignoring it.

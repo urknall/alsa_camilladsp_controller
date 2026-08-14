@@ -111,6 +111,14 @@ typedef struct pcdsp_pcm {
     pthread_t           worker;
     _Atomic(bool)       worker_running;
     _Atomic(bool)       paused;
+    /* Set to true by pcdsp_drain() while a drain is in progress so that the
+     * worker consumes partial periods rather than waiting for a full one.
+     * Cleared by pcdsp_drain() after the ring buffer is empty. */
+    _Atomic(bool)       draining;
+    /* Non-zero when the worker has detected a fatal stream error (e.g. -EPIPE
+     * when CamillaDSP exits).  Checked by pcdsp_pointer() and
+     * pcdsp_poll_revents() so applications are woken and see the error. */
+    _Atomic(int)        stream_error;
 
     /* IPC connection to the Rust controller */
     pcdsp_ipc_conn_t    conn;
@@ -158,22 +166,37 @@ static void *worker_thread(void *arg)
             continue;
         }
 
+        bool is_draining = atomic_load_explicit(&pcdsp->draining, memory_order_acquire);
         size_t avail = pcdsp_rb_read_avail(&pcdsp->rb);
+
         if (avail < pcdsp->period_size) {
-            /* Sleep for half a period to avoid busy-wait.
-             * Multiply before dividing to avoid integer truncation. */
-            unsigned long rate     = pcdsp->io.rate ? pcdsp->io.rate : 48000;
-            unsigned long sleep_ns = 500000000UL * (unsigned long)pcdsp->period_size / rate;
-            struct timespec ts = { .tv_sec  = (time_t)(sleep_ns / 1000000000UL),
-                                   .tv_nsec = (long)(sleep_ns % 1000000000UL) };
-            nanosleep(&ts, NULL);
-            continue;
+            if (!is_draining) {
+                /* Normal operation: wait until a full period is buffered.
+                 * Sleep for half a period to avoid busy-wait.
+                 * Multiply before dividing to avoid integer truncation. */
+                unsigned long rate     = pcdsp->io.rate ? pcdsp->io.rate : 48000;
+                unsigned long sleep_ns = 500000000UL * (unsigned long)pcdsp->period_size / rate;
+                struct timespec ts = { .tv_sec  = (time_t)(sleep_ns / 1000000000UL),
+                                       .tv_nsec = (long)(sleep_ns % 1000000000UL) };
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            /* Draining: consume whatever is available (even a partial period). */
+            if (avail == 0) {
+                /* Ring buffer is empty — yield briefly and re-check. */
+                struct timespec ts = { .tv_nsec = 1000000 }; /* 1 ms */
+                nanosleep(&ts, NULL);
+                continue;
+            }
         }
+
+        /* Drain either a full period (normal) or the remaining frames (draining). */
+        size_t drain_frames = (avail < pcdsp->period_size) ? avail : pcdsp->period_size;
 
         int pipe_fd = pcdsp->pipe_fd;
         if (pipe_fd >= 0) {
             /*
-             * Gate 8: drain one period from the ring buffer and write it
+             * Gate 8: drain frames from the ring buffer and write them
              * directly into the CamillaDSP stdin pipe.
              *
              * pcdsp_drain_period_to_pipe() handles chunking, EINTR retry,
@@ -181,12 +204,17 @@ static void *worker_thread(void *arg)
              * error (e.g. -EPIPE when CamillaDSP has exited).
              */
             ssize_t got = pcdsp_drain_period_to_pipe(
-                &pcdsp->rb, pipe_fd, pcdsp->period_size, pcdsp->frame_bytes);
+                &pcdsp->rb, pipe_fd, drain_frames, pcdsp->frame_bytes);
             if (got < 0) {
                 /* EPIPE or other hard error: CamillaDSP has gone.
-                 * Stop the worker so pcdsp_pointer() reports XRUN. */
+                 * Record the error so pcdsp_pointer() and pcdsp_poll_revents()
+                 * can expose it to the application, then wake the poll fd so
+                 * the application is not left sleeping in poll(). */
+                atomic_store_explicit(&pcdsp->stream_error, (int)got,
+                                      memory_order_release);
                 atomic_store_explicit(&pcdsp->worker_running,
                                       false, memory_order_release);
+                pcdsp_signal_event_fd(pcdsp->event_fd);
                 goto done;
             }
             if (got > 0)
@@ -196,7 +224,7 @@ static void *worker_thread(void *arg)
             /* Fallback (no pipe): null-sink drain with nominal-rate pacing. */
             unsigned long rate2  = pcdsp->io.rate;
             size_t drained = pcdsp_drain_period_null_sink(
-                &pcdsp->rb, pcdsp->period_size, rate2);
+                &pcdsp->rb, drain_frames, rate2);
             if (drained == 0)
                 continue;
             atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)drained,
@@ -283,6 +311,12 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
+    /* If the worker recorded a fatal stream error (e.g. -EPIPE when
+     * CamillaDSP exited), return it immediately so ALSA sees the error. */
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0)
+        return (snd_pcm_sframes_t)serr;
+
     uint64_t hw_total = atomic_load_explicit(&pcdsp->hw_frames, memory_order_acquire);
     snd_pcm_uframes_t hw_ptr = (snd_pcm_uframes_t)(hw_total % pcdsp->buffer_size);
 
@@ -319,6 +353,15 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
     (void)params;
+
+    /* Enforce the stereo-only contract at the hw_params boundary.  The ALSA
+     * constraint already limits negotiation to 2 channels, but validate here
+     * as a defence-in-depth check. */
+    if (io->channels != 2) {
+        SNDERR("picoredsp: only stereo (2 channels) is supported, got %u",
+               io->channels);
+        return -EINVAL;
+    }
 
     /* Compute frame size from negotiated format and channel count. */
     int rc = pcdsp_format_frame_bytes(io->format, io->channels, &pcdsp->frame_bytes);
@@ -400,6 +443,16 @@ static int pcdsp_hw_free(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
     pcdsp_rb_free(&pcdsp->rb);
+    /* Release stream resources acquired by hw_params().  If the application
+     * calls hw_free() without a preceding stop/drain (e.g. to renegotiate
+     * hw_params), closing the pipe and IPC connection here ensures the Rust
+     * controller is not left waiting for a STOP that will never arrive.
+     * The controller treats an unexpected disconnect as a clean stream end. */
+    if (pcdsp->pipe_fd >= 0) {
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+    }
+    pcdsp_ipc_close(&pcdsp->conn);
     return 0;
 }
 
@@ -408,6 +461,9 @@ static int pcdsp_prepare(snd_pcm_ioplug_t *io)
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
     pcdsp_rb_reset(&pcdsp->rb);
     atomic_store_explicit(&pcdsp->hw_frames, 0, memory_order_release);
+    /* Clear any error/drain state from a previous run. */
+    atomic_store_explicit(&pcdsp->stream_error, 0, memory_order_release);
+    atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
 
     /* Drain eventfd from previous run. */
     uint64_t dummy;
@@ -421,8 +477,13 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* Null sink: wait until the ring buffer is empty.
-     * Exit early if the worker stops (no consumer → buffer will never drain). */
+    /* Signal the worker that a drain is in progress so it consumes partial
+     * periods rather than waiting for a full one.  This prevents the
+     * deadlock where the final partial period never reaches period_size. */
+    atomic_store_explicit(&pcdsp->draining, true, memory_order_release);
+
+    /* Wait until the ring buffer is empty or the worker stops (no consumer
+     * → buffer will never drain). */
     while (pcdsp_rb_read_avail(&pcdsp->rb) > 0) {
         if (!atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire))
             break;
@@ -430,6 +491,7 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
         nanosleep(&ts, NULL);
     }
 
+    atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
     return 0;
 }
 
@@ -448,6 +510,16 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
+    /* Close the pipe write-end BEFORE joining the worker thread.
+     * If the worker is blocked inside write(pipe_fd, ...) because CamillaDSP
+     * stopped consuming stdin, closing the fd here causes write() to return
+     * EBADF, allowing the worker to detect the error and exit cleanly.
+     * Doing the close after the join would deadlock. */
+    if (pcdsp->pipe_fd >= 0) {
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+    }
+
     /* Ensure the worker is stopped. */
     if (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
@@ -458,7 +530,7 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
     pcdsp_rb_free(&pcdsp->rb);
     pcdsp_ipc_close(&pcdsp->conn);
 
-    /* Gate 8: close the pipe write-end if still open. */
+    /* pipe_fd is already closed above; the guard is kept for safety. */
     if (pcdsp->pipe_fd >= 0) {
         close(pcdsp->pipe_fd);
         pcdsp->pipe_fd = -1;
@@ -496,11 +568,21 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
                                unsigned int      nfds,
                                unsigned short   *revents)
 {
-    (void)io;
+    pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
     if (nfds < 1 || !pfd || !revents)
         return -EINVAL;
 
     *revents = 0;
+
+    /* If the worker recorded a fatal stream error, expose it as POLLERR so
+     * the application wakes from poll() and subsequently sees the error in
+     * pointer() or delay(). */
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0) {
+        *revents = POLLERR;
+        return 0;
+    }
+
     if (pfd[0].revents & POLLIN) {
         /* Consume the eventfd counter. */
         uint64_t val;
@@ -586,6 +668,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
 
     atomic_init(&pcdsp->worker_running, false);
     atomic_init(&pcdsp->paused,         false);
+    atomic_init(&pcdsp->draining,       false);
+    atomic_init(&pcdsp->stream_error,   0);
     atomic_init(&pcdsp->hw_frames,      0);
 
     /* Parse optional ALSA config parameters. */
@@ -640,15 +724,19 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     snd_pcm_ioplug_set_param_list(&pcdsp->io, SND_PCM_IOPLUG_HW_FORMAT,
                                   (unsigned int)fmt_count, fmt_list);
 
+    /* Constrain the plugin to stereo only.  The documented product contract
+     * is stereo (2 channels) and the stack buffer in the worker is sized for
+     * PCDSP_MAX_CHANNELS = 2.  Advertising 1..8 here was unsafe (stack
+     * overflow with 8ch × 4 bytes/frame > 2-byte/frame assumption). */
     snd_pcm_ioplug_set_param_minmax(&pcdsp->io, SND_PCM_IOPLUG_HW_CHANNELS,
-                                    1, 8);
+                                    2, 2);
 
     snd_pcm_ioplug_set_param_list(&pcdsp->io, SND_PCM_IOPLUG_HW_RATE,
                                   sizeof(k_rates) / sizeof(k_rates[0]), k_rates);
 
     snd_pcm_ioplug_set_param_minmax(&pcdsp->io, SND_PCM_IOPLUG_HW_PERIOD_BYTES,
-                                    PERIOD_SIZE_MIN * 2,   /* min: 64 frames * 2 ch * 1 byte */
-                                    PERIOD_SIZE_MAX * 8 * 4); /* max: 8192 * 8ch * 4 bytes */
+                                    PERIOD_SIZE_MIN * 2,              /* 64 × 2ch × 1B */
+                                    PERIOD_SIZE_MAX * 2 * 4);         /* 8192 × 2ch × 4B */
 
     snd_pcm_ioplug_set_param_minmax(&pcdsp->io, SND_PCM_IOPLUG_HW_PERIODS,
                                     2, RB_PERIODS);

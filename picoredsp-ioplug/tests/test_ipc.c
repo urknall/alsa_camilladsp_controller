@@ -625,6 +625,27 @@ TEST(recv_ready_fails_on_wrong_message_type)
     pcdsp_ipc_close(&conn);
 }
 
+TEST(recv_ready_fails_on_version_mismatch)
+{
+    /* Regression test for finding #9: after HELLO, a READY carrying a
+     * version different from the negotiated version must be rejected. */
+    pcdsp_ipc_conn_t conn;
+    int server_fd;
+    CHECK(make_pair(&conn, &server_fd) == 0);
+
+    /* conn.negotiated_version is set to PROTOCOL_VERSION by make_pair().
+     * Send a READY with a different version byte. */
+    uint8_t bad_ver = (uint8_t)(conn.negotiated_version + 1u);
+    uint8_t ready_bad[2] = { PCDSP_MSG_READY, bad_ver };
+    CHECK(write_all(server_fd, ready_bad, sizeof(ready_bad)) == 0);
+
+    int rc = pcdsp_ipc_recv_ready(&conn, NULL, NULL);
+    CHECK(rc == -EPROTO);
+
+    close(server_fd);
+    pcdsp_ipc_close(&conn);
+}
+
 TEST(recv_ready_fails_when_not_connected)
 {
     pcdsp_ipc_conn_t conn = { .fd = -1, .negotiated_version = 0 };
@@ -944,6 +965,7 @@ int main(void)
     RUN(recv_ready_fails_on_disconnect_before_type_byte);
     RUN(recv_ready_fails_on_disconnect_after_type_byte);
     RUN(recv_ready_fails_on_wrong_message_type);
+    RUN(recv_ready_fails_on_version_mismatch);
     RUN(recv_ready_fails_when_not_connected);
     RUN(recv_ready_with_pipe_fd_via_scm_rights);
 

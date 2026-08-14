@@ -12,6 +12,7 @@
 #include "ipc.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -90,17 +91,57 @@ int pcdsp_ipc_connect(pcdsp_ipc_conn_t *conn, const char *socket_path)
     if (!socket_path)
         socket_path = PCDSP_IPC_DEFAULT_SOCKET_PATH;
 
-    int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    /* Create socket in non-blocking mode to implement the connect timeout. */
+    int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (sfd < 0)
         return -errno;
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
-    if (connect(sfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        int e = errno;
-        close(sfd);
-        return -e;
+    int rc = connect(sfd, (struct sockaddr *)&addr, sizeof(addr));
+    if (rc < 0) {
+        if (errno == EINPROGRESS) {
+            /* Wait for the connect to complete or time out. */
+            struct pollfd pfd = { .fd = sfd, .events = POLLOUT };
+            int pr;
+            do {
+                pr = poll(&pfd, 1, PCDSP_IPC_CONNECT_TIMEOUT_MS);
+            } while (pr < 0 && errno == EINTR);
+
+            if (pr == 0) {
+                close(sfd);
+                return -ETIMEDOUT;
+            }
+            if (pr < 0) {
+                int e = errno;
+                close(sfd);
+                return -e;
+            }
+            /* Check whether the connection completed successfully. */
+            int so_err = 0;
+            socklen_t so_len = sizeof(so_err);
+            if (getsockopt(sfd, SOL_SOCKET, SO_ERROR, &so_err, &so_len) < 0 ||
+                so_err != 0) {
+                int e = so_err ? so_err : errno;
+                close(sfd);
+                return -e;
+            }
+        } else {
+            int e = errno;
+            close(sfd);
+            return -e;
+        }
+    }
+
+    /* Restore blocking mode for subsequent send/recv calls. */
+    {
+        int flags = fcntl(sfd, F_GETFL, 0);
+        if (flags < 0 || fcntl(sfd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+            int e = errno;
+            close(sfd);
+            return -e;
+        }
     }
 
     /* Send HELLO */
@@ -108,7 +149,7 @@ int pcdsp_ipc_connect(pcdsp_ipc_conn_t *conn, const char *socket_path)
         .type    = PCDSP_MSG_HELLO,
         .version = PCDSP_IPC_PROTOCOL_VERSION,
     };
-    int rc = send_all(sfd, &hello_out, sizeof(hello_out));
+    rc = send_all(sfd, &hello_out, sizeof(hello_out));
     if (rc < 0) {
         close(sfd);
         return rc;
@@ -158,14 +199,20 @@ int pcdsp_ipc_send_start(pcdsp_ipc_conn_t *conn,
     if (!conn || conn->fd < 0)
         return -ENOTCONN;
 
-    pcdsp_msg_start_t msg = {
-        .type     = PCDSP_MSG_START,
-        .version  = conn->negotiated_version,
-        .rate     = rate,
-        .format   = format,
-        .channels = channels,
-    };
-    return send_all(conn->fd, &msg, sizeof(msg));
+    /* Encode the wire message explicitly in little-endian byte order as
+     * required by the protocol definition in ipc.h.  Using a packed struct
+     * literal and send_all() would transmit native machine byte order, which
+     * is wrong on big-endian hosts. */
+    uint8_t msg[8];
+    msg[0] = PCDSP_MSG_START;
+    msg[1] = conn->negotiated_version;
+    msg[2] = (uint8_t)( rate        & 0xffu);
+    msg[3] = (uint8_t)((rate >>  8) & 0xffu);
+    msg[4] = (uint8_t)((rate >> 16) & 0xffu);
+    msg[5] = (uint8_t)((rate >> 24) & 0xffu);
+    msg[6] = format;
+    msg[7] = channels;
+    return send_all(conn->fd, msg, sizeof(msg));
 }
 
 int pcdsp_ipc_send_stop(pcdsp_ipc_conn_t *conn)
@@ -213,6 +260,10 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     if (rc < 0)
         return rc;
 
+    /* Reject version mismatches to enforce the negotiated protocol. */
+    if (ver_byte != conn->negotiated_version)
+        return -EPROTO;
+
     /*
      * Gate 7: if the caller does not need a pipe fd (pipe_fd == NULL), the
      * Rust controller sends a plain 2-byte READY with no SCM_RIGHTS follow-up.
@@ -249,7 +300,7 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
         break;
     }
 
-    ssize_t n = recvmsg(conn->fd, &mh, 0);
+    ssize_t n = recvmsg(conn->fd, &mh, MSG_CMSG_CLOEXEC);
     if (n < 0)
         return -errno;
     if (n == 0)
@@ -263,6 +314,12 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     }
     if (rfd < 0)
         return -EPROTO;
+
+    /* Belt-and-suspenders: ensure CLOEXEC is set even on systems where
+     * MSG_CMSG_CLOEXEC is unavailable or the kernel doesn't honour it. */
+#ifdef FD_CLOEXEC
+    (void)fcntl(rfd, F_SETFD, FD_CLOEXEC);
+#endif
 
     *pipe_fd = rfd;
     return 0;

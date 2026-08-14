@@ -14,7 +14,6 @@ pub use crate::core::state_machine::Controller;
 use crate::ipc::protocol::ErrorCode;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
 pub type AloopController = Controller<AloopBackend<AlsaLoopbackListener>, CamillaWs>;
@@ -186,7 +185,24 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                 retry.reset();
                 break;
             }
-            thread::sleep(Duration::from_millis(100));
+            // Service incoming connections during backoff: accept and
+            // immediately reject so the plugin gets an error response rather
+            // than sitting blocked until its own connection timeout fires.
+            match backend.poll_event(100) {
+                Ok(Some(crate::backend::StreamEvent::Started(_))) => {
+                    log(
+                        LogLevel::Warning,
+                        log_level,
+                        "ioplug: plugin connected during backoff — rejecting with error",
+                    );
+                    backend.send_error_to_plugin(ErrorCode::Internal);
+                }
+                Ok(_) | Err(_) => {
+                    // No new connection yet (or a transient IPC error); the
+                    // poll_event already slept for the requested timeout so
+                    // no extra sleep is needed here.
+                }
+            }
         }
 
         // ── Wait for a plugin to connect and send START ────────────────
@@ -285,15 +301,24 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         // Wait a short window to detect an immediate crash (bad config,
         // device unavailable, wrong binary, etc.).  A genuine startup takes
         // milliseconds; if the process exits within the window it failed.
+        //
+        // An immediate CamillaDSP exit almost always indicates a config or
+        // device problem (bad DSP graph, DAC unavailable).  Treat it as a
+        // permanent failure and latch until the config changes, rather than
+        // as a transient failure that retries with exponential backoff.
         if !supervisor.startup_check(STARTUP_CHECK_TIMEOUT, STARTUP_CHECK_POLL) {
             log(
                 LogLevel::Error,
                 log_level,
-                "ioplug: CamillaDSP exited immediately after spawn — treating as transient failure",
+                "ioplug: CamillaDSP exited immediately after spawn — \
+                 treating as config/device error (latching until config change)",
             );
-            retry.record_attempt();
+            // Latch (not transient retry): CamillaDSP rejected the config or
+            // could not open the playback device.  Retrying with the same
+            // config will always fail.
+            retry.latch();
             supervisor.stop_stream();
-            backend.send_error_to_plugin(ErrorCode::Internal);
+            backend.send_error_to_plugin(ErrorCode::Config);
             continue;
         }
 
