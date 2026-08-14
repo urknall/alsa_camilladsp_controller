@@ -12,12 +12,12 @@
 #
 # The controller follows the Linux --adapt behavior of
 # HEnquist/camilladsp-controller, plus piCoreDSP-specific extensions:
-#   * re-read CamillaGUI's active_config.yml symlink on every adaptation;
+#   * re-read the active_config.yml symlink (CamillaGUI) on every adaptation;
 #   * adapt the actual initial rate/format/channels before first start;
 #   * re-read the complete wave format after CaptureFormatChange.
 #
 # The controller stays out of the PCM data path: ALSA/snd-aloop carries
-# audio, while this binary only monitors ALSA controls and drives CamillaDSP's
+# audio, while this binary only monitors ALSA controls and drives the
 # documented WebSocket control API.
 #
 # IMPORTANT:
@@ -726,7 +726,7 @@ description: |
 EOF
 
 # The statefile contains FINAL runtime paths even though it is staged here.
-# On reinstall, preserve any existing volume/mute values so a user's current
+# On reinstall, preserve any existing volume/mute values so the current
 # speaker levels are not silently reset to 0 dB.
 #
 # Determine the active config that will be used after commit. On first install
@@ -1337,7 +1337,7 @@ if [ ! -s "${TCZ_TMP}" ]; then
 fi
 
 # The Rust controller has no Tiny Core runtime dependency beyond libraries
-# already present in piCorePlayer's ALSA stack. No .tcz.dep is installed.
+# already present in the piCorePlayer ALSA stack. No .tcz.dep is installed.
 
 ###############################################################################
 # Final pre-commit validation
