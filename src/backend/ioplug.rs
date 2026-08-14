@@ -420,12 +420,11 @@ mod tests {
 
     #[test]
     fn on_stream_ready_returns_error_for_ioplug() {
-        // Bug 3 fix: on_stream_ready must NOT silently send plain READY for
-        // the ioplug backend.  The plugin expects a pipe write-end delivered
-        // via SCM_RIGHTS; only send_ready_with_fd_to_plugin provides that.
-        // on_stream_ready must return an explicit error so a future refactor
-        // cannot accidentally activate the plain-READY path through the
-        // generic ControllerBackend trait.
+        // on_stream_ready must NOT silently send plain READY for the ioplug
+        // backend.  The plugin expects a pipe write-end delivered via
+        // SCM_RIGHTS; only send_ready_with_fd_to_plugin provides that.
+        // Returning an explicit error prevents accidental use of the plain-READY
+        // path through the generic ControllerBackend trait.
         let path = test_socket_path("on-ready-error");
         let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
 
