@@ -38,6 +38,10 @@ pub struct Args {
     pub existing_state: Option<PathBuf>,
     /// Benchmark plan path used by `--validate-benchmark-plan`.
     pub benchmark_path: Option<PathBuf>,
+    /// Path to the CamillaDSP statefile, forwarded as `--statefile` when
+    /// spawning CamillaDSP in ioplug mode (preserves volume/mute across
+    /// streams and makes the WebSocket discoverable by CamillaGUI).
+    pub cdsp_statefile: Option<PathBuf>,
 }
 
 /// Stream-detection and PCM-transport backend.
@@ -125,6 +129,7 @@ impl Default for Args {
             statefile_config_path: None,
             existing_state: None,
             benchmark_path: None,
+            cdsp_statefile: None,
             backend: Backend::Aloop,
             socket_path: None,
             camilladsp_binary: None,
@@ -185,7 +190,8 @@ Options:\n\
   -V, --version                 Show version\n\
       --backend BACKEND         Stream backend: aloop (default) or ioplug\n\
       --socket-path PATH        AF_UNIX socket path for ioplug IPC (required with --backend ioplug)\n\
-      --camilladsp PATH         Path to camilladsp binary (required with --backend ioplug)"
+      --camilladsp PATH         Path to camilladsp binary (required with --backend ioplug)\n\
+      --cdsp-statefile PATH     CamillaDSP statefile forwarded as --statefile on spawn (ioplug only)"
    );
 }
 
@@ -413,6 +419,9 @@ where
             }
             "--camilladsp" => {
                 args.camilladsp_binary = Some(PathBuf::from(next_value("--camilladsp")?));
+            }
+            "--cdsp-statefile" => {
+                args.cdsp_statefile = Some(PathBuf::from(next_value("--cdsp-statefile")?));
             }
             other => return Err(app_error(format!("unknown argument: {other}"))),
         }

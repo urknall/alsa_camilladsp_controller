@@ -14,8 +14,8 @@ pub mod core;
 pub mod ipc;
 
 use adapt::{
-    adapt_config, get_config_path, get_playback_device, get_state_fragment, make_bypass_config,
-    make_statefile,
+    adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
+    get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Backend, Mode};
@@ -81,7 +81,12 @@ fn run_main() -> AppResult<()> {
 
         Mode::AdaptCheck => {
             let wave = wave_from_args(&args);
-            let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
+            let path = args.adapt.as_deref().expect("validated");
+            let backend = match args.backend {
+                Backend::Aloop => RuntimeBackend::Aloop,
+                Backend::Ioplug => RuntimeBackend::Ioplug,
+            };
+            let adapted = adapt_config_for_backend(path, &wave, backend)?;
             print!("{adapted}");
             Ok(())
         }
