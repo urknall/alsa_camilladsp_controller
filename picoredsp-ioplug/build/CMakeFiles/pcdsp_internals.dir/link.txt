@@ -1,0 +1,2 @@
+/usr/bin/ar qc libpcdsp_internals.a CMakeFiles/pcdsp_internals.dir/src/ringbuffer.c.o CMakeFiles/pcdsp_internals.dir/src/ipc.c.o CMakeFiles/pcdsp_internals.dir/src/format.c.o CMakeFiles/pcdsp_internals.dir/src/timing.c.o CMakeFiles/pcdsp_internals.dir/src/pcm_worker.c.o
+/usr/bin/ranlib libpcdsp_internals.a

@@ -53,6 +53,7 @@ add_library(asound_module_pcm_picoredsp MODULE
     src/ipc.c
     src/format.c
     src/timing.c
+    src/pcm_worker.c
 )
 
 # pcm.c uses ALSA plugin macros (SND_PCM_PLUGIN_SYMBOL) that expand to
@@ -64,6 +65,11 @@ target_include_directories(asound_module_pcm_picoredsp
         ${ALSA_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# ALSA's SND_DLSYM_BUILD_VERSION macro uses `#ifdef PIC` (not `__PIC__`) to
+# switch between the shared-library and static-library plugin ABI.  GCC defines
+# `__PIC__` for -fPIC but not `PIC`, so we add it explicitly here.
+target_compile_definitions(asound_module_pcm_picoredsp PRIVATE PIC)
 
 target_link_libraries(asound_module_pcm_picoredsp
     PRIVATE
@@ -82,6 +88,17 @@ install(TARGETS asound_module_pcm_picoredsp
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/alsa-lib
 )
 
+# Create a `lib`-prefixed symlink in the build directory so that the ALSA
+# runtime can find the module when ALSA_PLUGIN_DIR points to the build tree.
+# ALSA searches for `libasound_module_pcm_<type>.so` (with the lib prefix).
+add_custom_command(TARGET asound_module_pcm_picoredsp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        asound_module_pcm_picoredsp.so
+        libasound_module_pcm_picoredsp.so
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Creating lib-prefixed ALSA plugin symlink for test discovery"
+)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -94,6 +111,7 @@ add_library(pcdsp_internals STATIC
     src/ipc.c
     src/format.c
     src/timing.c
+    src/pcm_worker.c
 )
 
 target_include_directories(pcdsp_internals
@@ -129,6 +147,32 @@ target_link_libraries(test_ipc PRIVATE ${ALSA_LIBRARIES} pthread)
 # fully isolated and can run in parallel.
 add_test(NAME test_ipc COMMAND test_ipc)
 set_tests_properties(test_ipc PROPERTIES TIMEOUT 60)
+
+# test_pcm_worker — unit tests for the pipe-drain / null-sink helpers extracted
+# from the worker thread (src/pcm_worker.c).
+pcdsp_add_test(test_pcm_worker tests/test_pcm_worker.c)
+
+# test_audio_integrity — M11 bit-transparency tests for all sample formats
+# and rates.  Tests the pipe-drain helper directly (no ALSA needed).
+pcdsp_add_test(test_audio_integrity tests/test_audio_integrity.c)
+
+# test_pcm_integration — ALSA ioplug plugin integration tests.
+# The plugin shared library is loaded by the ALSA API; we tell ALSA where to
+# find it via the ALSA_PLUGIN_DIR environment variable.
+add_executable(test_pcm_integration
+    tests/test_pcm_integration.c
+    src/ipc.c
+)
+target_include_directories(test_pcm_integration
+    PRIVATE ${ALSA_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(test_pcm_integration
+    PRIVATE ${ALSA_LIBRARIES} pthread)
+add_test(NAME test_pcm_integration COMMAND test_pcm_integration)
+# Set ALSA_PLUGIN_DIR so ALSA can find our freshly-built plugin.
+set_tests_properties(test_pcm_integration PROPERTIES
+    TIMEOUT 60
+    ENVIRONMENT "ALSA_PLUGIN_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+)
 
 # ---------------------------------------------------------------------------
 # Optional: clang-tidy static analysis

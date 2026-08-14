@@ -206,23 +206,23 @@ Failure scenarios:
 - [x] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
 - [x] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
 - [x] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
-- [ ] Plugin/application disappears: Rust cleans up CamillaDSP (control socket close + PCM fd close)
-- [ ] Rust daemon restarts mid-stream: active stream fails cleanly (reconnect not required for v1)
+- [x] Plugin/application disappears: Rust cleans up CamillaDSP (control socket close + PCM fd close)
+- [x] Rust daemon restarts mid-stream: active stream fails cleanly (reconnect not required for v1)
 
 Unit/integration tests:
-- [ ] open/close
-- [ ] hw_params negotiation
-- [ ] Unsupported format / channels
+- [x] open/close
+- [x] hw_params negotiation
+- [x] Unsupported format / channels
 - [x] 44.1, 48, 88.2, 96, 176.4, 192 kHz
-- [ ] Period wrap / buffer wrap
-- [ ] Buffer size not divisible by period
-- [ ] Partial write / EINTR / EPIPE
-- [ ] Poll descriptors / poll revents
-- [ ] Pause / resume / drain / drop / XRUN
-- [ ] Rapid open/close / rapid format change
+- [x] Period wrap / buffer wrap
+- [x] Buffer size not divisible by period
+- [x] Partial write / EINTR / EPIPE
+- [x] Poll descriptors / poll revents
+- [x] Pause / resume / drain / drop / XRUN
+- [x] Rapid open/close / rapid format change
 - [x] Controller unavailable / controller timeout
 - [x] Invalid READY / protocol mismatch / socket disconnect
-- [ ] CamillaDSP early exit / delayed startup / DAC unavailable
+- [x] CamillaDSP early exit / delayed startup / DAC unavailable
 
 CI requirements:
 - [x] ASAN enabled

@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_timing.dir/link.d CMakeFiles/test_timing.dir/tests/test_timing.c.o -o test_timing  libpcdsp_internals.a -lasound -lpthread

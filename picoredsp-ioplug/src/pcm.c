@@ -48,6 +48,7 @@
 
 #include "format.h"
 #include "ipc.h"
+#include "pcm_worker.h"
 #include "ringbuffer.h"
 #include "timing.h"
 
@@ -138,10 +139,6 @@ typedef struct pcdsp_pcm {
  * returns writable.
  * ---------------------------------------------------------------------- */
 
-/* Chunk size for the ring-buffer → pipe copy loop.
- * 128 frames × 16 bytes/frame (max: 8ch × S32) = 2 KB stack buffer. */
-#define PIPE_CHUNK_FRAMES 128u
-
 static void *worker_thread(void *arg)
 {
     pcdsp_pcm_t *pcdsp = arg;
@@ -171,55 +168,31 @@ static void *worker_thread(void *arg)
              * Gate 8: drain one period from the ring buffer and write it
              * directly into the CamillaDSP stdin pipe.
              *
-             * We use a small stack buffer and loop so that we never need
-             * to heap-allocate here.
+             * pcdsp_drain_period_to_pipe() handles chunking, EINTR retry,
+             * and returns the number of frames written or -errno on pipe
+             * error (e.g. -EPIPE when CamillaDSP has exited).
              */
-            uint8_t tmp[PIPE_CHUNK_FRAMES * 16]; /* 16 = max frame_bytes (8ch × S32) */
-
-            size_t frames_left = pcdsp->period_size;
-            while (frames_left > 0) {
-                size_t chunk = frames_left < PIPE_CHUNK_FRAMES
-                               ? frames_left : PIPE_CHUNK_FRAMES;
-                size_t got = pcdsp_rb_read(&pcdsp->rb, tmp, chunk);
-                if (got == 0)
-                    break;
-
-                size_t  byte_count = got * pcdsp->frame_bytes;
-                ssize_t written    = 0;
-                while ((size_t)written < byte_count) {
-                    ssize_t n = write(pipe_fd,
-                                      tmp + written,
-                                      byte_count - (size_t)written);
-                    if (n < 0) {
-                        if (errno == EINTR)
-                            continue;
-                        /* EPIPE / other error: CamillaDSP has gone.
-                         * Stop the worker so pcdsp_pointer() reports XRUN. */
-                        atomic_store_explicit(&pcdsp->worker_running,
-                                             false, memory_order_release);
-                        goto done;
-                    }
-                    written += n;
-                }
-
+            ssize_t got = pcdsp_drain_period_to_pipe(
+                &pcdsp->rb, pipe_fd, pcdsp->period_size, pcdsp->frame_bytes);
+            if (got < 0) {
+                /* EPIPE or other hard error: CamillaDSP has gone.
+                 * Stop the worker so pcdsp_pointer() reports XRUN. */
+                atomic_store_explicit(&pcdsp->worker_running,
+                                      false, memory_order_release);
+                goto done;
+            }
+            if (got > 0)
                 atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)got,
                                           memory_order_release);
-                frames_left -= got;
-            }
         } else {
             /* Fallback (no pipe): null-sink drain with nominal-rate pacing. */
-            size_t drained = pcdsp_rb_drop(&pcdsp->rb, pcdsp->period_size);
+            unsigned long rate2  = pcdsp->io.rate;
+            size_t drained = pcdsp_drain_period_null_sink(
+                &pcdsp->rb, pcdsp->period_size, rate2);
             if (drained == 0)
                 continue;
             atomic_fetch_add_explicit(&pcdsp->hw_frames, (uint64_t)drained,
                                       memory_order_release);
-
-            /* Pace to the nominal rate. */
-            unsigned long rate2     = pcdsp->io.rate;
-            unsigned long period_ns = rate2 ? 1000000000UL * (unsigned long)pcdsp->period_size / rate2 : 0UL;
-            struct timespec ts = { .tv_sec  = (time_t)(period_ns / 1000000000UL),
-                                   .tv_nsec = (long)(period_ns % 1000000000UL) };
-            nanosleep(&ts, NULL);
         }
 
         /* Signal poll fd — one period of space is newly available. */

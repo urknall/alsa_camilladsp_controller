@@ -1,0 +1,74 @@
+/*
+ * picoredsp-ioplug — worker pipe-drain helpers
+ *
+ * pcm_worker.h — functions extracted from the worker thread so that the
+ * pipe-drain and null-sink logic can be unit-tested without the ALSA
+ * ioplug framework.
+ *
+ * These functions are called by the worker thread in pcm.c; they are also
+ * linked into the test_pcm_worker test binary via pcdsp_internals.
+ */
+
+#ifndef PICOREDSP_PCM_WORKER_H
+#define PICOREDSP_PCM_WORKER_H
+
+#include "ringbuffer.h"
+
+#include <stddef.h>
+#include <stdint.h>
+#include <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Chunk size used by pcdsp_drain_period_to_pipe (stack buffer, not heap).
+ * 128 frames × 16 bytes/frame = 2 KB — stays on the stack inside the loop. */
+#define PCDSP_PIPE_CHUNK_FRAMES 128u
+
+/*
+ * pcdsp_drain_period_to_pipe — drain one period worth of frames from `rb`
+ * and write them into `pipe_fd`.
+ *
+ * @rb            Ring buffer to drain from.
+ * @pipe_fd       Write end of the CamillaDSP stdin pipe (must be >= 0).
+ * @period_frames Number of frames in one period.
+ * @frame_bytes   Bytes per frame (format × channels).
+ *
+ * Returns the number of frames successfully written (0 .. period_frames) on
+ * success, or a negative errno on pipe error (e.g. -EPIPE when CamillaDSP
+ * has exited).  EINTR is retried internally; the caller need not loop.
+ *
+ * On error the ring buffer state is undefined — the caller should treat the
+ * stream as broken and set worker_running to false.
+ */
+ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t *rb,
+                                    int                 pipe_fd,
+                                    size_t              period_frames,
+                                    size_t              frame_bytes);
+
+/*
+ * pcdsp_drain_period_null_sink — drain one period worth of frames from `rb`
+ * and sleep for the nominal period duration (rate-paced null sink).
+ *
+ * Used as a fallback when no pipe fd is available (controller absent, unit
+ * tests).
+ *
+ * @rb            Ring buffer to drain from.
+ * @period_frames Number of frames in one period.
+ * @rate          Sample rate in Hz (used to compute the sleep duration).
+ *                Pass 0 to skip the sleep (useful in tests that need to run
+ *                without a real-time constraint).
+ *
+ * Returns the number of frames actually dropped (may be less than
+ * period_frames if the ring buffer was not full).
+ */
+size_t pcdsp_drain_period_null_sink(pcdsp_ringbuffer_t *rb,
+                                     size_t              period_frames,
+                                     unsigned long       rate);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PICOREDSP_PCM_WORKER_H */

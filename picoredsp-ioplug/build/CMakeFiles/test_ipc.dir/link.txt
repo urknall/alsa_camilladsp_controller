@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_ipc.dir/link.d CMakeFiles/test_ipc.dir/tests/test_ipc.c.o CMakeFiles/test_ipc.dir/src/ipc.c.o -o test_ipc  -lasound -lpthread

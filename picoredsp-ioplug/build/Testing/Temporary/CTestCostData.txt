@@ -1,0 +1,8 @@
+test_ringbuffer 7 0.000160635
+test_format 7 0.000145281
+test_timing 7 0.0130369
+test_ipc 7 0.149258
+test_pcm_worker 6 0.000211125
+test_pcm_integration 4 0.113637
+test_audio_integrity 2 0.000547028
+---

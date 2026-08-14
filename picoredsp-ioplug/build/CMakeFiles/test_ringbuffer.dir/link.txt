@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_ringbuffer.dir/link.d CMakeFiles/test_ringbuffer.dir/tests/test_ringbuffer.c.o -o test_ringbuffer  libpcdsp_internals.a -lasound -lpthread
