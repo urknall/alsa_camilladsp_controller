@@ -92,6 +92,9 @@ NULL_CONFIG="${CONFIG_DIR}/Null.yml"
 STATEFILE="${DATA_DIR}/camilladsp_statefile.yml"
 ACTIVE_CONFIG_LINK="${DATA_DIR}/active_config.yml"
 PLAYBACK_DEVICE_FILE="${DATA_DIR}/playback_device.txt"
+BACKEND_SELECTION_FILE="${DATA_DIR}/backend.conf"
+IPC_SOCKET_DIR="/run/picoredsp"
+IPC_SOCKET_PATH="${IPC_SOCKET_DIR}/control.sock"
 
 STAGE_CONFIG_DIR="${STAGE_DATA_DIR}/configs"
 STAGE_DEFAULT_CONFIG="${STAGE_DATA_DIR}/default_config.yml"
@@ -100,6 +103,7 @@ STAGE_NULL_CONFIG="${STAGE_CONFIG_DIR}/Null.yml"
 STAGE_STATEFILE="${STAGE_DATA_DIR}/camilladsp_statefile.yml"
 STAGE_ACTIVE_CONFIG_LINK="${STAGE_DATA_DIR}/active_config.yml"
 STAGE_PLAYBACK_DEVICE_FILE="${STAGE_DATA_DIR}/playback_device.txt"
+STAGE_BACKEND_SELECTION_FILE="${STAGE_DATA_DIR}/backend.conf"
 
 PCP_CONFIG="/usr/local/etc/pcp/pcp.cfg"
 PCP_STAGED="/tmp/pcp.cfg.picoredsp.$$"
@@ -113,6 +117,8 @@ FINAL_TCZ="${OPTIONAL_DIR}/${EXTENSION_NAME}.tcz"
 FINAL_DEP="${OPTIONAL_DIR}/${EXTENSION_NAME}.tcz.dep"
 
 RUST_RUNTIME_BIN="${BUILD_DIR}/usr/local/bin/picoredsp-controller"
+IOPLUG_RUNTIME_DIR="${BUILD_DIR}/usr/local/lib/alsa-lib"
+IOPLUG_RUNTIME_SO="${IOPLUG_RUNTIME_DIR}/libasound_module_pcm_picoredsp.so"
 
 COMMIT_STARTED=false
 INSTALL_COMMITTED=false
@@ -167,6 +173,7 @@ prepare_rollback() {
     backup_path "${STATEFILE}" statefile.yml
     backup_path "${ACTIVE_CONFIG_LINK}" active_config.yml
     backup_path "${PLAYBACK_DEVICE_FILE}" playback_device.txt
+    backup_path "${BACKEND_SELECTION_FILE}" backend.conf
 }
 
 rollback_install() {
@@ -187,6 +194,7 @@ rollback_install() {
         restore_path "${STATEFILE}" statefile.yml
         restore_path "${ACTIVE_CONFIG_LINK}" active_config.yml
         restore_path "${PLAYBACK_DEVICE_FILE}" playback_device.txt
+        restore_path "${BACKEND_SELECTION_FILE}" backend.conf
     else
         sudo rm -rf "${DATA_DIR}" 2>/dev/null || true
     fi
@@ -250,18 +258,31 @@ esac
 ###############################################################################
 
 show_usage() {
-    echo "Usage: $0 [-k|--keep-downloads]"
+    echo "Usage: $0 [-k|--keep-downloads] [--backend aloop|ioplug]"
     echo
     echo "  -k, --keep-downloads   Keep downloaded archives in ${CACHE_DIR}"
+    echo "      --backend BACKEND  Select aloop (recommended) or ioplug (experimental)"
 }
 
 keepDownloads=false
+requestedBackend=""
 
-for parameter in "$@"
+while [ "$#" -gt 0 ]
 do
-    case "${parameter}" in
+    case "$1" in
         -k|--keep-downloads)
             keepDownloads=true
+            ;;
+        --backend)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "ERROR: --backend requires a value (aloop or ioplug)."
+                exit 1
+            fi
+            requestedBackend="$1"
+            ;;
+        --backend=*)
+            requestedBackend=${1#--backend=}
             ;;
         -h|--help)
             show_usage
@@ -272,9 +293,67 @@ do
             exit 1
             ;;
     esac
+    shift
 done
 
 $keepDownloads && echo "Keeping downloads in ${CACHE_DIR}."
+
+backend_label() {
+    case "$1" in
+        aloop) echo "snd-aloop (recommended / stable)" ;;
+        ioplug) echo "direct ioplug (experimental)" ;;
+        *) return 1 ;;
+    esac
+}
+
+currentBackend=""
+if [ -f "${BACKEND_SELECTION_FILE}" ]; then
+    IFS= read -r currentBackend < "${BACKEND_SELECTION_FILE}" || true
+    case "${currentBackend}" in
+        aloop|ioplug) ;;
+        *) currentBackend="" ;;
+    esac
+fi
+
+INSTALL_BACKEND="${requestedBackend}"
+if [ -n "${INSTALL_BACKEND}" ]; then
+    case "${INSTALL_BACKEND}" in
+        aloop|ioplug) ;;
+        *)
+            echo "ERROR: --backend must be 'aloop' or 'ioplug'."
+            exit 1
+            ;;
+    esac
+elif [ -t 0 ]; then
+    defaultChoice=1
+    if [ "${currentBackend}" = "ioplug" ]; then
+        defaultChoice=2
+    fi
+
+    echo
+    echo "Select piCoreDSP backend:"
+    echo "  1) snd-aloop (recommended / stable)"
+    echo "  2) direct ioplug (experimental)"
+    printf "Choice [%s]: " "${defaultChoice}"
+    IFS= read -r backendChoice || backendChoice=""
+    case "${backendChoice:-${defaultChoice}}" in
+        1) INSTALL_BACKEND="aloop" ;;
+        2) INSTALL_BACKEND="ioplug" ;;
+        *)
+            echo "ERROR: Invalid backend selection: ${backendChoice}"
+            exit 1
+            ;;
+    esac
+else
+    INSTALL_BACKEND="${currentBackend:-aloop}"
+    echo "Non-interactive install: using backend ${INSTALL_BACKEND}."
+fi
+
+INSTALL_BACKEND_LABEL=$(backend_label "${INSTALL_BACKEND}") || {
+    echo "ERROR: Unsupported backend: ${INSTALL_BACKEND}"
+    exit 1
+}
+echo "Selected backend: ${INSTALL_BACKEND_LABEL}"
 
 ###############################################################################
 # piCorePlayer extension helpers
@@ -533,6 +612,61 @@ fi
 echo "Probing snd-aloop controls with picoredsp-controller..."
 "${RUST_RUNTIME_BIN}" --probe --device hw:Loopback,0
 
+###############################################################################
+# Download picoredsp ioplug ALSA module
+###############################################################################
+
+IOPLUG_RELEASE_URL="https://github.com/${CONTROLLER_REPO}/releases/download/${CONTROLLER_RELEASE_TAG}/libasound_module_pcm_picoredsp-${controller_arch}.so"
+
+echo "Downloading picoredsp ioplug module ${CONTROLLER_RELEASE_TAG} for ${controller_arch}..."
+
+mkdir -p "${IOPLUG_RUNTIME_DIR}"
+
+if $keepDownloads; then
+    mkdir -p "${CACHE_DIR}"
+    CACHED_IOPLUG="${CACHE_DIR}/libasound_module_pcm_picoredsp-${controller_arch}-${CONTROLLER_RELEASE_TAG}.so"
+    if [ "${CONTROLLER_RELEASE_TAG}" = "installer-latest" ]; then
+        echo "Rolling tag ${CONTROLLER_RELEASE_TAG}: skipping cache, re-downloading."
+        wget -O "${CACHED_IOPLUG}" "${IOPLUG_RELEASE_URL}"
+    elif [ ! -f "${CACHED_IOPLUG}" ]; then
+        wget -O "${CACHED_IOPLUG}" "${IOPLUG_RELEASE_URL}"
+    else
+        echo "Using cached ${CACHED_IOPLUG}"
+    fi
+    cp "${CACHED_IOPLUG}" "${IOPLUG_RUNTIME_SO}"
+else
+    wget -O "${IOPLUG_RUNTIME_SO}" "${IOPLUG_RELEASE_URL}"
+fi
+
+chmod 755 "${IOPLUG_RUNTIME_SO}"
+
+_ioplug_sha256_tmp="/tmp/libasound_module_pcm_picoredsp-${controller_arch}.sha256.$$"
+wget -O "${_ioplug_sha256_tmp}" "${IOPLUG_RELEASE_URL}.sha256" \
+    || { echo "ERROR: Failed to download SHA256 checksum for libasound_module_pcm_picoredsp-${controller_arch}.so."; exit 1; }
+_expected_ioplug_hash=$(awk '{print $1; exit}' "${_ioplug_sha256_tmp}")
+_actual_ioplug_hash=$(sha256sum "${IOPLUG_RUNTIME_SO}" | awk '{print $1}')
+rm -f "${_ioplug_sha256_tmp}"
+if [ "${_expected_ioplug_hash}" != "${_actual_ioplug_hash}" ]; then
+    echo "ERROR: SHA256 mismatch for libasound_module_pcm_picoredsp-${controller_arch}.so."
+    echo "  Expected: ${_expected_ioplug_hash}"
+    echo "  Got:      ${_actual_ioplug_hash}"
+    exit 1
+fi
+echo "picoredsp ioplug module SHA256 verified: ${_actual_ioplug_hash}"
+
+if [ ! -f "${IOPLUG_RUNTIME_SO}" ]; then
+    echo "ERROR: picoredsp ioplug module was not downloaded."
+    exit 1
+fi
+
+if command -v ldd >/dev/null 2>&1; then
+    if ldd "${IOPLUG_RUNTIME_SO}" 2>&1 | grep -q 'not found'; then
+        echo "ERROR: picoredsp ioplug module has unresolved runtime libraries:"
+        ldd "${IOPLUG_RUNTIME_SO}" 2>&1 || true
+        exit 1
+    fi
+fi
+
 
 ###############################################################################
 # Resolve the real CamillaDSP playback device
@@ -711,7 +845,7 @@ description: |
   This YAML file is a persistent baseline configuration. It does not
   necessarily contain the parameters currently used by CamillaDSP.
 
-  picoredsp-controller monitors the active snd-aloop stream and adapts the
+  picoredsp-controller monitors the active piCoreDSP stream and adapts the
   CamillaDSP runtime configuration in memory to the current sample rate and,
   where applicable, capture format and channel count.
 
@@ -759,6 +893,7 @@ fi
 
 ln -sfn "${STAGE_BYPASS_CONFIG}" "${STAGE_ACTIVE_CONFIG_LINK}"
 printf '%s\n' "${PLAYBACK_DEVICE}" > "${STAGE_PLAYBACK_DEVICE_FILE}"
+printf '%s\n' "${INSTALL_BACKEND}" > "${STAGE_BACKEND_SELECTION_FILE}"
 
 ###############################################################################
 # Stage ALSA configuration (no write to /etc yet)
@@ -826,7 +961,9 @@ END {
     exit 1
 }
 
-cat >> "${ASOUND_STAGED}" <<'EOF'
+case "${INSTALL_BACKEND}" in
+    aloop)
+        cat >> "${ASOUND_STAGED}" <<'EOF'
 
 # BEGIN piCoreDSP
 
@@ -846,6 +983,33 @@ pcm.picoredsp {
 
 # END piCoreDSP
 EOF
+        ;;
+    ioplug)
+        cat >> "${ASOUND_STAGED}" <<EOF
+
+# BEGIN piCoreDSP
+
+pcm.picoredsp {
+    type plug
+
+    slave {
+        pcm {
+            type picoredsp
+            socket_path "${IPC_SOCKET_PATH}"
+        }
+        channels 2
+    }
+
+    hint {
+        show on
+        description "piCoreDSP direct ioplug (experimental)"
+    }
+}
+
+# END piCoreDSP
+EOF
+        ;;
+esac
 
 ###############################################################################
 # Stage piCorePlayer routing (no write to pcp.cfg yet)
@@ -1082,6 +1246,139 @@ EOF
 
 mkdir -p "${BUILD_DIR}/usr/local/bin"
 
+cat > "${BUILD_DIR}/usr/local/bin/picoredsp-apply-backend" <<EOF
+#!/bin/sh
+BACKEND_FILE="${BACKEND_SELECTION_FILE}"
+ASOUND_TARGET="/etc/asound.conf"
+IPC_SOCKET_PATH="${IPC_SOCKET_PATH}"
+
+backend="\${1:-}"
+if [ -z "\${backend}" ] && [ -f "\${BACKEND_FILE}" ]; then
+    IFS= read -r backend < "\${BACKEND_FILE}" || backend=""
+fi
+
+case "\${backend}" in
+    aloop|ioplug) ;;
+    *)
+        echo "picoredsp-apply-backend: backend must be aloop or ioplug" >&2
+        exit 1
+        ;;
+esac
+
+tmp="/tmp/asound.conf.picoredsp-apply.\$\$"
+trap 'rm -f "\${tmp}"' EXIT HUP INT TERM
+
+asound_source=/dev/null
+if [ -f "\${ASOUND_TARGET}" ]; then
+    asound_source="\${ASOUND_TARGET}"
+fi
+
+awk '
+BEGIN {
+    newblock = 0
+    oldblock = 0
+    found_end = 1
+    found_old_end = 1
+}
+
+/^# BEGIN piCoreDSP$/ {
+    newblock = 1
+    found_end = 0
+    next
+}
+
+/^# END piCoreDSP$/ {
+    newblock = 0
+    found_end = 1
+    next
+}
+
+/^# For more info about this configuration see: .*alsa_cdsp/ {
+    oldblock = 1
+    found_old_end = 0
+    next
+}
+
+oldblock && /^# pcm\\.camilladsp$/ {
+    oldblock = 0
+    found_old_end = 1
+    next
+}
+
+!newblock && !oldblock {
+    print
+}
+
+END {
+    if (!found_end) {
+        print "ERROR: /etc/asound.conf contains a \\"# BEGIN piCoreDSP\\" marker without a matching \\"# END piCoreDSP\\" marker." > "/dev/stderr"
+        exit 1
+    }
+    if (!found_old_end) {
+        print "ERROR: /etc/asound.conf contains an old alsa_cdsp block that is missing its closing \\"# pcm.camilladsp\\" marker." > "/dev/stderr"
+        exit 1
+    }
+}
+' "\${asound_source}" > "\${tmp}" || exit 1
+
+case "\${backend}" in
+    aloop)
+        cat >> "\${tmp}" <<'BLOCK'
+
+# BEGIN piCoreDSP
+
+pcm.picoredsp {
+    type plug
+
+    slave {
+        pcm "hw:Loopback,1,0"
+        channels 2
+    }
+
+    hint {
+        show on
+        description "piCoreDSP ALSA Loopback"
+    }
+}
+
+# END piCoreDSP
+BLOCK
+        ;;
+    ioplug)
+        cat >> "\${tmp}" <<BLOCK
+
+# BEGIN piCoreDSP
+
+pcm.picoredsp {
+    type plug
+
+    slave {
+        pcm {
+            type picoredsp
+            socket_path "${IPC_SOCKET_PATH}"
+        }
+        channels 2
+    }
+
+    hint {
+        show on
+        description "piCoreDSP direct ioplug (experimental)"
+    }
+}
+
+# END piCoreDSP
+BLOCK
+        ;;
+esac
+
+sudo touch "\${ASOUND_TARGET}"
+sudo chmod 664 "\${ASOUND_TARGET}"
+sudo chown root:staff "\${ASOUND_TARGET}"
+sudo tee "\${ASOUND_TARGET}" < "\${tmp}" >/dev/null
+EOF
+
+chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-apply-backend"
+
 cat > "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config" <<EOF
 #!/bin/sh
 # Called by CamillaGUI on_set_active_config.  Reads the active config path
@@ -1154,6 +1451,83 @@ fi
 EOF
 chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-trim-log"
 
+cat > "${BUILD_DIR}/usr/local/bin/picoredsp-switch-backend" <<EOF
+#!/bin/sh
+BACKEND_FILE="${BACKEND_SELECTION_FILE}"
+DEFAULT_BACKEND="aloop"
+
+backend_label() {
+    case "\$1" in
+        aloop) echo "snd-aloop (recommended / stable)" ;;
+        ioplug) echo "direct ioplug (experimental)" ;;
+        *) return 1 ;;
+    esac
+}
+
+target="\${1:-}"
+rebootNow=false
+
+if [ "\${target}" = "--reboot" ]; then
+    rebootNow=true
+    target="\${2:-}"
+fi
+
+if [ -z "\${target}" ]; then
+    current="\${DEFAULT_BACKEND}"
+    if [ -f "\${BACKEND_FILE}" ]; then
+        IFS= read -r current < "\${BACKEND_FILE}" || current="\${DEFAULT_BACKEND}"
+    fi
+    case "\${current}" in
+        aloop|ioplug) ;;
+        *) current="\${DEFAULT_BACKEND}" ;;
+    esac
+    defaultChoice=1
+    if [ "\${current}" = "ioplug" ]; then
+        defaultChoice=2
+    fi
+    echo "Select piCoreDSP backend:"
+    echo "  1) snd-aloop (recommended / stable)"
+    echo "  2) direct ioplug (experimental)"
+    printf "Choice [%s]: " "\${defaultChoice}"
+    IFS= read -r backendChoice || backendChoice=""
+    case "\${backendChoice:-\${defaultChoice}}" in
+        1) target="aloop" ;;
+        2) target="ioplug" ;;
+        *)
+            echo "ERROR: Invalid backend selection: \${backendChoice}" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+case "\${target}" in
+    aloop|ioplug) ;;
+    *)
+        echo "Usage: picoredsp-switch-backend [--reboot] [aloop|ioplug]" >&2
+        exit 1
+        ;;
+esac
+
+sudo mkdir -p "$(dirname "\${BACKEND_FILE}")"
+printf '%s\n' "\${target}" | sudo tee "\${BACKEND_FILE}" >/dev/null
+sudo chown tc:staff "\${BACKEND_FILE}" 2>/dev/null || true
+sudo chmod 664 "\${BACKEND_FILE}" 2>/dev/null || true
+
+pcp backup
+
+echo "Backend saved: \$(backend_label "\${target}")"
+echo "Switching backends requires a reboot before the new ALSA route and controller mode take effect."
+echo "Do not start new playback until after reboot."
+
+if [ "\${rebootNow}" = true ]; then
+    pcp reboot
+else
+    echo "Run: pcp reboot"
+fi
+EOF
+
+chmod 755 "${BUILD_DIR}/usr/local/bin/picoredsp-switch-backend"
+
 ###############################################################################
 # Boot script
 ###############################################################################
@@ -1166,92 +1540,122 @@ cat > "${BUILD_DIR}/usr/local/tce.installed/${EXTENSION_NAME}" <<'EOF'
 CONTROLLER="/usr/local/bin/picoredsp-controller"
 ACTIVE_CONFIG="/mnt/mmcblk0p2/tce/camilladsp/active_config.yml"
 STATEFILE="/mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml"
+BACKEND_FILE="/mnt/mmcblk0p2/tce/camilladsp/backend.conf"
+IPC_SOCKET_DIR="/run/picoredsp"
+IPC_SOCKET_PATH="${IPC_SOCKET_DIR}/control.sock"
 
 STARTUP_LOG="/tmp/picoredsp-startup.log"
 
 echo "$(date): piCoreDSP startup" >> "${STARTUP_LOG}"
 echo "$(date): active config: $(readlink -f "${ACTIVE_CONFIG}" 2>/dev/null)" >> "${STARTUP_LOG}"
-
-###############################################################################
-# ALSA Loopback
-###############################################################################
-
-if ! modprobe snd-aloop; then
-    echo "$(date): unable to load snd-aloop" >> "${STARTUP_LOG}"
-    exit 1
+BACKEND="aloop"
+if [ -f "${BACKEND_FILE}" ]; then
+    IFS= read -r BACKEND < "${BACKEND_FILE}" || BACKEND="aloop"
 fi
+case "${BACKEND}" in
+    aloop|ioplug) ;;
+    *)
+        echo "$(date): invalid backend '${BACKEND}', falling back to aloop" >> "${STARTUP_LOG}"
+        BACKEND="aloop"
+        ;;
+esac
+echo "$(date): backend: ${BACKEND}" >> "${STARTUP_LOG}"
 
-i=0
-
-while [ "${i}" -lt 20 ]
-do
-    if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
-        break
-    fi
-
-    i=$((i + 1))
-    sleep 1
-done
-
-if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
-    echo "$(date): Loopback card did not appear" >> "${STARTUP_LOG}"
+if ! /usr/local/bin/picoredsp-apply-backend "${BACKEND}" >> "${STARTUP_LOG}" 2>&1; then
+    echo "$(date): failed to apply ALSA config for backend ${BACKEND}" >> "${STARTUP_LOG}"
     exit 1
 fi
 
 ###############################################################################
-# CamillaDSP supervisor
+# Backend-specific runtime
 ###############################################################################
 
-sudo -u tc sh -c '
-exec >> /tmp/camilladsp-supervisor.log 2>&1
-_log=/tmp/camilladsp-supervisor.log
-while :
-do
-    /usr/local/bin/picoredsp-trim-log "${_log}"
+case "${BACKEND}" in
+    aloop)
+        if ! modprobe snd-aloop; then
+            echo "$(date): unable to load snd-aloop" >> "${STARTUP_LOG}"
+            exit 1
+        fi
 
-    /usr/local/camilladsp \
-        --wait \
-        --no_config \
-        --port 1234 \
-        --address 127.0.0.1 \
-        --logfile /tmp/camilladsp.log \
-        --log_rotate_size 262144 \
-        --log_keep_nbr 1 \
-        --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
+        i=0
 
-    rc=$?
+        while [ "${i}" -lt 20 ]
+        do
+            if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+                break
+            fi
 
-    echo "$(date): CamillaDSP exited with ${rc}; restarting" \
-        >> /tmp/picoredsp-startup.log
+            i=$((i + 1))
+            sleep 1
+        done
 
-    sleep 2
-done
-' &
+        if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+            echo "$(date): Loopback card did not appear" >> "${STARTUP_LOG}"
+            exit 1
+        fi
 
-###############################################################################
-# Wait for CamillaDSP websocket
-###############################################################################
+        ###############################################################################
+        # CamillaDSP supervisor
+        ###############################################################################
 
-i=0
+        sudo -u tc sh -c '
+        exec >> /tmp/camilladsp-supervisor.log 2>&1
+        _log=/tmp/camilladsp-supervisor.log
+        while :
+        do
+            /usr/local/bin/picoredsp-trim-log "${_log}"
 
-while [ "${i}" -lt 30 ]
-do
-    if sudo -u tc "${CONTROLLER}" \
-        --ws-check \
-        --host 127.0.0.1 \
-        --port 1234 \
-        >/dev/null 2>&1
-    then
-        break
-    fi
+            /usr/local/camilladsp \
+                --wait \
+                --no_config \
+                --port 1234 \
+                --address 127.0.0.1 \
+                --logfile /tmp/camilladsp.log \
+                --log_rotate_size 262144 \
+                --log_keep_nbr 1 \
+                --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
 
-    i=$((i + 1))
-    sleep 1
-done
+            rc=$?
 
-if [ "${i}" -ge 30 ]; then
-    echo "$(date): CamillaDSP websocket did not become ready"         >> "${STARTUP_LOG}"
-fi
+            echo "$(date): CamillaDSP exited with ${rc}; restarting" \
+                >> /tmp/picoredsp-startup.log
+
+            sleep 2
+        done
+        ' &
+
+        ###############################################################################
+        # Wait for CamillaDSP websocket
+        ###############################################################################
+
+        i=0
+
+        while [ "${i}" -lt 30 ]
+        do
+            if sudo -u tc "${CONTROLLER}" \
+                --ws-check \
+                --host 127.0.0.1 \
+                --port 1234 \
+                >/dev/null 2>&1
+            then
+                break
+            fi
+
+            i=$((i + 1))
+            sleep 1
+        done
+
+        if [ "${i}" -ge 30 ]; then
+            echo "$(date): CamillaDSP websocket did not become ready" >> "${STARTUP_LOG}"
+        fi
+        ;;
+    ioplug)
+        mkdir -p "${IPC_SOCKET_DIR}"
+        chown tc:staff "${IPC_SOCKET_DIR}" 2>/dev/null || true
+        chmod 775 "${IPC_SOCKET_DIR}" 2>/dev/null || true
+        rm -f "${IPC_SOCKET_PATH}" 2>/dev/null || true
+        ;;
+esac
 
 ###############################################################################
 # Periodic log trimmer (bounds long-running logs even without restarts)
@@ -1278,12 +1682,29 @@ while :
 do
     /usr/local/bin/picoredsp-trim-log "${_log}"
 
-    /usr/local/bin/picoredsp-controller \
-        --host 127.0.0.1 \
-        --port 1234 \
-        --device hw:Loopback,0 \
-        --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
-        --log-level INFO
+    BACKEND="aloop"
+    if [ -f /mnt/mmcblk0p2/tce/camilladsp/backend.conf ]; then
+        IFS= read -r BACKEND < /mnt/mmcblk0p2/tce/camilladsp/backend.conf || BACKEND="aloop"
+    fi
+
+    case "${BACKEND}" in
+        ioplug)
+            /usr/local/bin/picoredsp-controller \
+                --backend ioplug \
+                --socket-path /run/picoredsp/control.sock \
+                --camilladsp /usr/local/camilladsp \
+                --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
+                --log-level INFO
+            ;;
+        *)
+            /usr/local/bin/picoredsp-controller \
+                --host 127.0.0.1 \
+                --port 1234 \
+                --device hw:Loopback,0 \
+                --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
+                --log-level INFO
+            ;;
+    esac
 
     rc=$?
 
@@ -1348,6 +1769,7 @@ if [ ! -s "${STAGE_DEFAULT_CONFIG}" ] ||
    [ ! -s "${STAGE_NULL_CONFIG}" ] ||
    [ ! -s "${STAGE_STATEFILE}" ] ||
    [ ! -s "${STAGE_PLAYBACK_DEVICE_FILE}" ] ||
+   [ ! -s "${STAGE_BACKEND_SELECTION_FILE}" ] ||
    [ ! -s "${ASOUND_STAGED}" ] ||
    [ ! -s "${PCP_STAGED}" ]; then
     echo "ERROR: One or more staged installation files are missing."
@@ -1356,7 +1778,8 @@ fi
 
 if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] ||
    [ ! -x "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ] ||
-   [ ! -x "${RUST_RUNTIME_BIN}" ]; then
+   [ ! -x "${RUST_RUNTIME_BIN}" ] ||
+   [ ! -f "${IOPLUG_RUNTIME_SO}" ]; then
     echo "ERROR: Staged runtime is incomplete."
     exit 1
 fi
@@ -1396,6 +1819,7 @@ sudo cp -f "${STAGE_BYPASS_CONFIG}" "${BYPASS_CONFIG}"
 sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
 sudo cp -f "${STAGE_STATEFILE}" "${STATEFILE}"
 sudo cp -f "${STAGE_PLAYBACK_DEVICE_FILE}" "${PLAYBACK_DEVICE_FILE}"
+sudo cp -f "${STAGE_BACKEND_SELECTION_FILE}" "${BACKEND_SELECTION_FILE}"
 
 # Set the active config symlink using the target already determined and
 # validated in the pre-commit check above.
@@ -1431,7 +1855,7 @@ for _d in "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"; do
     sudo chmod u+rwx,g+rwx "${_d}" 2>/dev/null || true
 done
 for _f in "${DEFAULT_CONFIG}" "${BYPASS_CONFIG}" "${NULL_CONFIG}" \
-           "${STATEFILE}" "${PLAYBACK_DEVICE_FILE}"; do
+           "${STATEFILE}" "${PLAYBACK_DEVICE_FILE}" "${BACKEND_SELECTION_FILE}"; do
     sudo chown tc:staff "${_f}" 2>/dev/null || true
     sudo chmod u+rw,g+rw "${_f}" 2>/dev/null || true
 done
@@ -1461,12 +1885,22 @@ echo "                v"
 echo "          pcm.picoredsp"
 echo "                |"
 echo "                v"
-echo "       hw:Loopback,1,0"
-echo "                |"
-echo "            snd-aloop"
-echo "                |"
-echo "                v"
-echo "       hw:Loopback,0,0"
+case "${INSTALL_BACKEND}" in
+    aloop)
+        echo "       hw:Loopback,1,0"
+        echo "                |"
+        echo "            snd-aloop"
+        echo "                |"
+        echo "                v"
+        echo "       hw:Loopback,0,0"
+        ;;
+    ioplug)
+        echo "  libasound_module_pcm_picoredsp.so"
+        echo "                |"
+        echo "                v"
+        echo "       AF_UNIX + stdin pipe"
+        ;;
+esac
 echo "                |"
 echo "                v"
 echo "           CamillaDSP"
@@ -1483,12 +1917,16 @@ echo "Resolved from:"
 echo "  ${PLAYBACK_SOURCE}"
 echo "Install mode:"
 echo "  ${INSTALL_MODE}"
+echo "Backend:"
+echo "  ${INSTALL_BACKEND_LABEL}"
 echo
 echo "CamillaGUI after reboot:"
 echo "  http://pcp.local:5000"
 echo
 echo "The Bypass config is audible pass-through. Null.yml intentionally discards audio."
 echo "Controller runtime: native Rust binary (no Python/pyalsa/pyCamillaDSP dependency)."
+echo "Use /usr/local/bin/picoredsp-switch-backend [aloop|ioplug] to switch later."
+echo "Backend changes are applied on the next explicit reboot."
 echo "First install preserves the physical Squeezelite output."
 echo "Reinstall recovers the physical output from CamillaDSP/Bypass/last-known state; it never guesses ALSA card order."
 echo
