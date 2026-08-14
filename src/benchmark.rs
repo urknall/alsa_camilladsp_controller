@@ -381,7 +381,7 @@ fn preferred_backend(kind: MetricKind, aloop: MetricValue, ioplug: MetricValue) 
 }
 
 fn compare_numeric(aloop: f64, ioplug: f64) -> &'static str {
-    if (aloop - ioplug).abs() < f64::EPSILON {
+    if (aloop - ioplug).abs() <= 0.001 {
         "tie"
     } else if aloop < ioplug {
         "aloop"
