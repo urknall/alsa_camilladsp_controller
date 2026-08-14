@@ -159,7 +159,7 @@ fn run_main() -> AppResult<()> {
             let path = args
                 .benchmark_path
                 .as_deref()
-                .expect("validated: --validate-benchmark-plan requires a path");
+                .ok_or_else(|| app_error("--validate-benchmark-plan requires a path"))?;
             let plan = validate_benchmark_plan(path)?;
             println!(
                 "Benchmark plan OK: backends=aloop,ioplug sample_rates={:?} chunksize={} queuelimit={}",

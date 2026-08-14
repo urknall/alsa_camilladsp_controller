@@ -263,7 +263,7 @@ CI requirements:
 
 **Milestone M12: Run A/B latency and performance benchmarks**
 
-- [ ] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
+- [x] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
 - [ ] All metrics measured for both `aloop` and `ioplug`:
   - [ ] Playback start latency
   - [ ] 44.1 → 48 kHz transition time

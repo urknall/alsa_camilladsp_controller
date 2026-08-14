@@ -386,9 +386,8 @@ mod tests {
         });
 
         let event = loop {
-            match backend.poll_event(200).unwrap() {
-                Some(e) => break e,
-                None => {}
+            if let Some(e) = backend.poll_event(200).unwrap() {
+                break e;
             }
         };
 
@@ -484,9 +483,8 @@ mod tests {
         backend.on_stream_ready().unwrap();
 
         let event = loop {
-            match backend.poll_event(200).unwrap() {
-                Some(e) => break e,
-                None => {}
+            if let Some(e) = backend.poll_event(200).unwrap() {
+                break e;
             }
         };
         assert_eq!(event, StreamEvent::Stopped);
@@ -528,9 +526,8 @@ mod tests {
         backend.on_stream_ready().unwrap();
 
         let event = loop {
-            match backend.poll_event(200).unwrap() {
-                Some(e) => break e,
-                None => {}
+            if let Some(e) = backend.poll_event(200).unwrap() {
+                break e;
             }
         };
         assert_eq!(event, StreamEvent::Stopped);
@@ -651,9 +648,8 @@ mod tests {
 
         // Wait for Stopped event (plugin disconnected).
         let event = loop {
-            match backend.poll_event(200).unwrap() {
-                Some(e) => break e,
-                None => {}
+            if let Some(e) = backend.poll_event(200).unwrap() {
+                break e;
             }
         };
         assert_eq!(event, StreamEvent::Stopped);

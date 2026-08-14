@@ -431,7 +431,7 @@ where
     }
     if args.benchmark_path.is_some() && args.mode != Mode::ValidateBenchmarkPlan {
         return Err(app_error(
-            "--validate-benchmark-plan is only valid as a mode flag",
+            "--benchmark-path is only valid with --validate-benchmark-plan",
         ));
     }
     if args.mode == Mode::MakeStatefile {
