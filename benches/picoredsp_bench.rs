@@ -167,10 +167,7 @@ fn validate_plan(plan: &BenchmarkPlan) -> bool {
     backends == req_be
 }
 
-fn detect_stream_event(
-    previous: &DeviceSnapshot,
-    current: &DeviceSnapshot,
-) -> Option<StreamEvent> {
+fn detect_stream_event(previous: &DeviceSnapshot, current: &DeviceSnapshot) -> Option<StreamEvent> {
     let to_params = |wave: &WaveFormat| StreamParams {
         rate: wave.sample_rate.expect("sample rate"),
         format: wave.sample_format.clone().expect("sample format"),

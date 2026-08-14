@@ -578,9 +578,14 @@ mod tests {
 
     #[test]
     fn parse_make_benchmark_report_mode() {
-        let args = parse(&["--make-benchmark-report", "plan.yml", "--output", "report.md"])
-            .expect("parse ok")
-            .expect("args");
+        let args = parse(&[
+            "--make-benchmark-report",
+            "plan.yml",
+            "--output",
+            "report.md",
+        ])
+        .expect("parse ok")
+        .expect("args");
         assert_eq!(args.mode, Mode::MakeBenchmarkReport);
         assert_eq!(args.benchmark_path, Some(PathBuf::from("plan.yml")));
         assert_eq!(args.output, Some(PathBuf::from("report.md")));
