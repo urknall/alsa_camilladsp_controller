@@ -43,6 +43,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
@@ -627,6 +628,110 @@ TEST(failure_camilladsp_early_exit_detected_via_epipe)
 }
 
 /* -----------------------------------------------------------------------
+ * Buffer-safety regression test (finding #2)
+ *
+ * Before the fix the stack buffer in pcdsp_drain_period_to_pipe() was sized
+ * as PCDSP_PIPE_CHUNK_FRAMES × 16, which was only safe for ≤4 bytes/frame.
+ * Stereo S32_LE requires PCDSP_MAX_FRAME_BYTES = 8 bytes/frame; the old
+ * assumption underflows by 2×.  This test exercises the maximum frame size
+ * supported by the plugin (2 channels × 4 bytes = 8 bytes/frame) and would
+ * trigger an ASAN stack-buffer-overflow if the old constant were used.
+ * ---------------------------------------------------------------------- */
+
+TEST(drain_period_max_frame_bytes_stereo_s32le_no_overflow)
+{
+    /*
+     * Use 2 channels × 4 bytes/sample = 8 bytes/frame (stereo S32_LE, the
+     * largest frame size the plugin supports).  Drain exactly PIPE_CHUNK
+     * frames in one shot to exercise the full chunk buffer.
+     */
+    const size_t channels    = PCDSP_MAX_CHANNELS;     /* 2 */
+    const size_t sample_bytes = PCDSP_MAX_SAMPLE_BYTES; /* 4 */
+    const size_t frame_bytes  = channels * sample_bytes; /* 8 */
+    const size_t period       = PCDSP_PIPE_CHUNK_FRAMES; /* 128 */
+
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, period * 2, frame_bytes) == 0);
+
+    /* Fill ring buffer with a recognisable pattern. */
+    uint8_t *src = malloc(period * frame_bytes);
+    CHECK(src != NULL);
+    for (size_t i = 0; i < period * frame_bytes; i++)
+        src[i] = (uint8_t)(i & 0xff);
+    CHECK(pcdsp_rb_write(&rb, src, period) == period);
+
+    int pipefd[2];
+    CHECK(pipe(pipefd) == 0);
+
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, frame_bytes);
+    CHECK(got == (ssize_t)period);
+    CHECK(pcdsp_rb_read_avail(&rb) == 0);
+
+    /* Read back and verify byte-for-byte correctness. */
+    uint8_t *dst = malloc(period * frame_bytes);
+    CHECK(dst != NULL);
+    ssize_t n = read(pipefd[0], dst, period * frame_bytes);
+    CHECK(n == (ssize_t)(period * frame_bytes));
+    CHECK(memcmp(src, dst, period * frame_bytes) == 0);
+
+    free(src);
+    free(dst);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    pcdsp_rb_free(&rb);
+}
+
+/* -----------------------------------------------------------------------
+ * Partial-period drain test (finding #3)
+ *
+ * Verifies that pcdsp_drain_period_to_pipe() correctly drains a partial
+ * final period (fewer frames than period_size).  This exercises the
+ * draining-mode code path added to the worker thread — passing avail < period
+ * as the frame count must not assert, overflow, or drop data.
+ * ---------------------------------------------------------------------- */
+
+TEST(drain_period_partial_final_period_via_drain_frames)
+{
+    /*
+     * Scenario: period = 256, only 37 frames remain in the ring buffer.
+     * The caller passes avail (37) as the frame count.  The function must
+     * drain exactly 37 frames without error.
+     */
+    const size_t frame_bytes = 8; /* stereo S32_LE */
+    const size_t remaining   = 37;
+
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 512, frame_bytes) == 0);
+
+    uint8_t *src = malloc(remaining * frame_bytes);
+    CHECK(src != NULL);
+    for (size_t i = 0; i < remaining * frame_bytes; i++)
+        src[i] = (uint8_t)((i * 7) & 0xff);
+    CHECK(pcdsp_rb_write(&rb, src, remaining) == remaining);
+    CHECK(pcdsp_rb_read_avail(&rb) == remaining);
+
+    int pipefd[2];
+    CHECK(pipe(pipefd) == 0);
+
+    /* Pass remaining (< period) as the frame count — simulates draining mode. */
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], remaining, frame_bytes);
+    CHECK(got == (ssize_t)remaining);
+    CHECK(pcdsp_rb_read_avail(&rb) == 0);
+
+    uint8_t *dst = malloc(remaining * frame_bytes);
+    CHECK(dst != NULL);
+    ssize_t n = read(pipefd[0], dst, remaining * frame_bytes);
+    CHECK(n == (ssize_t)(remaining * frame_bytes));
+    CHECK(memcmp(src, dst, remaining * frame_bytes) == 0);
+
+    free(src);
+    free(dst);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    pcdsp_rb_free(&rb);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -662,6 +767,12 @@ int main(void)
     /* Failure scenarios */
     RUN(failure_rust_daemon_restart_ipc_send_stop_fails_gracefully);
     RUN(failure_camilladsp_early_exit_detected_via_epipe);
+
+    /* Buffer-safety regression (finding #2: stack overflow with max frame bytes) */
+    RUN(drain_period_max_frame_bytes_stereo_s32le_no_overflow);
+
+    /* Partial-period drain regression (finding #3: drain hangs on final period) */
+    RUN(drain_period_partial_final_period_via_drain_frames);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

@@ -194,7 +194,7 @@ Controller runtime    96000   adapted in-memory config
 CamillaDSP live       96000   actual running DSP state
 ```
 
-For the currently playing stream, the **live CamillaGUI status is authoritative**. Runtime-adapted values are deliberately not written back into the user's YAML file.
+For the currently playing stream, the **live CamillaGUI status is authoritative**. Runtime-adapted values are deliberately not written back into the user's YAML file. On the ioplug backend the controller writes the adapted copy to a transient runtime file under `/run/picoredsp/`, not back through `active_config.yml`.
 
 This separation prevents every 44.1/48/96 kHz transition from rewriting the persistent DSP configuration and keeps user DSP settings separate from transient transport parameters.
 

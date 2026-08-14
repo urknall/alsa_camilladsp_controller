@@ -74,7 +74,10 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 - [x] Model detector and transport explicitly per backend:
   - [x] Aloop: `detector = AloopHctl`, `transport = AlsaCapture`
   - [x] ioplug: `detector = IoplugIpc`, `transport = StdinPipe`
-- [x] Remove all backend-specific branching from the common core
+- [x] Localize backend-specific branching to the adaptation layer
+  - Note: `src/core/adaptation.rs` contains a `match backend { Aloop => … Ioplug => … }` block
+    for capture-policy generation; this is intentional and correctly scoped to the one place
+    where the two backends differ.  The rest of the common core is backend-agnostic.
 
 ---
 

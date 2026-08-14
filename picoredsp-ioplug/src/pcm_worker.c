@@ -27,8 +27,11 @@ ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t *rb,
                                     size_t              frame_bytes)
 {
     /* Temporary stack buffer — avoids heap allocation in the hot path.
-     * Maximum: PCDSP_PIPE_CHUNK_FRAMES × 16 bytes/frame = 2 KB. */
-    uint8_t tmp[PCDSP_PIPE_CHUNK_FRAMES * 16];
+     * Sized for the worst case: PCDSP_PIPE_CHUNK_FRAMES × PCDSP_MAX_FRAME_BYTES.
+     * PCDSP_MAX_FRAME_BYTES = PCDSP_MAX_CHANNELS(2) × PCDSP_MAX_SAMPLE_BYTES(4) = 8.
+     * Any increase to the channel limit or sample width must update PCDSP_MAX_FRAME_BYTES
+     * in pcm_worker.h — this buffer is intentionally derived from those constants. */
+    uint8_t tmp[PCDSP_PIPE_CHUNK_FRAMES * PCDSP_MAX_FRAME_BYTES];
 
     size_t frames_written = 0;
     size_t frames_left    = period_frames;

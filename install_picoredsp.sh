@@ -1728,6 +1728,8 @@ do
 
     case "${BACKEND}" in
         ioplug)
+            # `--adapt` remains the persistent baseline input. The controller
+            # writes the per-stream runtime YAML to `/run/picoredsp/`.
             /usr/local/bin/picoredsp-controller \
                 --backend ioplug \
                 --socket-path /run/picoredsp/control.sock \

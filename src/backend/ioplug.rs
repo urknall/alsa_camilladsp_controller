@@ -149,8 +149,9 @@ impl IoplugBackend {
         &mut self,
         mut conn: IpcConnection,
     ) -> AppResult<(IpcConnection, DeviceSnapshot)> {
-        // HELLO negotiation.
-        conn.perform_hello_handshake()
+        // HELLO negotiation — stores negotiated_version on `conn`.
+        let negotiated = conn
+            .perform_hello_handshake()
             .map_err(|e| app_error(format!("IPC HELLO failed: {e}")))?;
 
         log(
@@ -166,11 +167,33 @@ impl IoplugBackend {
 
         let snapshot = match msg {
             PluginMessage::Start {
+                version,
                 rate,
                 format,
                 channels,
-                ..
             } => {
+                // Fix: reject any post-HELLO message whose version does not
+                // match the negotiated version.  Both sides agreed on
+                // `negotiated` during HELLO; a different version here means
+                // the peer violated the protocol.
+                if version != negotiated {
+                    return Err(app_error(format!(
+                        "IPC START: version mismatch \
+                         (negotiated {negotiated}, got {version})"
+                    )));
+                }
+
+                // Fix: enforce the stereo-only contract at every trust
+                // boundary.  The C plugin ALSA constraint already limits
+                // negotiation to 2 channels, but validate here as a
+                // defence-in-depth check (e.g. future clients, tests).
+                if channels != 2 {
+                    return Err(app_error(format!(
+                        "IPC START: only stereo (2 channels) is supported, \
+                         got {channels}"
+                    )));
+                }
+
                 let fmt_str = alsa_format_to_camilladsp(format as i32)
                     .map_err(|e| app_error(format!("IPC START format {format}: {e}")))?
                     .ok_or_else(|| {
@@ -206,13 +229,30 @@ impl IoplugBackend {
     }
 
     /// Receive one message from an active connection.  Returns `Ok(None)` on
-    /// timeout.
+    /// timeout.  Validates that any received message carries the negotiated
+    /// protocol version; returns `Err(ProtocolError::HandshakeNotComplete)` on
+    /// a version mismatch so the caller can treat it as a protocol error.
     fn recv_from_active(conn: &mut IpcConnection) -> Result<Option<PluginMessage>, ProtocolError> {
-        match conn.recv_plugin_message() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(ProtocolError::Timeout) => Ok(None),
-            Err(err) => Err(err),
+        let msg = match conn.recv_plugin_message() {
+            Ok(m) => m,
+            Err(ProtocolError::Timeout) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        // Enforce the negotiated version on every post-HELLO message.
+        // A peer that changes its version mid-session violates the protocol.
+        if let Some(negotiated) = conn.negotiated_version() {
+            let msg_version = match &msg {
+                PluginMessage::Stop { version } => Some(*version),
+                PluginMessage::Start { version, .. } => Some(*version),
+                _ => None,
+            };
+            if let Some(ver) = msg_version {
+                if ver != negotiated {
+                    return Err(ProtocolError::HandshakeNotComplete);
+                }
+            }
         }
+        Ok(Some(msg))
     }
 }
 

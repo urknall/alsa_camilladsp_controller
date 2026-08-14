@@ -22,9 +22,21 @@
 extern "C" {
 #endif
 
-/* Chunk size used by pcdsp_drain_period_to_pipe (stack buffer, not heap).
- * 128 frames × 16 bytes/frame = 2 KB — stays on the stack inside the loop. */
-#define PCDSP_PIPE_CHUNK_FRAMES 128u
+/* Chunk size used by pcdsp_drain_period_to_pipe (stack buffer, not heap). */
+#define PCDSP_PIPE_CHUNK_FRAMES   128u
+
+/* Maximum supported channels (stereo constraint).
+ * All plugin trust boundaries enforce channels == PCDSP_MAX_CHANNELS. */
+#define PCDSP_MAX_CHANNELS        2u
+
+/* Maximum physical bytes per sample for any supported format (S32_LE / FLOAT_LE). */
+#define PCDSP_MAX_SAMPLE_BYTES    4u
+
+/* Maximum frame size in bytes = PCDSP_MAX_CHANNELS × PCDSP_MAX_SAMPLE_BYTES.
+ * The stack buffer in pcdsp_drain_period_to_pipe is sized on this constant, so
+ * adding a new format or increasing the channel limit here is the single change
+ * needed to keep the stack buffer safe. */
+#define PCDSP_MAX_FRAME_BYTES     (PCDSP_MAX_CHANNELS * PCDSP_MAX_SAMPLE_BYTES)
 
 /*
  * pcdsp_drain_period_to_pipe — drain one period worth of frames from `rb`
