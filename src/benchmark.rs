@@ -925,13 +925,19 @@ pub fn find_alsa_card_number(control_device: &str) -> Option<u32> {
 /// `/proc/asound/card<N>/pcm*/sub0/hw_params` while an ALSA stream is active.
 /// Returns `None` if the file is absent or the stream has not been opened yet.
 pub fn collect_pcm_transport_latency_ms(card_num: u32) -> Option<f64> {
+    collect_pcm_transport_latency_ms_from(card_num, "/proc/asound")
+}
+
+/// Inner implementation parameterised over the `/proc/asound` base path so
+/// that unit tests can point it at a temporary directory.
+fn collect_pcm_transport_latency_ms_from(card_num: u32, base: &str) -> Option<f64> {
     // snd-aloop creates up to 8 subdevices per PCM stream by default.  The
     // active subdevice index is not necessarily 0 (e.g. Squeezelite may open
     // sub0 while CamillaDSP captures on sub1).  Scan sub0–sub7 for each PCM
     // direction and return the first one that reports an active rate.
     for pcm in ["pcm0p", "pcm0c", "pcm1p", "pcm1c"] {
         for sub in 0u32..8 {
-            let path = format!("/proc/asound/card{card_num}/{pcm}/sub{sub}/hw_params");
+            let path = format!("{base}/card{card_num}/{pcm}/sub{sub}/hw_params");
             if let Ok(text) = std::fs::read_to_string(&path) {
                 if let (Some(period), Some(rate)) = (
                     parse_proc_hwparams_period_size(&text),
@@ -1557,22 +1563,35 @@ mod tests {
 
     #[test]
     fn collect_pcm_transport_scans_multiple_subdevices() {
-        // Verify that the per-subdevice parsers work correctly for a file that
-        // would be found on sub2 rather than sub0.  The live scanner now iterates
-        // sub0–sub7 so a non-zero subdevice index is no longer missed.
-        let hw_params_sub2 = "access: MMAP_INTERLEAVED\n\
-                              format: S16_LE\n\
-                              channels: 2\n\
-                              rate: 48000 (48000/1)\n\
-                              period_size: 512\n\
-                              buffer_size: 4096\n";
-        let period = parse_proc_hwparams_period_size(hw_params_sub2).expect("period");
-        let rate = parse_proc_hwparams_rate(hw_params_sub2).expect("rate");
-        assert_eq!(period, 512);
-        assert_eq!(rate, 48000);
+        // Build a /proc/asound-like tree under /tmp where only sub2 is active.
+        // Confirm collect_pcm_transport_latency_ms_from returns Some (the loop
+        // reaches sub2) rather than None (which would happen with the old
+        // sub0-only code).
+        let base = format!("/tmp/pcm_transport_test_{}", std::process::id());
+        let card_dir = format!("{base}/card5/pcm0p");
+        for sub in 0u32..4 {
+            let sub_dir = format!("{card_dir}/sub{sub}");
+            std::fs::create_dir_all(&sub_dir).unwrap();
+            let content = if sub == 2 {
+                "access: MMAP_INTERLEAVED\n\
+                 format: S16_LE\n\
+                 channels: 2\n\
+                 rate: 48000 (48000/1)\n\
+                 period_size: 512\n\
+                 buffer_size: 4096\n"
+            } else {
+                "closed\n"
+            };
+            std::fs::write(format!("{sub_dir}/hw_params"), content).unwrap();
+        }
+
+        let result = collect_pcm_transport_latency_ms_from(5, &base);
+        // Clean up before asserting so temp files are always removed.
+        let _ = std::fs::remove_dir_all(&base);
+
         // 512 / 48000 * 1000 ≈ 10.666 ms
-        let latency_ms = period as f64 / rate as f64 * 1000.0;
-        assert!((latency_ms - 10.666).abs() < 0.01, "got {latency_ms}");
+        let ms = result.expect("should have found rate on sub2");
+        assert!((ms - 10.666).abs() < 0.01, "got {ms}");
     }
 
     #[test]

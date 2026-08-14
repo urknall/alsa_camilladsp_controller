@@ -25,7 +25,7 @@ The measurement workflow has four stages:
 | `picoredsp-controller` binary on `$PATH` | All CLI commands below use it |
 | `snd-aloop` kernel module loaded | `--run-benchmark` uses the loopback ALSA device to drive the aloop backend measurement |
 | CamillaDSP running and reachable | Auto-detection queries `GetVersion`, `GetBuffersize`, and `GetConfigFilePath` via WebSocket |
-| Active loopback playback (optional but recommended) | Improves accuracy of aloop start/stop latency and XRUN counts |
+| Loopback **idle** (no other player active) | aloop start/stop latency and XRUN counts require the loopback write side to be free; if Squeezelite or another player is already holding it, those metrics are skipped automatically |
 
 If you have not yet run the installer, download the binary first:
 
