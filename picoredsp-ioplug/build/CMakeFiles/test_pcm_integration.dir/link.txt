@@ -1,1 +1,0 @@
-/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_pcm_integration.dir/link.d CMakeFiles/test_pcm_integration.dir/tests/test_pcm_integration.c.o CMakeFiles/test_pcm_integration.dir/src/ipc.c.o -o test_pcm_integration  -lasound -lpthread

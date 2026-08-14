@@ -154,7 +154,7 @@ fn bench_stats(name: &str, samples: &mut [Duration]) {
         "  {name:<52}  n={n:<6}  min={:>7.0} ns  p50={:>7.0} ns  p95={:>7.0} ns\
          \n  {blank:<52}               p99={:>7.0} ns  max={:>7.0} ns  mean={:>7.0} ns  stddev={:>6.0} ns",
         pct(0), pct(50), pct(95),
-        pct(99), pct(99).max(ns[n - 1]), mean, stddev,
+        pct(99), ns[n - 1], mean, stddev,
         blank = "",
     );
 }
