@@ -12,6 +12,21 @@ cargo run -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
 cargo run -- --validate-benchmark-plan /tmp/benchmark-plan.yml
 ```
 
+## Current status
+
+These commands only create and validate the benchmark record format.
+They do **not** currently:
+
+- start or stop playback automatically
+- generate synthetic audio input
+- simulate sample-rate transitions
+- run long-duration stability loops
+- collect timing / CPU / RSS / XRUN metrics on their own
+
+Today, the filled benchmark YAML is the reproducible container for those results,
+but the measurements themselves still need to be produced by a separate test
+harness or manual test workflow.
+
 ## What the template enforces
 
 The generated YAML contains:
@@ -50,3 +65,55 @@ The generated YAML contains:
 - the run list contains exactly one `aloop` run and one `ioplug` run
 
 This establishes a reproducible benchmark scaffold before real hardware measurements are added.
+
+## Running the full local verification suite
+
+The benchmark plan is separate from the controller's normal correctness checks.
+To run the local validation suite used by CI for the Rust controller:
+
+```sh
+cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+
+sudo apt-get install -y libasound2-dev
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+sh -n install_picoredsp.sh
+dash -n install_picoredsp.sh
+```
+
+Optional MSRV gate:
+
+```sh
+cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cargo +1.71 check --locked
+```
+
+## Scope for a future automated benchmark harness
+
+Yes — an automated benchmark runner can be built, but it is a larger feature
+than the current schema/validation support.
+
+A useful harness would:
+
+- drive both backends under the same fixed benchmark plan
+- generate deterministic audio input
+- automate start/stop and rate-transition scenarios
+- run soak tests for 24-hour and 7-day stability
+- record host-side metrics into the benchmark YAML automatically
+
+Examples of metrics that are good candidates for automatic collection:
+
+- playback start latency
+- stop latency
+- 44.1 → 48 kHz and 48 → 96 kHz transition timing
+- CPU usage
+- context switches
+- controller RSS
+- plugin overhead
+- XRUN count
+- pass/fail stability and DAC-recovery outcomes
+
+One important limitation remains: total end-to-end latency should still be
+externally measured where possible, because software-visible queue depths do not
+fully capture the DAC and analog output path.
