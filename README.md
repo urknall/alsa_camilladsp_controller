@@ -229,15 +229,16 @@ picoredsp-controller --adapt-check \
 # Generate and validate the A/B benchmark plan used for roadmap milestone M12:
 picoredsp-controller --make-benchmark-plan --output /tmp/benchmark-plan.yml
 picoredsp-controller --validate-benchmark-plan /tmp/benchmark-plan.yml
+picoredsp-controller --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
 ```
 
 See [docs/BENCHMARK_FRAMEWORK.md](docs/BENCHMARK_FRAMEWORK.md) for the benchmark plan schema and validation rules.
 
 ## Benchmarking and full local verification
 
-The benchmark CLI currently provides a **plan generator** and **plan validator** only.
-It does **not** execute playback, synthesize audio, or collect benchmark metrics
-automatically yet.
+The benchmark CLI provides a **plan generator**, **plan validator**, and
+**benchmark report generator**. CI also runs the Rust benchmark harness with
+automated `aloop` and `ioplug` control-path microbenchmarks.
 
 Use it to create a reproducible A/B benchmark record where only the backend changes:
 
@@ -246,11 +247,13 @@ cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
 
 cargo run -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
 cargo run -- --validate-benchmark-plan /tmp/benchmark-plan.yml
+cargo run -- --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
 ```
 
 After validation, run the `aloop` and `ioplug` backends under the same Pi /
 piCorePlayer / CamillaDSP / DAC / DSP config / track / chunksize / queuelimit
-conditions and fill in the resulting metrics in the YAML plan.
+conditions, fill in the resulting metrics in the YAML plan, and regenerate the
+report to get Gate 12 coverage, backend comparisons, and latency-tuning hints.
 
 To run the same full local verification suite that CI uses for the Rust
 controller:
@@ -273,12 +276,12 @@ cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
 cargo +1.71 check --locked
 ```
 
-An automated benchmark harness is a valid future feature, but it has not been
-implemented yet. A harness could automate stream generation, backend start/stop
-cycles, rate-transition scenarios, long-duration soak tests, and collection of
-host-side metrics such as CPU usage, RSS, context switches, and XRUN counts.
-However, true end-to-end latency should still be externally measured where
-possible rather than inferred purely from software-visible buffers.
+The automated benchmark harness now covers software-visible comparison points in
+CI: the Rust benchmark suite measures `aloop` and `ioplug` control-path
+operations and emits an automated benchmark report artifact. Hardware playback,
+rate-transition, soak, and end-to-end latency measurements still need a real Pi
+/ DAC test rig, and true end-to-end latency should still be externally measured
+where possible rather than inferred purely from software-visible buffers.
 
 ## References
 

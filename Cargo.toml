@@ -11,6 +11,11 @@ repository = "https://github.com/urknall/alsa_camilladsp_controller"
 name = "picoredsp-controller"
 path = "src/main.rs"
 
+[[bench]]
+name = "picoredsp_bench"
+path = "benches/picoredsp_bench.rs"
+harness = false
+
 [dependencies]
 alsa = "=0.9.1"
 libc = "=0.2.189"

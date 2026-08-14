@@ -19,7 +19,7 @@ use adapt::{
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Backend, Mode};
-use benchmark::{make_benchmark_plan_template, validate_benchmark_plan};
+use benchmark::{make_benchmark_plan_template, make_benchmark_report, validate_benchmark_plan};
 use camilla_ws::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
 use error::{app_error, AppResult};
@@ -165,6 +165,22 @@ fn run_main() -> AppResult<()> {
                 "Benchmark plan OK: backends=aloop,ioplug sample_rates={:?} chunksize={} queuelimit={}",
                 plan.environment.sample_rates_hz, plan.environment.chunksize, plan.environment.queuelimit
             );
+            Ok(())
+        }
+
+        Mode::MakeBenchmarkReport => {
+            let path = args
+                .benchmark_path
+                .as_deref()
+                .ok_or_else(|| app_error("--make-benchmark-report requires a path"))?;
+            let report = make_benchmark_report(path)?;
+            if let Some(output) = args.output.as_deref() {
+                std::fs::write(output, &report).map_err(|err| {
+                    app_error(format!("unable to write {}: {err}", output.display()))
+                })?;
+            } else {
+                print!("{report}");
+            }
             Ok(())
         }
 

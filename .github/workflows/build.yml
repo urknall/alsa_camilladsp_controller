@@ -8,18 +8,22 @@ on:
       - main
     paths:
       - 'src/**'
+      - 'benches/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'install_picoredsp.sh'
+      - 'picoredsp-ioplug/**'
       - '.github/workflows/build.yml'
   pull_request:
     branches:
       - main
     paths:
       - 'src/**'
+      - 'benches/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'install_picoredsp.sh'
+      - 'picoredsp-ioplug/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -145,6 +149,116 @@ jobs:
         run: |
           sh -n install_picoredsp.sh
           dash -n install_picoredsp.sh
+
+  # ─── Rust microbenchmarks ─────────────────────────────────────────────────
+  rust_bench:
+    name: Rust benchmarks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bench-
+
+      - name: Build and run Rust benchmark suite
+        run: cargo bench --locked 2>&1 | tee /tmp/rust_bench.txt
+
+      - name: Generate benchmark coverage report
+        run: |
+          cargo run --locked -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
+          cargo run --locked -- --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
+
+      - name: Write benchmark results to job summary
+        if: always()
+        run: |
+          echo '## Rust benchmark results' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/rust_bench.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo '## Benchmark coverage report' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/benchmark-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rust benchmark artefacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-bench-results
+          path: |
+            /tmp/rust_bench.txt
+            /tmp/benchmark-plan.yml
+            /tmp/benchmark-report.md
+          if-no-files-found: warn
+
+  # ─── C ioplug microbenchmarks ─────────────────────────────────────────────
+  ioplug_bench:
+    name: ioplug benchmarks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev
+
+      - name: Configure (Release, BENCH=ON)
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_bench \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBENCH=ON
+
+      - name: Build benchmark executables
+        run: cmake --build picoredsp-ioplug/build_bench --target bench_ringbuffer bench_timing bench_pcm_worker
+
+      - name: Run bench_ringbuffer
+        run: picoredsp-ioplug/build_bench/bench_ringbuffer 2>&1 | tee /tmp/bench_ringbuffer.txt
+
+      - name: Run bench_timing
+        run: picoredsp-ioplug/build_bench/bench_timing 2>&1 | tee /tmp/bench_timing.txt
+
+      - name: Run bench_pcm_worker
+        run: picoredsp-ioplug/build_bench/bench_pcm_worker 2>&1 | tee /tmp/bench_pcm_worker.txt
+
+      - name: Write benchmark results to job summary
+        if: always()
+        run: |
+          echo '## ioplug benchmark results' >> "$GITHUB_STEP_SUMMARY"
+          for f in /tmp/bench_ringbuffer.txt /tmp/bench_timing.txt /tmp/bench_pcm_worker.txt; do
+            [ -f "$f" ] || continue
+            echo "### $(basename "$f" .txt)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload benchmark results as artefact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ioplug-bench-results
+          path: |
+            /tmp/bench_ringbuffer.txt
+            /tmp/bench_timing.txt
+            /tmp/bench_pcm_worker.txt
+          if-no-files-found: warn
 
   # ─── Cross-compile release binaries ──────────────────────────────────────
   build:

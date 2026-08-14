@@ -1,1 +1,0 @@
-/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/test_pcm_worker.dir/link.d CMakeFiles/test_pcm_worker.dir/tests/test_pcm_worker.c.o -o test_pcm_worker  libpcdsp_internals.a -lasound -lpthread

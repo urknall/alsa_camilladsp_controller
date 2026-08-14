@@ -175,6 +175,54 @@ set_tests_properties(test_pcm_integration PROPERTIES
 )
 
 # ---------------------------------------------------------------------------
+# Optional: microbenchmarks
+# ---------------------------------------------------------------------------
+# Build with -DBENCH=ON to compile and run the bench/ programs.
+# Benchmarks are NOT registered as CTest tests (they are not pass/fail) —
+# run them explicitly after building:
+#
+#   cmake -DBENCH=ON ..
+#   make bench_ringbuffer bench_timing bench_pcm_worker
+#   ./bench_ringbuffer && ./bench_timing && ./bench_pcm_worker
+#
+# The convenience target `run_benches` builds and immediately runs all three.
+# ---------------------------------------------------------------------------
+option(BENCH "Build microbenchmarks" OFF)
+
+if(BENCH)
+    # Helper: build one benchmark executable.
+    # All benchmarks link pcdsp_internals (ring buffer, timing, pcm_worker) and
+    # require pthread + libm (for sqrt in bench_harness.h).
+    function(pcdsp_add_bench target source)
+        add_executable(${target} ${source})
+        target_include_directories(${target}
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/bench
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${ALSA_INCLUDE_DIRS}
+        )
+        target_link_libraries(${target} PRIVATE pcdsp_internals pthread m)
+        # Benchmarks are O2-optimised regardless of the overall build type so
+        # results are representative of production code.
+        target_compile_options(${target} PRIVATE -O2)
+    endfunction()
+
+    pcdsp_add_bench(bench_ringbuffer bench/bench_ringbuffer.c)
+    pcdsp_add_bench(bench_timing     bench/bench_timing.c)
+    pcdsp_add_bench(bench_pcm_worker bench/bench_pcm_worker.c)
+
+    # Convenience target: build all benchmarks and run them in sequence.
+    add_custom_target(run_benches
+        COMMAND bench_ringbuffer
+        COMMAND bench_timing
+        COMMAND bench_pcm_worker
+        DEPENDS bench_ringbuffer bench_timing bench_pcm_worker
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Running all picoredsp-ioplug microbenchmarks"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Optional: clang-tidy static analysis
 # ---------------------------------------------------------------------------
 option(CLANG_TIDY "Run clang-tidy static analysis during build" OFF)
