@@ -781,6 +781,11 @@ pub fn parse_pcp_version(text: &str) -> String {
 ///
 /// The player (squeezelite / aplay) writes to `hw:<card>,1,0` while the
 /// controller reads HCTL events on `hw:<card>,0`.
+///
+/// Expects an ALSA device string with the `hw:` prefix, e.g. `hw:Loopback,0`
+/// or `hw:Loopback,0,0`.  Passing a name without `hw:` (e.g. `"Loopback"`)
+/// will produce a string like `"Loopback,1,0"` which is not a valid ALSA PCM
+/// device — always include the `hw:` prefix.
 pub fn aloop_playback_device(control_device: &str) -> String {
     let card = control_device.split(',').next().unwrap_or(control_device);
     format!("{},1,0", card)
@@ -1029,15 +1034,16 @@ pub fn collect_aloop_timings(control_device: &str) -> (Option<f64>, Option<f64>,
     // Let it play for 1 second so any xruns can accumulate.
     std::thread::sleep(Duration::from_secs(1));
 
-    // Kill aplay and capture its stderr for xrun counting.
+    // Kill aplay.  Start the stop-latency clock before waiting for the process
+    // to exit so that t1 begins as close to the kill signal as possible.
     let _ = child.kill();
+    let t1 = Instant::now();
     let xrun_count = match child.wait_with_output() {
         Ok(out) => count_xruns_in_aplay_output(&String::from_utf8_lossy(&out.stderr)),
         Err(_) => 0,
     };
 
     // Poll for active = false (playback stop latency).
-    let t1 = Instant::now();
     let stop_latency_ms = loop {
         if t1.elapsed() > Duration::from_secs(3) {
             break None;
@@ -1074,13 +1080,12 @@ pub fn detect_environment(host: &str, port: u16, aloop_device: &str) -> Benchmar
 
     // Read chunksize from CamillaDSP if available; default to 1024.
     let chunksize = {
-        let mut client = CamillaWs::connect(host, port).ok();
-        client
-            .as_mut()
-            .and_then(|c| c.query("GetBuffersize", None).ok()?)
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32)
-            .unwrap_or(1024)
+        let chunksize_val = CamillaWs::connect(host, port).ok().and_then(|mut c| {
+            let v = c.query("GetBuffersize", None).ok()?;
+            c.close();
+            v.and_then(|j| j.as_u64())
+        });
+        chunksize_val.map(|n| n as u32).unwrap_or(1024)
     };
 
     BenchmarkEnvironment {
