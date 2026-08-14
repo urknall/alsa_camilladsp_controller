@@ -13,6 +13,9 @@
 #include "ringbuffer.h"
 
 #include <errno.h>
+#include <poll.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
@@ -21,10 +24,11 @@
  * pcdsp_drain_period_to_pipe
  * ---------------------------------------------------------------------- */
 
-ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t *rb,
-                                    int                 pipe_fd,
-                                    size_t              period_frames,
-                                    size_t              frame_bytes)
+ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
+                                    int                  pipe_fd,
+                                    size_t               period_frames,
+                                    size_t               frame_bytes,
+                                    const _Atomic(bool) *keep_running)
 {
     /* Temporary stack buffer — avoids heap allocation in the hot path.
      * Sized for the worst case: PCDSP_PIPE_CHUNK_FRAMES × PCDSP_MAX_FRAME_BYTES.
@@ -47,15 +51,40 @@ ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t *rb,
         ssize_t byte_written = 0;
 
         while ((size_t)byte_written < byte_count) {
+            if (keep_running &&
+                !atomic_load_explicit(keep_running, memory_order_acquire))
+                return (ssize_t)frames_written;
+
+            /* The production pipe fd is O_NONBLOCK.  Poll in short bounded
+             * intervals so a stop request can terminate a worker even when
+             * CamillaDSP is alive but no longer reading stdin. */
+            struct pollfd pfd = { .fd = pipe_fd, .events = POLLOUT };
+            int pr = poll(&pfd, 1, 20);
+            if (pr < 0) {
+                if (errno == EINTR)
+                    continue;
+                return -errno;
+            }
+            if (pr == 0)
+                continue;
+            if (pfd.revents & POLLNVAL)
+                return -EBADF;
+            if (pfd.revents & (POLLERR | POLLHUP))
+                return -EPIPE;
+            if (!(pfd.revents & POLLOUT))
+                continue;
+
             ssize_t n = write(pipe_fd,
                               tmp + (size_t)byte_written,
                               byte_count - (size_t)byte_written);
             if (n < 0) {
-                if (errno == EINTR)
-                    continue; /* retry on signal */
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue;
                 /* EPIPE or other hard error — CamillaDSP has gone */
                 return -errno;
             }
+            if (n == 0)
+                continue;
             byte_written += n;
         }
 

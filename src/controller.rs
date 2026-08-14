@@ -113,7 +113,8 @@ fn write_runtime_config(path: &Path, yaml: &str) -> AppResult<()> {
 ///    — Validation failure latches the retry state until the config changes.
 /// 4. Spawn CamillaDSP with the pipe read-end as stdin.
 /// 5. Startup timeout check: verify the process is still alive after a short
-///    delay; an immediate exit is treated as a transient failure.
+///    delay; the current policy latches an immediate exit as a config/device
+///    failure until the baseline config changes.
 /// 6. Send READY to the plugin, delivering the pipe write-end via SCM_RIGHTS.
 /// 7. Monitor the stream; wait for STOP or plugin disconnect.
 ///    — Unexpected CamillaDSP exit is recorded as a transient failure.

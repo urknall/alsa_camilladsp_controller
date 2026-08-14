@@ -159,7 +159,7 @@ static void bench_pipe_drain(const char *name, size_t period_frames, size_t fram
 
     for (int i = 0; i < warmup_pipe; i++) {
         fill_rb(&rb, src, period_frames);
-        pcdsp_drain_period_to_pipe(&rb, pipe_wr, period_frames, frame_bytes);
+        pcdsp_drain_period_to_pipe(&rb, pipe_wr, period_frames, frame_bytes, NULL);
         /* drain the period we just wrote (non-blocking) */
         ssize_t remaining = (ssize_t)(period_frames * frame_bytes);
         while (remaining > 0) {
@@ -188,7 +188,7 @@ static void bench_pipe_drain(const char *name, size_t period_frames, size_t fram
     for (int i = 0; i < ctx.capacity; i++) {
         fill_rb(&rb, src, period_frames);
         bench_iter_start(&ctx);
-        pcdsp_drain_period_to_pipe(&rb, pipe_wr, period_frames, frame_bytes);
+        pcdsp_drain_period_to_pipe(&rb, pipe_wr, period_frames, frame_bytes, NULL);
         bench_iter_end(&ctx);
     }
 

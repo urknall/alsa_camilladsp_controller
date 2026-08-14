@@ -15,6 +15,8 @@
 #include "ringbuffer.h"
 
 #include <stddef.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -47,17 +49,23 @@ extern "C" {
  * @period_frames Number of frames in one period.
  * @frame_bytes   Bytes per frame (format × channels).
  *
+ * @keep_running  Optional atomic run flag.  When non-NULL, pipe waits are
+ *                bounded and return promptly once the flag becomes false.
+ *                Pass NULL for callers that do not need cancellation.
+ *
  * Returns the number of frames successfully written (0 .. period_frames) on
  * success, or a negative errno on pipe error (e.g. -EPIPE when CamillaDSP
- * has exited).  EINTR is retried internally; the caller need not loop.
+ * has exited).  EINTR and EAGAIN are retried internally.
  *
- * On error the ring buffer state is undefined — the caller should treat the
- * stream as broken and set worker_running to false.
+ * The production caller uses a non-blocking pipe fd plus `keep_running`; this
+ * prevents stream shutdown from depending on close(2) interrupting a write in
+ * another thread (which Linux does not guarantee).
  */
-ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t *rb,
-                                    int                 pipe_fd,
-                                    size_t              period_frames,
-                                    size_t              frame_bytes);
+ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
+                                    int                  pipe_fd,
+                                    size_t               period_frames,
+                                    size_t               frame_bytes,
+                                    const _Atomic(bool) *keep_running);
 
 /*
  * pcdsp_drain_period_null_sink — drain one period worth of frames from `rb`

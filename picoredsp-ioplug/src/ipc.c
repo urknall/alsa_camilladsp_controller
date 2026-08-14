@@ -97,7 +97,12 @@ int pcdsp_ipc_connect(pcdsp_ipc_conn_t *conn, const char *socket_path)
         return -errno;
 
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
-    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+    size_t socket_path_len = strlen(socket_path);
+    if (socket_path_len >= sizeof(addr.sun_path)) {
+        close(sfd);
+        return -ENAMETOOLONG;
+    }
+    memcpy(addr.sun_path, socket_path, socket_path_len + 1);
 
     int rc = connect(sfd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0) {
@@ -167,9 +172,14 @@ int pcdsp_ipc_connect(pcdsp_ipc_conn_t *conn, const char *socket_path)
         return -EPROTO;
     }
 
-    uint8_t negotiated = hello_in.version < PCDSP_IPC_PROTOCOL_VERSION
-                             ? hello_in.version
-                             : PCDSP_IPC_PROTOCOL_VERSION;
+    /* The server must reply with a version no newer than the one we offered.
+     * Accepting a higher value and silently clamping it locally would leave
+     * the two peers with different negotiated-version state. */
+    if (hello_in.version > PCDSP_IPC_PROTOCOL_VERSION) {
+        close(sfd);
+        return -EPROTO;
+    }
+    uint8_t negotiated = hello_in.version;
     if (negotiated < PCDSP_IPC_PROTOCOL_VERSION_MIN) {
         close(sfd);
         return -EPROTO;
@@ -241,11 +251,16 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
         return rc;
 
     if (type_byte == PCDSP_MSG_ERROR) {
-        /* Read the remaining error fields. */
+        /* Read and validate the remaining error fields. */
         uint8_t rest[2]; /* version + code */
         rc = recv_all(conn->fd, rest, sizeof(rest), PCDSP_IPC_IO_TIMEOUT_MS);
         if (rc < 0)
             return rc;
+        if (rest[0] != conn->negotiated_version)
+            return -EPROTO;
+        if (rest[1] < (uint8_t)PCDSP_ERR_CONFIG ||
+            rest[1] > (uint8_t)PCDSP_ERR_INTERNAL)
+            return -EPROTO;
         if (error_code)
             *error_code = (pcdsp_error_code_t)rest[1];
         return -EPROTO;

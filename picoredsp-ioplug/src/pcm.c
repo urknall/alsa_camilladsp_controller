@@ -110,6 +110,7 @@ typedef struct pcdsp_pcm {
     /* Worker thread */
     pthread_t           worker;
     _Atomic(bool)       worker_running;
+    bool                worker_joinable;
     _Atomic(bool)       paused;
     /* Set to true by pcdsp_drain() while a drain is in progress so that the
      * worker consumes partial periods rather than waiting for a full one.
@@ -137,6 +138,21 @@ static void pcdsp_signal_event_fd(int event_fd)
         SNDERR("picoredsp: failed to signal eventfd: %s", strerror(errno));
 }
 
+/* Stop and reap the worker without mutating pipe_fd while the worker may be
+ * using it.  `worker_joinable` is separate from `worker_running` because the
+ * worker can clear the latter itself after EPIPE but still needs pthread_join. */
+static void pcdsp_stop_worker(pcdsp_pcm_t *pcdsp)
+{
+    atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
+    atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
+
+    if (pcdsp->worker_joinable) {
+        pcdsp_signal_event_fd(pcdsp->event_fd);
+        pthread_join(pcdsp->worker, NULL);
+        pcdsp->worker_joinable = false;
+    }
+}
+
 #define io_to_pcdsp(io_ptr) ((pcdsp_pcm_t *)(io_ptr))
 
 /* -----------------------------------------------------------------------
@@ -144,8 +160,9 @@ static void pcdsp_signal_event_fd(int event_fd)
  *
  * When `pipe_fd >= 0` (Gate 8): reads one period's worth of frames from the
  * ring buffer and writes them directly into the CamillaDSP stdin pipe.
- * No rate-pacing sleep is needed — the pipe's blocking semantics naturally
- * pace consumption to CamillaDSP's read rate.
+ * No rate-pacing sleep is needed.  The pipe fd is non-blocking; the helper
+ * waits for POLLOUT in short intervals so shutdown remains cancellable while
+ * CamillaDSP's read rate still provides backpressure.
  *
  * When `pipe_fd < 0` (fallback): discards frames at the nominal sample rate
  * using nanosleep (original null-sink behaviour, preserved for unit tests and
@@ -204,7 +221,8 @@ static void *worker_thread(void *arg)
              * error (e.g. -EPIPE when CamillaDSP has exited).
              */
             ssize_t got = pcdsp_drain_period_to_pipe(
-                &pcdsp->rb, pipe_fd, drain_frames, pcdsp->frame_bytes);
+                &pcdsp->rb, pipe_fd, drain_frames, pcdsp->frame_bytes,
+                &pcdsp->worker_running);
             if (got < 0) {
                 /* EPIPE or other hard error: CamillaDSP has gone.
                  * Record the error so pcdsp_pointer() and pcdsp_poll_revents()
@@ -241,25 +259,6 @@ done:
     return NULL;
 }
 
-static int pcdsp_map_ready_error(int ipc_rc, pcdsp_error_code_t err_code)
-{
-    if (ipc_rc != -EPROTO)
-        return ipc_rc;
-
-    switch (err_code) {
-    case PCDSP_ERR_CONFIG:
-        return -EINVAL;
-    case PCDSP_ERR_PLAYBACK_DEVICE:
-        return -ENODEV;
-    case PCDSP_ERR_PROTOCOL:
-        return -EPROTO;
-    case PCDSP_ERR_INTERNAL:
-    case PCDSP_ERR_OK:
-    default:
-        return -EIO;
-    }
-}
-
 /* -----------------------------------------------------------------------
  * ioplug callbacks
  * ---------------------------------------------------------------------- */
@@ -273,12 +272,19 @@ static int pcdsp_start(snd_pcm_ioplug_t *io)
 
     /* Start worker if not already running. */
     if (!atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
+        /* Reap a worker that exited on its own (for example after EPIPE). */
+        if (pcdsp->worker_joinable) {
+            pthread_join(pcdsp->worker, NULL);
+            pcdsp->worker_joinable = false;
+        }
+
         atomic_store_explicit(&pcdsp->worker_running, true, memory_order_release);
         int thread_rc = pthread_create(&pcdsp->worker, NULL, worker_thread, pcdsp);
         if (thread_rc != 0) {
             atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
             return -thread_rc;
         }
+        pcdsp->worker_joinable = true;
     }
 
     return 0;
@@ -292,25 +298,16 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
     if (pcdsp->conn.fd >= 0)
         pcdsp_ipc_send_stop(&pcdsp->conn);
 
+    /* Stop/reap the worker before closing pipe_fd.  The worker uses bounded
+     * non-blocking pipe writes, so it observes worker_running=false promptly. */
+    pcdsp_stop_worker(pcdsp);
+    pcdsp_timer_stop(&pcdsp->timer);
+
     /* Gate 8: close the pipe write-end so CamillaDSP sees EOF once Rust
      * also closes its copy. */
     if (pcdsp->pipe_fd >= 0) {
         close(pcdsp->pipe_fd);
         pcdsp->pipe_fd = -1;
-    }
-
-    /* Only join if the worker was actually started. */
-    bool was_running = atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire);
-
-    atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
-    atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
-    pcdsp_timer_stop(&pcdsp->timer);
-
-    if (was_running) {
-        /* Wake the worker so it sees the flag. */
-        pcdsp_signal_event_fd(pcdsp->event_fd);
-
-        pthread_join(pcdsp->worker, NULL);
     }
 
     /* Drain eventfd. */
@@ -391,6 +388,10 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
     pcdsp->period_size = io->period_size;
     pcdsp->buffer_size = io->buffer_size;
 
+    /* Defensive renegotiation path: no worker may reference the old ring
+     * buffer or pipe while hw_params replaces stream resources. */
+    pcdsp_stop_worker(pcdsp);
+
     /* (Re-)allocate the ring buffer.  capacity must be a power of two and
      * large enough to hold at least buffer_size frames. */
     size_t rb_cap = 1;
@@ -447,13 +448,47 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
      * SCM_RIGHTS.  The controller sends it alongside the READY message. */
     ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, &pcdsp->pipe_fd, &err_code);
     if (ipc_rc < 0) {
-        if (ipc_rc == -EPROTO)
+        int result = ipc_rc;
+        if (ipc_rc == -EPROTO && err_code != PCDSP_ERR_OK) {
             SNDERR("picoredsp: controller rejected stream (error code %d)", (int)err_code);
-        else
+            switch (err_code) {
+            case PCDSP_ERR_CONFIG:
+                result = -EINVAL;
+                break;
+            case PCDSP_ERR_PLAYBACK_DEVICE:
+                result = -ENODEV;
+                break;
+            case PCDSP_ERR_PROTOCOL:
+                result = -EPROTO;
+                break;
+            case PCDSP_ERR_INTERNAL:
+                result = -EIO;
+                break;
+            case PCDSP_ERR_OK:
+            default:
+                result = -EPROTO;
+                break;
+            }
+        } else {
             SNDERR("picoredsp: failed waiting for READY (%d): %s",
                    -ipc_rc, strerror(-ipc_rc));
+        }
         pcdsp_ipc_close(&pcdsp->conn);
-        return pcdsp_map_ready_error(ipc_rc, err_code);
+        return result;
+    }
+
+    /* A blocking pipe write can hang shutdown indefinitely if CamillaDSP
+     * remains alive but stops consuming stdin.  Keep the worker fd
+     * non-blocking; pcm_worker.c polls in bounded intervals and observes the
+     * atomic worker_running flag. */
+    int pipe_flags = fcntl(pcdsp->pipe_fd, F_GETFL, 0);
+    if (pipe_flags < 0 ||
+        fcntl(pcdsp->pipe_fd, F_SETFL, pipe_flags | O_NONBLOCK) < 0) {
+        int e = errno;
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+        pcdsp_ipc_close(&pcdsp->conn);
+        return -e;
     }
 
     return 0;
@@ -462,6 +497,7 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 static int pcdsp_hw_free(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+    pcdsp_stop_worker(pcdsp);
     pcdsp_rb_free(&pcdsp->rb);
     /* Release stream resources acquired by hw_params().  If the application
      * calls hw_free() without a preceding stop/drain (e.g. to renegotiate
@@ -512,11 +548,12 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     }
 
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
-    {
-        int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-        if (serr != 0)
-            return serr;
-    }
+
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0)
+        return serr;
+    if (pcdsp_rb_read_avail(&pcdsp->rb) > 0)
+        return -EPIPE;
     return 0;
 }
 
@@ -535,28 +572,18 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* Close the pipe write-end BEFORE joining the worker thread.
-     * If the worker is blocked inside write(pipe_fd, ...) because CamillaDSP
-     * stopped consuming stdin, closing the fd here causes write() to return
-     * EBADF, allowing the worker to detect the error and exit cleanly.
-     * Doing the close after the join would deadlock. */
+    /* Stop and reap before changing pipe_fd; the worker's bounded non-blocking
+     * write loop observes worker_running=false without relying on close(2) to
+     * interrupt another thread's system call. */
+    pcdsp_stop_worker(pcdsp);
+
     if (pcdsp->pipe_fd >= 0) {
         close(pcdsp->pipe_fd);
         pcdsp->pipe_fd = -1;
     }
 
-    /* Ensure the worker is stopped. */
-    if (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
-        atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
-        pcdsp_signal_event_fd(pcdsp->event_fd);
-        pthread_join(pcdsp->worker, NULL);
-    }
-
     pcdsp_rb_free(&pcdsp->rb);
     pcdsp_ipc_close(&pcdsp->conn);
-
-    /* pipe_fd is already closed and set to -1 above, before the worker join.
-     * The field is not touched again, so no second close is needed here. */
 
     if (pcdsp->event_fd >= 0) {
         close(pcdsp->event_fd);
@@ -692,6 +719,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     pcdsp->pipe_fd                 = -1;
 
     atomic_init(&pcdsp->worker_running, false);
+    pcdsp->worker_joinable = false;
     atomic_init(&pcdsp->paused,         false);
     atomic_init(&pcdsp->draining,       false);
     atomic_init(&pcdsp->stream_error,   0);
@@ -717,9 +745,17 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
         SNDERR("picoredsp: unknown config key '%s'", id);
     }
 
-    /* Store socket path for IPC (Gate 7+). */
-    if (socket_path)
-        strncpy(pcdsp->socket_path, socket_path, sizeof(pcdsp->socket_path) - 1);
+    /* Store socket path for IPC (Gate 7+).  Reject overlong paths instead of
+     * silently truncating them to a different AF_UNIX endpoint. */
+    if (socket_path) {
+        size_t socket_path_len = strlen(socket_path);
+        if (socket_path_len >= sizeof(pcdsp->socket_path)) {
+            close(pcdsp->event_fd);
+            free(pcdsp);
+            return -ENAMETOOLONG;
+        }
+        memcpy(pcdsp->socket_path, socket_path, socket_path_len + 1);
+    }
     /* else socket_path[0] == '\0' (zero-initialised by calloc) → use default */
 
     pcdsp->io.version      = SND_PCM_IOPLUG_VERSION;

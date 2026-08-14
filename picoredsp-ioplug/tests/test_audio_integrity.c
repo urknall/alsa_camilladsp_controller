@@ -143,7 +143,7 @@ static int verify_bit_transparent(size_t      frame_bytes,
     fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
 
     /* Drain through the pipe-drain helper (the same code path as the worker) */
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], nframes, frame_bytes);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], nframes, frame_bytes, NULL);
     if (got != (ssize_t)nframes) {
         printf("FAIL [%s]: drain returned %zd expected %zu\n",
                label, got, nframes);
@@ -367,7 +367,7 @@ TEST(large_transfer_multiple_chunks_bit_transparent)
     int flags = fcntl(pipefd[0], F_GETFL, 0);
     fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], nframes, frame_bytes);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], nframes, frame_bytes, NULL);
     CHECK(got == (ssize_t)nframes);
 
     uint8_t *dst = malloc(nframes * frame_bytes);

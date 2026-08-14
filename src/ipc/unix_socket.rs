@@ -97,7 +97,10 @@ impl IpcServer {
 
 impl Drop for IpcServer {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.socket_path);
+        // The socket path can be replaced while the server is alive.  Never
+        // unlink a regular file or symlink that happens to occupy the path at
+        // shutdown; apply the same socket-only guard used before bind().
+        let _ = remove_stale_socket_file(&self.socket_path);
     }
 }
 
@@ -429,6 +432,21 @@ mod tests {
             .is_symlink());
         fs::remove_file(path).unwrap();
         fs::remove_file(target).unwrap();
+    }
+
+    #[test]
+    fn drop_does_not_remove_replacement_regular_file() {
+        let path = test_socket_path("drop-replacement");
+        let server = IpcServer::bind(&path, IpcServerConfig::default()).unwrap();
+
+        // Simulate an external actor replacing the socket pathname while the
+        // listener still holds the original socket inode open.
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+
+        drop(server);
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

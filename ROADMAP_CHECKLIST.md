@@ -228,12 +228,12 @@ Unit/integration tests:
 - [x] CamillaDSP early exit / delayed startup / DAC unavailable
 
 CI requirements:
-- [ ] ASAN enabled
-- [ ] UBSAN enabled
-- [ ] TSAN enabled where practical
-- [x] clang and gcc warnings enabled
-- [ ] Static analysis enabled
-- [x] Compiled with `-Wall -Wextra -Wpedantic -Werror` for all supported configurations
+- [ ] ASAN run in CI (CMake `ASAN` option exists; core suites have been validated manually)
+- [ ] UBSAN run in CI (CMake `UBSAN` option exists; core suites have been validated manually)
+- [ ] TSAN run in CI where practical (CMake `TSAN` option exists; core suites have been validated manually)
+- [x] clang and gcc warnings enabled in the native ioplug CTest job
+- [ ] Static analysis run in CI (CMake `CLANG_TIDY` option exists but is not wired into the workflow)
+- [x] Compiled with `-Wall -Wextra -Wpedantic -Werror` for the native GCC/Clang test configurations
 
 **Milestone M11: Run audio-integrity tests**
 

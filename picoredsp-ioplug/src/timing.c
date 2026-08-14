@@ -46,7 +46,7 @@ void pcdsp_timer_init(pcdsp_stream_timer_t *t, unsigned int rate)
 
 void pcdsp_timer_start(pcdsp_stream_timer_t *t)
 {
-    uint64_t now;
+    uint64_t now = 0;
     if (pcdsp_clock_now(&now) == 0) {
         t->start_ns = now;
         t->running  = 1;
@@ -70,7 +70,7 @@ uint64_t pcdsp_timer_elapsed_frames(const pcdsp_stream_timer_t *t)
     if (!t->running || t->rate == 0)
         return 0;
 
-    uint64_t now;
+    uint64_t now = 0;
     if (pcdsp_clock_now(&now) < 0)
         return 0;
 

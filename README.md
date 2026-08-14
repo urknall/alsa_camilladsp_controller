@@ -90,10 +90,10 @@ chmod +x install_picoredsp.sh
 
 The installer performs these steps in order:
 
-1. Tests `snd-aloop` availability.
+1. For the `aloop` backend, tests `snd-aloop` availability (the direct `ioplug` backend skips this preflight).
 2. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
 3. Downloads and SHA256-verifies the pre-built `libasound_module_pcm_picoredsp.so` ALSA module from GitHub Releases.
-4. Probes the snd-aloop ALSA controls with the downloaded controller binary.
+4. For the `aloop` backend, probes the snd-aloop ALSA controls with the downloaded controller binary.
 5. Lets you select the backend (`aloop` by default, `ioplug` optional/experimental).
 6. Detects the physical DAC selected in Squeezelite Settings.
 7. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.

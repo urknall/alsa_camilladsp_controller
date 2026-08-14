@@ -46,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <time.h>
 #include <unistd.h>
 
 /* -----------------------------------------------------------------------
@@ -99,6 +100,24 @@ static void fill_rb(pcdsp_ringbuffer_t *rb, size_t nframes, uint8_t value)
     }
 }
 
+
+typedef struct drain_thread_args {
+    pcdsp_ringbuffer_t *rb;
+    int                 pipe_fd;
+    size_t              period_frames;
+    size_t              frame_bytes;
+    _Atomic(bool)      *keep_running;
+    ssize_t             result;
+} drain_thread_args_t;
+
+static void *drain_thread_main(void *arg)
+{
+    drain_thread_args_t *a = arg;
+    a->result = pcdsp_drain_period_to_pipe(
+        a->rb, a->pipe_fd, a->period_frames, a->frame_bytes, a->keep_running);
+    return NULL;
+}
+
 /* -----------------------------------------------------------------------
  * pcdsp_drain_period_to_pipe tests
  * ---------------------------------------------------------------------- */
@@ -121,7 +140,7 @@ TEST(drain_period_writes_correct_bytes_to_pipe)
     int pipefd[2];
     CHECK(pipe(pipefd) == 0);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(got == (ssize_t)period);
 
     /* Read back from the read end and compare */
@@ -151,7 +170,7 @@ TEST(drain_period_handles_epipe_and_returns_negative_errno)
     /* Suppress SIGPIPE so we get -EPIPE instead of signal death */
     signal(SIGPIPE, SIG_IGN);
 
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc == -EPIPE);
 
     signal(SIGPIPE, SIG_DFL);
@@ -175,7 +194,7 @@ TEST(drain_period_partial_ring_buffer_writes_available_frames)
     int pipefd[2];
     CHECK(pipe(pipefd) == 0);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(got == 3);
 
     /* Drain pipe to avoid blocking */
@@ -200,10 +219,75 @@ TEST(drain_period_returns_zero_on_empty_ring_buffer)
     int pipefd[2];
     CHECK(pipe(pipefd) == 0);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(got == 0);
 
     close(pipefd[0]);
+    close(pipefd[1]);
+    pcdsp_rb_free(&rb);
+}
+
+TEST(drain_period_cancellation_unblocks_full_pipe)
+{
+    /*
+     * Regression: closing a pipe fd in another thread does not reliably
+     * interrupt a blocked write on Linux.  Production therefore uses an
+     * O_NONBLOCK fd plus an atomic run flag.  Fill the pipe completely,
+     * start a drain, then cancel it and require the thread to exit promptly.
+     */
+    const size_t period = 8;
+    const size_t fb     = 4;
+
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 16, (uint32_t)fb) == 0);
+    fill_rb(&rb, period, 0x5A);
+
+    int pipefd[2];
+    CHECK(pipe2(pipefd, O_NONBLOCK | O_CLOEXEC) == 0);
+
+    uint8_t filler[4096];
+    memset(filler, 0, sizeof(filler));
+    while (write(pipefd[1], filler, sizeof(filler)) > 0)
+        ;
+    CHECK(errno == EAGAIN || errno == EWOULDBLOCK);
+
+    _Atomic(bool) running = true;
+    drain_thread_args_t args = {
+        .rb = &rb,
+        .pipe_fd = pipefd[1],
+        .period_frames = period,
+        .frame_bytes = fb,
+        .keep_running = &running,
+        .result = -9999,
+    };
+
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, drain_thread_main, &args) == 0);
+
+    struct timespec brief = { .tv_nsec = 50000000 }; /* 50 ms */
+    nanosleep(&brief, NULL);
+    atomic_store_explicit(&running, false, memory_order_release);
+
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += 1;
+    int join_rc = pthread_timedjoin_np(thread, NULL, &deadline);
+
+    if (join_rc != 0) {
+        /* Ensure a broken implementation cannot leave this test process
+         * permanently blocked while still reporting the failure. */
+        signal(SIGPIPE, SIG_IGN);
+        close(pipefd[0]);
+        pthread_join(thread, NULL);
+        signal(SIGPIPE, SIG_DFL);
+        pipefd[0] = -1;
+    }
+
+    CHECK(join_rc == 0);
+    CHECK(args.result >= 0);
+
+    if (pipefd[0] >= 0)
+        close(pipefd[0]);
     close(pipefd[1]);
     pcdsp_rb_free(&rb);
 }
@@ -242,7 +326,7 @@ TEST(drain_period_wraps_around_ring_buffer_boundary)
     CHECK(pipe(pipefd) == 0);
 
     /* Drain 8 frames (the full buffer) */
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], 8, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], 8, fb, NULL);
     CHECK(got == 8);
 
     /* Read back and verify */
@@ -348,7 +432,7 @@ TEST(period_wrap_across_ring_buffer_boundary)
         CHECK(pcdsp_rb_write(&rb, src, period) == period);
 
         /* Drain it into the pipe */
-        ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+        ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
         CHECK(got == (ssize_t)period);
         CHECK(pcdsp_rb_read_avail(&rb) == 0);
 
@@ -394,7 +478,7 @@ TEST(buffer_size_not_divisible_by_period_partial_final_period)
 
     /* Drain 3 full periods */
     for (int p = 0; p < 3; p++) {
-        ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+        ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
         CHECK(got == (ssize_t)period);
         uint8_t tmp[period * fb];
         ssize_t n = read(pipefd[0], tmp, sizeof(tmp));
@@ -438,7 +522,7 @@ TEST(epipe_on_read_end_close_returns_minus_epipe)
     close(pipefd[0]); /* simulate CamillaDSP gone */
 
     signal(SIGPIPE, SIG_IGN);
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc == -EPIPE);
     signal(SIGPIPE, SIG_DFL);
 
@@ -474,7 +558,7 @@ TEST(worker_survives_eintr_and_delivers_all_data)
     int pipefd[2];
     CHECK(pipe(pipefd) == 0);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(got == (ssize_t)period);
 
     uint8_t dst[32 * 4];
@@ -579,7 +663,7 @@ TEST(failure_rust_daemon_restart_ipc_send_stop_fails_gracefully)
     CHECK(pipe(pipefd) == 0);
 
     /* Data path still works: drain frames into the pipe */
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(got == (ssize_t)period);
 
     /* Simulate plugin closing its pipe_fd (pcdsp_stop()) */
@@ -619,7 +703,7 @@ TEST(failure_camilladsp_early_exit_detected_via_epipe)
     close(pipefd[0]);
 
     signal(SIGPIPE, SIG_IGN);
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb);
+    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc < 0); /* must be a negative errno, not a frame count */
     signal(SIGPIPE, SIG_DFL);
 
@@ -663,7 +747,7 @@ TEST(drain_period_max_frame_bytes_stereo_s32le_no_overflow)
     int pipefd[2];
     CHECK(pipe(pipefd) == 0);
 
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, frame_bytes);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, frame_bytes, NULL);
     CHECK(got == (ssize_t)period);
     CHECK(pcdsp_rb_read_avail(&rb) == 0);
 
@@ -714,7 +798,7 @@ TEST(drain_period_partial_final_period_via_drain_frames)
     CHECK(pipe(pipefd) == 0);
 
     /* Pass remaining (< period) as the frame count — simulates draining mode. */
-    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], remaining, frame_bytes);
+    ssize_t got = pcdsp_drain_period_to_pipe(&rb, pipefd[1], remaining, frame_bytes, NULL);
     CHECK(got == (ssize_t)remaining);
     CHECK(pcdsp_rb_read_avail(&rb) == 0);
 
@@ -745,6 +829,7 @@ int main(void)
     RUN(drain_period_partial_ring_buffer_writes_available_frames);
     RUN(drain_period_returns_zero_on_empty_ring_buffer);
     RUN(drain_period_wraps_around_ring_buffer_boundary);
+    RUN(drain_period_cancellation_unblocks_full_pipe);
 
     /* pcdsp_drain_period_null_sink */
     RUN(null_sink_drops_period_frames_from_ring_buffer);

@@ -46,6 +46,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -155,32 +156,27 @@ typedef enum {
 
 typedef struct {
     char      path[108];      /* socket path (unique per test) */
-    int       listen_fd;      /* server-side listening socket */
-    int       accepted_fd;    /* accepted client fd (set by thread) */
-    srv_cmd_t cmd;
-    /* Set by thread before it exits */
-    int       thread_errno;
-    /* True if the server read the client HELLO successfully */
-    volatile int read_client_hello;
+    int          listen_fd;      /* server-side listening socket */
+    _Atomic(int) accepted_fd;    /* accepted client fd (set by thread) */
+    srv_cmd_t    cmd;
+    pthread_t    thread;
+    bool         thread_started;
 } mock_server_t;
 
 static void *mock_server_thread(void *arg)
 {
     mock_server_t *s = arg;
-    s->accepted_fd = -1;
-    s->thread_errno = 0;
-    s->read_client_hello = 0;
+    atomic_store_explicit(&s->accepted_fd, -1, memory_order_release);
 
     /* Accept one connection. */
     int cfd = accept(s->listen_fd, NULL, NULL);
-    if (cfd < 0) {
-        s->thread_errno = errno;
+    if (cfd < 0)
         return NULL;
-    }
-    s->accepted_fd = cfd;
+    atomic_store_explicit(&s->accepted_fd, cfd, memory_order_release);
 
     if (s->cmd == SRV_CLOSE_IMMEDIATELY) {
         close(cfd);
+        atomic_store_explicit(&s->accepted_fd, -1, memory_order_release);
         return NULL;
     }
 
@@ -197,8 +193,6 @@ static void *mock_server_thread(void *arg)
             goto done;
         got += (size_t)n;
     }
-    s->read_client_hello = 1;
-
     if (s->cmd == SRV_NEVER_REPLY) {
         /* Sleep long enough for the client timeout to fire, then close. */
         struct timespec ts = { .tv_sec = 3, .tv_nsec = 0 };
@@ -245,10 +239,9 @@ static int start_mock_server(mock_server_t *s, srv_cmd_t cmd)
 
     snprintf(s->path, sizeof(s->path),
              "/tmp/test_ipc_%d_%d.sock", (int)getpid(), id);
-    s->cmd          = cmd;
-    s->accepted_fd  = -1;
-    s->thread_errno = 0;
-    s->read_client_hello = 0;
+    s->cmd = cmd;
+    atomic_init(&s->accepted_fd, -1);
+    s->thread_started = false;
 
     /* Remove stale socket. */
     unlink(s->path);
@@ -269,25 +262,31 @@ static int start_mock_server(mock_server_t *s, srv_cmd_t cmd)
         return -1;
     }
 
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, mock_server_thread, s) != 0) {
+    if (pthread_create(&s->thread, NULL, mock_server_thread, s) != 0) {
         close(s->listen_fd);
         return -1;
     }
-    pthread_detach(tid);
+    s->thread_started = true;
     return 0;
 }
 
 static void stop_mock_server(mock_server_t *s)
 {
+    /* Join before the stack-backed mock_server_t goes out of scope.  The old
+     * detached-thread helper could keep accessing `s` after a test returned,
+     * and accepted_fd was concurrently read/written without synchronization. */
+    if (s->thread_started) {
+        pthread_join(s->thread, NULL);
+        s->thread_started = false;
+    }
     if (s->listen_fd >= 0) {
         close(s->listen_fd);
         s->listen_fd = -1;
     }
-    if (s->accepted_fd >= 0) {
-        close(s->accepted_fd);
-        s->accepted_fd = -1;
-    }
+    int accepted_fd = atomic_exchange_explicit(&s->accepted_fd, -1,
+                                               memory_order_acq_rel);
+    if (accepted_fd >= 0)
+        close(accepted_fd);
     unlink(s->path);
 }
 
@@ -301,6 +300,19 @@ static void wait_for_server(void)
 /* -----------------------------------------------------------------------
  * Connection tests
  * ---------------------------------------------------------------------- */
+
+TEST(connect_rejects_overlong_socket_path)
+{
+    char path[256];
+    memset(path, 'x', sizeof(path));
+    path[0] = '/';
+    path[sizeof(path) - 1] = '\0';
+
+    pcdsp_ipc_conn_t conn;
+    int rc = pcdsp_ipc_connect(&conn, path);
+    CHECK(rc == -ENAMETOOLONG);
+    CHECK(conn.fd == -1);
+}
 
 TEST(connect_fails_when_controller_absent)
 {
@@ -503,6 +515,50 @@ TEST(recv_ready_succeeds_on_ready_message)
 
     int rc = pcdsp_ipc_recv_ready(&conn, NULL, NULL);
     CHECK(rc == 0);
+
+    close(server_fd);
+    pcdsp_ipc_close(&conn);
+}
+
+TEST(recv_ready_rejects_error_with_wrong_version)
+{
+    pcdsp_ipc_conn_t conn;
+    int server_fd;
+    CHECK(make_pair(&conn, &server_fd) == 0);
+
+    uint8_t err[3] = {
+        PCDSP_MSG_ERROR,
+        (uint8_t)(PCDSP_IPC_PROTOCOL_VERSION + 1),
+        (uint8_t)PCDSP_ERR_CONFIG,
+    };
+    CHECK(write_all(server_fd, err, sizeof(err)) == 0);
+
+    pcdsp_error_code_t code = PCDSP_ERR_OK;
+    int rc = pcdsp_ipc_recv_ready(&conn, NULL, &code);
+    CHECK(rc == -EPROTO);
+    CHECK(code == PCDSP_ERR_OK);
+
+    close(server_fd);
+    pcdsp_ipc_close(&conn);
+}
+
+TEST(recv_ready_rejects_unknown_error_code)
+{
+    pcdsp_ipc_conn_t conn;
+    int server_fd;
+    CHECK(make_pair(&conn, &server_fd) == 0);
+
+    uint8_t err[3] = {
+        PCDSP_MSG_ERROR,
+        PCDSP_IPC_PROTOCOL_VERSION,
+        0xffu,
+    };
+    CHECK(write_all(server_fd, err, sizeof(err)) == 0);
+
+    pcdsp_error_code_t code = PCDSP_ERR_OK;
+    int rc = pcdsp_ipc_recv_ready(&conn, NULL, &code);
+    CHECK(rc == -EPROTO);
+    CHECK(code == PCDSP_ERR_OK);
 
     close(server_fd);
     pcdsp_ipc_close(&conn);
@@ -909,11 +965,11 @@ TEST(full_ipc_flow_connect_start_ready_stop)
 
     /* Server side: consume the 8-byte START, then send READY. */
     uint8_t start_buf[8];
-    CHECK(read_all_timeout(srv.accepted_fd, start_buf, sizeof(start_buf)) == 0);
+    CHECK(read_all_timeout(atomic_load_explicit(&srv.accepted_fd, memory_order_acquire), start_buf, sizeof(start_buf)) == 0);
     CHECK(start_buf[0] == PCDSP_MSG_START);
 
     uint8_t ready[2] = { PCDSP_MSG_READY, PCDSP_IPC_PROTOCOL_VERSION };
-    CHECK(write_all(srv.accepted_fd, ready, sizeof(ready)) == 0);
+    CHECK(write_all(atomic_load_explicit(&srv.accepted_fd, memory_order_acquire), ready, sizeof(ready)) == 0);
 
     /* Client: receive READY. */
     rc = pcdsp_ipc_recv_ready(&conn, NULL, NULL);
@@ -925,7 +981,7 @@ TEST(full_ipc_flow_connect_start_ready_stop)
 
     /* Server side: consume the 2-byte STOP. */
     uint8_t stop_buf[2];
-    CHECK(read_all_timeout(srv.accepted_fd, stop_buf, sizeof(stop_buf)) == 0);
+    CHECK(read_all_timeout(atomic_load_explicit(&srv.accepted_fd, memory_order_acquire), stop_buf, sizeof(stop_buf)) == 0);
     CHECK(stop_buf[0] == PCDSP_MSG_STOP);
 
     pcdsp_ipc_close(&conn);
@@ -941,6 +997,7 @@ int main(void)
     printf("test_ipc\n");
 
     printf("\n[connection tests]\n");
+    RUN(connect_rejects_overlong_socket_path);
     RUN(connect_fails_when_controller_absent);
     RUN(connect_fails_when_server_closes_before_hello);
     RUN(connect_fails_when_server_never_replies);
@@ -959,6 +1016,8 @@ int main(void)
 
     printf("\n[protocol tests — recv_ready]\n");
     RUN(recv_ready_succeeds_on_ready_message);
+    RUN(recv_ready_rejects_error_with_wrong_version);
+    RUN(recv_ready_rejects_unknown_error_code);
     RUN(recv_ready_returns_error_code_on_error_config);
     RUN(recv_ready_returns_error_code_on_error_playback_device);
     RUN(recv_ready_returns_error_code_on_error_internal);
