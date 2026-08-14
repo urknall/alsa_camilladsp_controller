@@ -264,6 +264,10 @@ CI requirements:
 **Milestone M12: Run A/B latency and performance benchmarks**
 
 - [x] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
+- [x] Automated benchmark harness created and integrated into CI:
+  - [x] C microbenchmark harness (`picoredsp-ioplug/bench/`) covering ring buffer, timing, PCM worker
+  - [x] Rust benchmark runner (`benches/picoredsp_bench.rs`) covering YAML serialisation / plan validation
+  - [x] CI jobs `ioplug_bench` and `rust_bench` build and run benchmarks on every push
 - [ ] All metrics measured for both `aloop` and `ioplug`:
   - [ ] Playback start latency
   - [ ] 44.1 → 48 kHz transition time
