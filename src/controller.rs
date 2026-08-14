@@ -1,6 +1,7 @@
 use crate::args::Args;
 use crate::backend::aloop::AloopBackend;
 use crate::backend::ioplug::IoplugBackend;
+use crate::backend::ControllerBackend;
 use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
 use crate::camilladsp::supervisor::StdinSupervisor;
 use crate::camilladsp::websocket::CamillaWs;
