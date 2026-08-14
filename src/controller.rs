@@ -12,6 +12,7 @@ use crate::core::logging::{log, LogLevel};
 use crate::core::recovery::{ConfigFingerprint, RetryState};
 pub use crate::core::state_machine::Controller;
 use crate::ipc::protocol::ErrorCode;
+use std::fs;
 use std::thread;
 use std::time::Duration;
 
@@ -84,7 +85,20 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
     let log_level = args.log_level;
 
     let mut backend = IoplugBackend::new(&socket_path, log_level)?;
-    let mut supervisor = StdinSupervisor::new(&camilladsp_binary, &adapt_path, log_level);
+    let mut supervisor = {
+        let mut cdsp_extra_args = vec![
+            "--port".to_owned(),
+            args.port.to_string(),
+            "--address".to_owned(),
+            args.host.clone(),
+        ];
+        if let Some(sf) = &args.cdsp_statefile {
+            cdsp_extra_args.push("--statefile".to_owned());
+            cdsp_extra_args.push(sf.to_string_lossy().into_owned());
+        }
+        StdinSupervisor::new(&camilladsp_binary, &adapt_path, log_level)
+            .with_cdsp_args(cdsp_extra_args)
+    };
 
     let mut retry = RetryState::new();
     let mut last_fingerprint = ConfigFingerprint::sample(&adapt_path);
@@ -164,11 +178,28 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             ),
         );
 
-        // ── Adapt the baseline config ──────────────────────────────────
+        // ── Adapt the baseline config and write it to disk ────────────
+        // adapt_config_for_backend is a pure function — it returns the
+        // adapted YAML string without modifying the file.  For the ioplug
+        // backend CamillaDSP is spawned from a file on disk, so the adapted
+        // YAML must be written back to adapt_path before the spawn.
         match adapt_config_for_backend(&adapt_path, &wave, RuntimeBackend::Ioplug) {
-            Ok(_adapted) => {
-                // Refresh fingerprint after a successful write so a
-                // self-induced mtime bump does not look like a user change.
+            Ok(adapted) => {
+                if let Err(err) = fs::write(&adapt_path, &adapted) {
+                    log(
+                        LogLevel::Error,
+                        log_level,
+                        format!(
+                            "ioplug: failed to write adapted config to '{}': {err}",
+                            adapt_path.display()
+                        ),
+                    );
+                    retry.latch();
+                    backend.send_error_to_plugin(ErrorCode::Config);
+                    continue;
+                }
+                // Refresh fingerprint after the write so the self-induced
+                // mtime bump is not mistaken for a user config change.
                 last_fingerprint = ConfigFingerprint::sample(&adapt_path);
             }
             Err(err) => {

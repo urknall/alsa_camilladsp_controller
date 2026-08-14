@@ -35,6 +35,9 @@ pub struct StdinSupervisor {
     binary_path: PathBuf,
     /// Path to the runtime-adapted YAML config (symlink or direct path).
     adapt_path: PathBuf,
+    /// Extra command-line arguments forwarded to CamillaDSP on every spawn
+    /// (e.g. `--port 1234 --address 127.0.0.1 --statefile /…/statefile.yml`).
+    cdsp_extra_args: Vec<String>,
     /// The currently active CamillaDSP process, if any.
     active: Option<StdinPipeProcess>,
     log_level: LogLevel,
@@ -54,9 +57,24 @@ impl StdinSupervisor {
         Self {
             binary_path: binary_path.as_ref().to_path_buf(),
             adapt_path: adapt_path.as_ref().to_path_buf(),
+            cdsp_extra_args: Vec::new(),
             active: None,
             log_level,
         }
+    }
+
+    /// Attach extra CamillaDSP command-line arguments to every spawn.
+    ///
+    /// Call this once after `new` before the first `start_stream`.  The
+    /// arguments are forwarded verbatim after the config-path positional
+    /// argument, e.g.:
+    ///
+    /// ```text
+    /// camilladsp <config> --port 1234 --address 127.0.0.1 --statefile /…
+    /// ```
+    pub fn with_cdsp_args(mut self, args: Vec<String>) -> Self {
+        self.cdsp_extra_args = args;
+        self
     }
 
     /// Spawn a new CamillaDSP process for the current stream.
@@ -83,7 +101,7 @@ impl StdinSupervisor {
             ),
         );
 
-        let proc = StdinPipeProcess::spawn(&self.binary_path, &config_path)?;
+        let proc = StdinPipeProcess::spawn(&self.binary_path, &config_path, &self.cdsp_extra_args)?;
         let write_fd = proc.write_fd_raw();
 
         log(

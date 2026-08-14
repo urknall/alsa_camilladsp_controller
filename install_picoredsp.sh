@@ -1050,6 +1050,34 @@ fi
 
 rm -f "${RUST_ADAPTED_TEST}"
 
+# Also validate the ioplug adaptation path when installing with the ioplug
+# backend.  This ensures capture.type: Stdin is injected correctly and that
+# the playback device is preserved, catching bugs that the aloop-only check
+# above would miss.
+if [ "${INSTALL_BACKEND}" = "ioplug" ]; then
+    RUST_IOPLUG_ADAPTED_TEST="/tmp/picoredsp-adapted-ioplug.$$.yml"
+    "${RUST_RUNTIME_BIN}" \
+        --adapt-check \
+        --backend ioplug \
+        --adapt "${STAGE_BYPASS_CONFIG}" \
+        --rate 48000 \
+        --format S32_LE \
+        --channels 2 \
+        > "${RUST_IOPLUG_ADAPTED_TEST}"
+
+    if ! grep -Eq '^[[:space:]]*type:[[:space:]]*Stdin[[:space:]]*$' "${RUST_IOPLUG_ADAPTED_TEST}"; then
+        echo "ERROR: ioplug adaptation did not inject capture.type: Stdin."
+        exit 1
+    fi
+
+    if [ "$("${RUST_RUNTIME_BIN}" --get-playback-device "${RUST_IOPLUG_ADAPTED_TEST}" 2>/dev/null || true)" != "${PLAYBACK_DEVICE}" ]; then
+        echo "ERROR: ioplug adaptation did not preserve the selected playback device."
+        exit 1
+    fi
+
+    rm -f "${RUST_IOPLUG_ADAPTED_TEST}"
+fi
+
 echo "picoredsp-controller ${CONTROLLER_RELEASE_TAG} download and ALSA probe OK."
 
 ###############################################################################
@@ -1202,6 +1230,17 @@ if [ ! -d "${GUI_CONFIG_DIR}" ]; then
     exit 1
 fi
 
+# CamillaGUI validates every config it loads against supported_capture_types.
+# For the ioplug backend the controller injects capture.type: Stdin at
+# runtime, so Stdin must be listed here; otherwise CamillaGUI immediately
+# rejects the adapted config with "'Stdin' is not one of ['Alsa']".
+if [ "${INSTALL_BACKEND}" = "ioplug" ]; then
+    _CAMILLAGUI_CAPTURE_TYPES='  - "Alsa"
+  - "Stdin"'
+else
+    _CAMILLAGUI_CAPTURE_TYPES='  - "Alsa"'
+fi
+
 cat > "${GUI_CONFIG_DIR}/camillagui.yml" <<EOF
 camilla_host: "127.0.0.1"
 camilla_port: 1234
@@ -1230,7 +1269,7 @@ on_set_active_config: "/usr/local/bin/picoredsp-sync-config"
 on_get_active_config: "readlink -f ${ACTIVE_CONFIG_LINK}"
 
 supported_capture_types:
-  - "Alsa"
+${_CAMILLAGUI_CAPTURE_TYPES}
 
 supported_playback_types:
   - "Alsa"
@@ -1694,6 +1733,9 @@ do
                 --socket-path /run/picoredsp/control.sock \
                 --camilladsp /usr/local/camilladsp \
                 --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
+                --host 127.0.0.1 \
+                --port 1234 \
+                --cdsp-statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml \
                 --log-level INFO
             ;;
         *)

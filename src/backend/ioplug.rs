@@ -301,9 +301,18 @@ impl ControllerBackend for IoplugBackend {
         Ok(self.current_snapshot().clone())
     }
 
-    /// Send READY to the plugin, releasing it to start PCM transfer.
+    /// Called by the `ControllerBackend` trait's generic `on_stream_ready` hook.
+    ///
+    /// For the ioplug backend this path is **not supported**: the plugin
+    /// requires a pipe write-end delivered via SCM_RIGHTS, so callers must
+    /// always use `send_ready_with_fd_to_plugin` directly.  Returning an
+    /// explicit error here prevents a future refactor from accidentally
+    /// activating the no-fd path through the generic trait.
     fn on_stream_ready(&mut self) -> AppResult<()> {
-        self.send_ready_to_plugin()
+        Err(app_error(
+            "ioplug: on_stream_ready is not supported; \
+             call send_ready_with_fd_to_plugin with a pipe fd instead",
+        ))
     }
 }
 
@@ -410,8 +419,52 @@ mod tests {
     }
 
     #[test]
-    fn on_stream_ready_sends_ready_to_plugin() {
-        let path = test_socket_path("ready");
+    fn on_stream_ready_returns_error_for_ioplug() {
+        // Bug 3 fix: on_stream_ready must NOT silently send plain READY for
+        // the ioplug backend.  The plugin expects a pipe write-end delivered
+        // via SCM_RIGHTS; only send_ready_with_fd_to_plugin provides that.
+        // on_stream_ready must return an explicit error so a future refactor
+        // cannot accidentally activate the plain-READY path through the
+        // generic ControllerBackend trait.
+        let path = test_socket_path("on-ready-error");
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+
+        let path2 = path.clone();
+        let client_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&path2);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 44_100,
+                        format: 2,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            // Keep the socket open so the backend doesn't see a disconnect.
+            std::thread::sleep(Duration::from_millis(100));
+        });
+
+        loop {
+            if backend.poll_event(200).unwrap().is_some() {
+                break;
+            }
+        }
+        let err = backend.on_stream_ready().unwrap_err();
+        assert!(
+            err.to_string().contains("send_ready_with_fd_to_plugin"),
+            "error should mention the correct API, got: {err}"
+        );
+
+        let _ = client_handle.join();
+    }
+
+    #[test]
+    fn send_ready_to_plugin_sends_ready_to_plugin() {
+        let path = test_socket_path("send-ready-direct");
         let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
 
         let path2 = path.clone();
@@ -441,7 +494,7 @@ mod tests {
                 break;
             }
         }
-        backend.on_stream_ready().unwrap();
+        backend.send_ready_to_plugin().unwrap();
 
         assert!(backend.current_snapshot().active);
 
@@ -480,7 +533,7 @@ mod tests {
                 break;
             }
         }
-        backend.on_stream_ready().unwrap();
+        backend.send_ready_to_plugin().unwrap();
 
         let event = loop {
             if let Some(e) = backend.poll_event(200).unwrap() {
@@ -523,7 +576,7 @@ mod tests {
                 break;
             }
         }
-        backend.on_stream_ready().unwrap();
+        backend.send_ready_to_plugin().unwrap();
 
         let event = loop {
             if let Some(e) = backend.poll_event(200).unwrap() {

@@ -61,7 +61,14 @@ impl StdinPipeProcess {
     /// `binary` is the path to the `camilladsp` executable.
     /// `config_path` is the pre-written runtime YAML config file to pass as
     /// the first positional argument.
-    pub fn spawn(binary: impl AsRef<Path>, config_path: impl AsRef<Path>) -> AppResult<Self> {
+    /// `extra_args` are appended verbatim after the config path (e.g.
+    /// `["--port", "1234", "--address", "127.0.0.1", "--statefile", "/…"]`).
+    /// Pass an empty slice when no extra arguments are needed (e.g. in tests).
+    pub fn spawn(
+        binary: impl AsRef<Path>,
+        config_path: impl AsRef<Path>,
+        extra_args: &[String],
+    ) -> AppResult<Self> {
         let binary = binary.as_ref();
         let config_path = config_path.as_ref();
 
@@ -86,8 +93,12 @@ impl StdinPipeProcess {
         // ownership of; Stdio::from_raw_fd takes ownership.
         let stdin_stdio = unsafe { Stdio::from_raw_fd(raw_read) };
 
-        let child = Command::new(binary)
-            .arg(config_path)
+        let mut cmd = Command::new(binary);
+        cmd.arg(config_path);
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+        let child = cmd
             .stdin(stdin_stdio)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -229,7 +240,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("picoredsp-test-stdin-pipe-cfg.txt");
         std::fs::write(&tmp, "dummy").unwrap();
 
-        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp).unwrap();
+        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp, &[]).unwrap();
         assert!(proc.write_fd_raw() >= 0);
 
         // Write some bytes through the write-end.
@@ -251,7 +262,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("picoredsp-test-stdin-pipe-cfg2.txt");
         std::fs::write(&tmp, "dummy").unwrap();
 
-        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp).unwrap();
+        let proc = StdinPipeProcess::spawn("/bin/cat", &tmp, &[]).unwrap();
         proc.shutdown(Duration::from_secs(5)).unwrap();
         // If shutdown returned Ok, the child exited cleanly.
     }
