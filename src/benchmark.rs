@@ -925,15 +925,21 @@ pub fn find_alsa_card_number(control_device: &str) -> Option<u32> {
 /// `/proc/asound/card<N>/pcm*/sub0/hw_params` while an ALSA stream is active.
 /// Returns `None` if the file is absent or the stream has not been opened yet.
 pub fn collect_pcm_transport_latency_ms(card_num: u32) -> Option<f64> {
+    // snd-aloop creates up to 8 subdevices per PCM stream by default.  The
+    // active subdevice index is not necessarily 0 (e.g. Squeezelite may open
+    // sub0 while CamillaDSP captures on sub1).  Scan sub0–sub7 for each PCM
+    // direction and return the first one that reports an active rate.
     for pcm in ["pcm0p", "pcm0c", "pcm1p", "pcm1c"] {
-        let path = format!("/proc/asound/card{card_num}/{pcm}/sub0/hw_params");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let (Some(period), Some(rate)) = (
-                parse_proc_hwparams_period_size(&text),
-                parse_proc_hwparams_rate(&text),
-            ) {
-                if rate > 0 {
-                    return Some(period as f64 / rate as f64 * 1000.0);
+        for sub in 0u32..8 {
+            let path = format!("/proc/asound/card{card_num}/{pcm}/sub{sub}/hw_params");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let (Some(period), Some(rate)) = (
+                    parse_proc_hwparams_period_size(&text),
+                    parse_proc_hwparams_rate(&text),
+                ) {
+                    if rate > 0 {
+                        return Some(period as f64 / rate as f64 * 1000.0);
+                    }
                 }
             }
         }
@@ -984,6 +990,11 @@ fn collect_cdsp_version(host: &str, port: u16) -> String {
 /// long it takes for the loopback HCTL to report `active = true` (start
 /// latency) and `active = false` after the process is killed (stop latency).
 ///
+/// If another player (e.g. Squeezelite) already has the loopback active when
+/// this function is called, `aplay` cannot open the same subdevice.  In that
+/// case the function returns start latency as `None` and stop latency as
+/// `None` — both are only meaningful when no other player holds the device.
+///
 /// Returns `(start_latency_ms, stop_latency_ms, xrun_count)`.
 /// All are `None` / 0 if ALSA or `aplay` is unavailable.
 pub fn collect_aloop_timings(control_device: &str) -> (Option<f64>, Option<f64>, u64) {
@@ -995,8 +1006,19 @@ pub fn collect_aloop_timings(control_device: &str) -> (Option<f64>, Option<f64>,
         Err(_) => return (None, None, 0),
     };
 
+    // If a player is already active the loopback write side may be held open
+    // (EBUSY).  Detect this before spawning aplay: if active is already true,
+    // our timing measurements would be unreliable (start would read near-zero
+    // because the snapshot is already active, and stop would never arrive
+    // because the other player keeps the device open after we kill aplay).
+    let already_active = listener.read_snapshot().map(|s| s.active).unwrap_or(false);
+    if already_active {
+        return (None, None, 0);
+    }
+
     let playback_dev = aloop_playback_device(control_device);
 
+    // Pass `-v` so that ALSA XRUN events appear in stderr output.
     let mut child = match std::process::Command::new("aplay")
         .args([
             "-D",
@@ -1009,6 +1031,7 @@ pub fn collect_aloop_timings(control_device: &str) -> (Option<f64>, Option<f64>,
             "S16_LE",
             "-d",
             "5",
+            "-v",
             "/dev/zero",
         ])
         .stderr(std::process::Stdio::piped())
@@ -1530,5 +1553,36 @@ mod tests {
     #[test]
     fn add_optional_returns_none_when_both_none() {
         assert_eq!(add_optional(None, None), None);
+    }
+
+    #[test]
+    fn collect_pcm_transport_scans_multiple_subdevices() {
+        // Verify that the per-subdevice parsers work correctly for a file that
+        // would be found on sub2 rather than sub0.  The live scanner now iterates
+        // sub0–sub7 so a non-zero subdevice index is no longer missed.
+        let hw_params_sub2 = "access: MMAP_INTERLEAVED\n\
+                              format: S16_LE\n\
+                              channels: 2\n\
+                              rate: 48000 (48000/1)\n\
+                              period_size: 512\n\
+                              buffer_size: 4096\n";
+        let period = parse_proc_hwparams_period_size(hw_params_sub2).expect("period");
+        let rate = parse_proc_hwparams_rate(hw_params_sub2).expect("rate");
+        assert_eq!(period, 512);
+        assert_eq!(rate, 48000);
+        // 512 / 48000 * 1000 ≈ 10.666 ms
+        let latency_ms = period as f64 / rate as f64 * 1000.0;
+        assert!((latency_ms - 10.666).abs() < 0.01, "got {latency_ms}");
+    }
+
+    #[test]
+    fn count_xruns_in_aplay_output_detects_verbose_xrun_lines() {
+        // aplay -v emits lines like "aplay: xrun.c:380: read/write error, state = RUNNING"
+        let output =
+            "Playing raw data '/dev/zero' : Signed 16 bit Little Endian, Rate 44100 Hz, Stereo\n\
+                      aplay: xrun.c:380: read/write error, state = RUNNING\n\
+                      aplay: xrun.c:380: read/write error, state = RUNNING\n\
+                      Aborted by signal Kill...\n";
+        assert_eq!(count_xruns_in_aplay_output(output), 2);
     }
 }
