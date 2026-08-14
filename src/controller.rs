@@ -75,7 +75,9 @@ fn write_runtime_config(path: &Path, yaml: &str) -> AppResult<()> {
 
     let tmp_path = parent.join(format!(
         ".{}.tmp-{}-{}",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("runtime"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("runtime"),
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -386,7 +388,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = env::temp_dir().join(format!("picoredsp-controller-{name}-{}-{stamp}", std::process::id()));
+        let path = env::temp_dir().join(format!(
+            "picoredsp-controller-{name}-{}-{stamp}",
+            std::process::id()
+        ));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -413,7 +418,10 @@ mod tests {
             fs::read_to_string(&baseline).unwrap(),
             "devices:\n  samplerate: 44100\n"
         );
-        assert_eq!(active.canonicalize().unwrap(), baseline.canonicalize().unwrap());
+        assert_eq!(
+            active.canonicalize().unwrap(),
+            baseline.canonicalize().unwrap()
+        );
         assert_eq!(
             fs::read_to_string(&runtime).unwrap(),
             "devices:\n  samplerate: 96000\n"
