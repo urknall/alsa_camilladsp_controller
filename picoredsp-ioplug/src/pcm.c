@@ -530,11 +530,8 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
     pcdsp_rb_free(&pcdsp->rb);
     pcdsp_ipc_close(&pcdsp->conn);
 
-    /* pipe_fd is already closed above; the guard is kept for safety. */
-    if (pcdsp->pipe_fd >= 0) {
-        close(pcdsp->pipe_fd);
-        pcdsp->pipe_fd = -1;
-    }
+    /* pipe_fd is already closed and set to -1 above, before the worker join.
+     * The field is not touched again, so no second close is needed here. */
 
     if (pcdsp->event_fd >= 0) {
         close(pcdsp->event_fd);

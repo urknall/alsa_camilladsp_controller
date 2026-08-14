@@ -1422,7 +1422,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Regression test for the statefile with an unexpected extra key must be rejected even though all
+    /// Statefile with an unexpected extra key must be rejected even though all
     /// known fields are present and valid.  This mirrors CamillaDSP's own
     /// `#[serde(deny_unknown_fields)]` behaviour so that our installer treats
     /// an unknown-field statefile as invalid rather than silently ignoring it.
