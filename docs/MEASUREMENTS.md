@@ -193,6 +193,10 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
 cargo bench
 ```
 
+Without that override, native AArch64 GNU systems can fail with
+`linker 'aarch64-linux-gnu-gcc' not found` if the local machine only has the
+host `gcc` installed.
+
 The harness measures:
 
 - `BenchmarkPlan` YAML serialization and deserialization round-trips

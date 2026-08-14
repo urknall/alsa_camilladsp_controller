@@ -1,7 +1,8 @@
 # Local/CI linker settings.
 # Native 64-bit ARM Linux hosts should use the host toolchain (`gcc`) for the
 # default `aarch64-unknown-linux-gnu` target so `cargo build`, `cargo test`,
-# and `cargo bench` work without a prefixed cross-compiler.
+# and `cargo bench` do not fail with `linker 'aarch64-linux-gnu-gcc' not found`
+# when no prefixed cross-compiler is installed locally.
 # CI cross-build jobs override this with
 # `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc`.
 

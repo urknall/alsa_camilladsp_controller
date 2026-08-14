@@ -249,6 +249,8 @@ export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
 ```
 
 This applies to `cargo build`, `cargo test`, `cargo run`, and `cargo bench`.
+Without it, a native AArch64 GNU system can fail with
+`linker 'aarch64-linux-gnu-gcc' not found` if only the host `gcc` is installed.
 CI cross-builds override the linker back to `aarch64-linux-gnu-gcc`.
 
 Use it to create a reproducible A/B benchmark record where only the backend changes:
