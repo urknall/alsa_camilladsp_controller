@@ -241,17 +241,19 @@ The benchmark CLI provides a **plan generator**, **plan validator**, and
 **benchmark report generator**. CI also runs the Rust benchmark harness with
 automated `aloop` and `ioplug` control-path microbenchmarks.
 
-On native 64-bit Raspberry Pi / `aarch64-unknown-linux-gnu` systems, use the
-host linker for local Cargo commands:
+For **local development on native 64-bit Raspberry Pi /
+`aarch64-unknown-linux-gnu` systems**, use the host linker for Cargo commands:
 
 ```sh
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
 ```
 
-This applies to `cargo build`, `cargo test`, `cargo run`, and `cargo bench`.
+This local-only override applies to `cargo build`, `cargo test`, `cargo run`,
+and `cargo bench`.
 Without it, a native AArch64 GNU system can fail with
 `linker 'aarch64-linux-gnu-gcc' not found` if only the host `gcc` is installed.
-CI cross-builds override the linker back to `aarch64-linux-gnu-gcc`.
+CI cross-builds do **not** use this override; the workflow explicitly sets the
+cross-linker back to `aarch64-linux-gnu-gcc`.
 
 Use it to create a reproducible A/B benchmark record where only the backend changes:
 
@@ -275,6 +277,7 @@ controller:
 cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
 
 sudo apt-get install -y libasound2-dev
+# Only on native 64-bit Raspberry Pi / aarch64-unknown-linux-gnu hosts:
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
