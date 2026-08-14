@@ -19,7 +19,10 @@ use adapt::{
 };
 use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Backend, Mode};
-use benchmark::{make_benchmark_plan_template, make_benchmark_report, validate_benchmark_plan};
+use benchmark::{
+    make_benchmark_plan_template, make_benchmark_report, run_benchmark_both_backends,
+    validate_benchmark_plan, BenchmarkRunnerConfig,
+};
 use camilla_ws::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
 use error::{app_error, AppResult};
@@ -180,6 +183,27 @@ fn run_main() -> AppResult<()> {
                 })?;
             } else {
                 print!("{report}");
+            }
+            Ok(())
+        }
+
+        Mode::RunBenchmark => {
+            let cfg = BenchmarkRunnerConfig {
+                host: args.host.clone(),
+                port: args.port,
+                aloop_device: args.device.clone(),
+            };
+            let yaml = run_benchmark_both_backends(&cfg)?;
+            if let Some(output) = args.output.as_deref() {
+                std::fs::write(output, &yaml).map_err(|err| {
+                    app_error(format!("unable to write {}: {err}", output.display()))
+                })?;
+                eprintln!(
+                    "picoredsp-controller --run-benchmark: plan written to {}",
+                    output.display()
+                );
+            } else {
+                print!("{yaml}");
             }
             Ok(())
         }

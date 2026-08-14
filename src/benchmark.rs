@@ -1,10 +1,12 @@
 use crate::args::Backend;
+use crate::camilladsp::websocket::{CamillaClient, CamillaWs};
 use crate::error::{app_error, AppResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 const BENCHMARK_PLAN_VERSION: u32 = 1;
 const REQUIRED_SAMPLE_RATES_HZ: [u32; 4] = [44100, 48000, 96000, 192000];
@@ -651,6 +653,600 @@ fn ensure_nonempty(field: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+// ─── Benchmark runner ──────────────────────────────────────────────────────
+
+/// Configuration supplied to the automatic benchmark runner.
+pub struct BenchmarkRunnerConfig {
+    /// CamillaDSP WebSocket host (default: 127.0.0.1).
+    pub host: String,
+    /// CamillaDSP WebSocket port (default: 1234).
+    pub port: u16,
+    /// ALSA HCTL control device for the aloop backend (e.g. `hw:Loopback,0`).
+    pub aloop_device: String,
+}
+
+/// Run automatic measurements for **both** backends and produce a fully
+/// populated `BenchmarkPlan` YAML.
+///
+/// Metrics that require manual collection (rate-transition latencies, long
+/// soak stability tests, hardware fault injection) are left as `null` in the
+/// output; the `notes` field on each run explains what still needs to be
+/// collected by hand.
+pub fn run_benchmark_both_backends(cfg: &BenchmarkRunnerConfig) -> AppResult<String> {
+    eprintln!("picoredsp-controller --run-benchmark: detecting environment...");
+    let environment = detect_environment(&cfg.host, cfg.port, &cfg.aloop_device);
+
+    eprintln!("picoredsp-controller --run-benchmark: measuring aloop backend...");
+    let aloop_run = measure_backend(Backend::Aloop, cfg, &environment);
+
+    eprintln!("picoredsp-controller --run-benchmark: measuring ioplug backend...");
+    let ioplug_run = measure_backend(Backend::Ioplug, cfg, &environment);
+
+    let plan = BenchmarkPlan {
+        version: BENCHMARK_PLAN_VERSION,
+        environment,
+        runs: vec![aloop_run, ioplug_run],
+    };
+
+    serde_yaml_ng::to_string(&plan)
+        .map_err(|err| app_error(format!("unable to serialize benchmark plan: {err}")))
+}
+
+// ─── Pure text-parsing helpers (unit-testable) ─────────────────────────────
+
+/// Extract `VmRSS: N kB` from `/proc/<pid>/status`, returning N in KiB.
+pub fn parse_rss_kib(status: &str) -> Option<u64> {
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+/// Sum `voluntary_ctxt_switches` + `nonvoluntary_ctxt_switches` from
+/// `/proc/<pid>/status`.
+pub fn parse_context_switches(status: &str) -> Option<u64> {
+    let mut voluntary: Option<u64> = None;
+    let mut nonvoluntary: Option<u64> = None;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("voluntary_ctxt_switches:") {
+            voluntary = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+        } else if let Some(rest) = line.strip_prefix("nonvoluntary_ctxt_switches:") {
+            nonvoluntary = rest.split_whitespace().next().and_then(|v| v.parse().ok());
+        }
+    }
+    match (voluntary, nonvoluntary) {
+        (Some(v), Some(nv)) => Some(v + nv),
+        (Some(v), None) => Some(v),
+        (None, Some(nv)) => Some(nv),
+        (None, None) => None,
+    }
+}
+
+/// Extract `utime + stime` (jiffies) from `/proc/<pid>/stat` (fields 14 and 15).
+///
+/// The comm field may contain spaces so we locate the last `)` to skip it.
+pub fn parse_cpu_jiffies(stat: &str) -> Option<u64> {
+    let after_comm = stat.rfind(')')?;
+    let rest = &stat[after_comm + 1..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // Relative to the text after ')':
+    //   index 0 = state
+    //   index 11 = utime
+    //   index 12 = stime
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some(utime + stime)
+}
+
+/// Count XRUN-related lines in `aplay` stderr/stdout output.
+///
+/// `aplay` writes lines like `aplay: xrun.c:380: ...` or just `XRUN` on
+/// underrun events.
+pub fn count_xruns_in_aplay_output(text: &str) -> u64 {
+    text.lines()
+        .filter(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("xrun") || l.contains("overrun") || l.contains("underrun")
+        })
+        .count() as u64
+}
+
+/// Extract the Raspberry Pi hardware/model string from `/proc/cpuinfo`.
+pub fn parse_pi_model(cpuinfo: &str) -> String {
+    for line in cpuinfo.lines() {
+        for prefix in ["Model\t\t:", "Model\t:", "Hardware\t:", "Hardware:"] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let val = rest.trim().to_owned();
+                if !val.is_empty() {
+                    return val;
+                }
+            }
+        }
+    }
+    "unknown".to_owned()
+}
+
+/// Trim the first non-empty line from a piCorePlayer version file.
+pub fn parse_pcp_version(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+/// Derive the aloop playback PCM device from the HCTL control device name.
+///
+/// The player (squeezelite / aplay) writes to `hw:<card>,1,0` while the
+/// controller reads HCTL events on `hw:<card>,0`.
+///
+/// Expects an ALSA device string with the `hw:` prefix, e.g. `hw:Loopback,0`
+/// or `hw:Loopback,0,0`.  Passing a name without `hw:` (e.g. `"Loopback"`)
+/// will produce a string like `"Loopback,1,0"` which is not a valid ALSA PCM
+/// device — always include the `hw:` prefix.
+pub fn aloop_playback_device(control_device: &str) -> String {
+    let card = control_device.split(',').next().unwrap_or(control_device);
+    format!("{},1,0", card)
+}
+
+/// Parse `rate: N ...` from a `/proc/asound/card*/pcm*/sub*/hw_params` file.
+pub fn parse_proc_hwparams_rate(text: &str) -> Option<u32> {
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("rate:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+/// Parse `period_size: N` from a `/proc/asound/card*/pcm*/sub*/hw_params` file.
+pub fn parse_proc_hwparams_period_size(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("period_size:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+// ─── Live system collectors ────────────────────────────────────────────────
+
+/// Scan `/proc/*/cmdline` for a running `picoredsp-controller --run` (daemon)
+/// process and return its PID.  Returns `None` if no daemon is found.
+pub fn find_controller_pid() -> Option<u32> {
+    let proc_dir = std::fs::read_dir("/proc").ok()?;
+    let own_pid = std::process::id();
+
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let pid: u32 = match name_str.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if pid == own_pid {
+            continue;
+        }
+        let cmdline_path = format!("/proc/{pid}/cmdline");
+        let cmdline = match std::fs::read(&cmdline_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        // argv[0] is the first NUL-terminated entry.
+        let argv0_end = cmdline
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(cmdline.len());
+        let argv0 = std::str::from_utf8(&cmdline[..argv0_end]).unwrap_or("");
+        if !argv0.ends_with("picoredsp-controller") {
+            continue;
+        }
+        // Reject our own benchmark invocations.
+        let all_args = cmdline
+            .split(|&b| b == 0)
+            .filter_map(|s| std::str::from_utf8(s).ok())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !all_args.contains("--run-benchmark") && !all_args.contains("--make-benchmark") {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// Measure the CPU usage percentage for `pid` over `interval_ms` milliseconds
+/// by reading `/proc/<pid>/stat` before and after sleeping.
+pub fn collect_cpu_percent(pid: u32, interval_ms: u64) -> Option<f64> {
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz <= 0 {
+        return None;
+    }
+    let hz = hz as f64;
+
+    let stat_path = format!("/proc/{pid}/stat");
+    let before = std::fs::read_to_string(&stat_path)
+        .ok()
+        .and_then(|s| parse_cpu_jiffies(&s))?;
+    let t0 = Instant::now();
+    std::thread::sleep(Duration::from_millis(interval_ms));
+    let after = std::fs::read_to_string(&stat_path)
+        .ok()
+        .and_then(|s| parse_cpu_jiffies(&s))?;
+    let elapsed_s = t0.elapsed().as_secs_f64();
+
+    let delta = after.saturating_sub(before) as f64;
+    Some((delta / hz / elapsed_s) * 100.0)
+}
+
+/// Read RSS (KiB) for `pid` from `/proc/<pid>/status`.
+pub fn collect_rss_kib(pid: u32) -> Option<u64> {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .as_deref()
+        .and_then(parse_rss_kib)
+}
+
+/// Read total context-switch count for `pid` from `/proc/<pid>/status`.
+pub fn collect_context_switches(pid: u32) -> Option<u64> {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .as_deref()
+        .and_then(parse_context_switches)
+}
+
+/// Find the ALSA card number from a control-device string such as
+/// `hw:Loopback,0`.  Tries a numeric card index first, then searches
+/// `/proc/asound/cards` for a matching card name.
+pub fn find_alsa_card_number(control_device: &str) -> Option<u32> {
+    let card_part = control_device.trim_start_matches("hw:").split(',').next()?;
+    if let Ok(n) = card_part.parse::<u32>() {
+        return Some(n);
+    }
+    let cards = std::fs::read_to_string("/proc/asound/cards").ok()?;
+    let needle = card_part.to_ascii_lowercase();
+    for line in cards.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '[');
+        let num_part = parts.next()?.trim();
+        let name_part = parts.next()?.split(']').next()?.trim().to_ascii_lowercase();
+        if name_part.starts_with(&needle) {
+            return num_part.parse().ok();
+        }
+    }
+    None
+}
+
+/// Read the PCM transport latency from
+/// `/proc/asound/card<N>/pcm*/sub0/hw_params` while an ALSA stream is active.
+/// Returns `None` if the file is absent or the stream has not been opened yet.
+pub fn collect_pcm_transport_latency_ms(card_num: u32) -> Option<f64> {
+    for pcm in ["pcm0p", "pcm0c", "pcm1p", "pcm1c"] {
+        let path = format!("/proc/asound/card{card_num}/{pcm}/sub0/hw_params");
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let (Some(period), Some(rate)) = (
+                parse_proc_hwparams_period_size(&text),
+                parse_proc_hwparams_rate(&text),
+            ) {
+                if rate > 0 {
+                    return Some(period as f64 / rate as f64 * 1000.0);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Query CamillaDSP over WebSocket for the active pipeline buffer latency in
+/// milliseconds (`GetBuffersize / GetSamplerate * 1000`).
+///
+/// Returns `None` if CamillaDSP is unreachable or not currently processing.
+pub fn collect_cdsp_buffer_latency_ms(host: &str, port: u16) -> Option<f64> {
+    let mut client = CamillaWs::connect(host, port).ok()?;
+    let rate_val = client.query("GetSamplerate", None).ok()??;
+    let bufsize_val = client.query("GetBuffersize", None).ok()??;
+    let rate = rate_val.as_u64()?;
+    let bufsize = bufsize_val.as_u64()?;
+    client.close();
+    if rate == 0 {
+        return None;
+    }
+    Some(bufsize as f64 / rate as f64 * 1000.0)
+}
+
+/// Query CamillaDSP for its active sample rate.  Returns `None` on failure.
+fn collect_cdsp_rate(host: &str, port: u16) -> Option<u64> {
+    let mut client = CamillaWs::connect(host, port).ok()?;
+    let val = client.query("GetSamplerate", None).ok()??;
+    let rate = val.as_u64();
+    client.close();
+    rate
+}
+
+/// Query CamillaDSP for its version string.  Returns `"unknown"` on failure.
+fn collect_cdsp_version(host: &str, port: u16) -> String {
+    CamillaWs::connect(host, port)
+        .ok()
+        .and_then(|mut c| {
+            let v = c.query("GetVersion", None).ok()??;
+            let s = v.as_str().map(str::to_owned);
+            c.close();
+            s
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+/// Spawn a short `aplay` test through the aloop playback device, timing how
+/// long it takes for the loopback HCTL to report `active = true` (start
+/// latency) and `active = false` after the process is killed (stop latency).
+///
+/// Returns `(start_latency_ms, stop_latency_ms, xrun_count)`.
+/// All are `None` / 0 if ALSA or `aplay` is unavailable.
+pub fn collect_aloop_timings(control_device: &str) -> (Option<f64>, Option<f64>, u64) {
+    use crate::camilladsp::alsa_capture::AlsaLoopbackListener;
+    use crate::core::logging::LogLevel;
+
+    let listener = match AlsaLoopbackListener::new(control_device, LogLevel::Error) {
+        Ok(l) => l,
+        Err(_) => return (None, None, 0),
+    };
+
+    let playback_dev = aloop_playback_device(control_device);
+
+    let mut child = match std::process::Command::new("aplay")
+        .args([
+            "-D",
+            &playback_dev,
+            "-r",
+            "44100",
+            "-c",
+            "2",
+            "-f",
+            "S16_LE",
+            "-d",
+            "5",
+            "/dev/zero",
+        ])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return (None, None, 0),
+    };
+
+    // Poll for active = true (playback start latency).
+    let t0 = Instant::now();
+    let start_latency_ms = loop {
+        if t0.elapsed() > Duration::from_secs(3) {
+            break None;
+        }
+        if listener.read_snapshot().map(|s| s.active).unwrap_or(false) {
+            break Some(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    // Let it play for 1 second so any xruns can accumulate.
+    std::thread::sleep(Duration::from_secs(1));
+
+    // Kill aplay.  Start the stop-latency clock before waiting for the process
+    // to exit so that t1 begins as close to the kill signal as possible.
+    let _ = child.kill();
+    let t1 = Instant::now();
+    let xrun_count = match child.wait_with_output() {
+        Ok(out) => count_xruns_in_aplay_output(&String::from_utf8_lossy(&out.stderr)),
+        Err(_) => 0,
+    };
+
+    // Poll for active = false (playback stop latency).
+    let stop_latency_ms = loop {
+        if t1.elapsed() > Duration::from_secs(3) {
+            break None;
+        }
+        if !listener.read_snapshot().map(|s| s.active).unwrap_or(true) {
+            break Some(t1.elapsed().as_secs_f64() * 1000.0);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    (start_latency_ms, stop_latency_ms, xrun_count)
+}
+
+// ─── Environment auto-detection ───────────────────────────────────────────
+
+/// Auto-detect the benchmark environment from system files and a live
+/// CamillaDSP WebSocket connection.
+pub fn detect_environment(host: &str, port: u16, aloop_device: &str) -> BenchmarkEnvironment {
+    let raspberry_pi = std::fs::read_to_string("/proc/cpuinfo")
+        .map(|s| parse_pi_model(&s))
+        .unwrap_or_else(|_| "unknown".to_owned());
+
+    let picoreplayer_version = ["/usr/local/pcp_version", "/etc/pcp_version"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .map(|s| parse_pcp_version(&s))
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    let camilladsp_version = collect_cdsp_version(host, port);
+
+    let dac = std::fs::read_to_string("/proc/asound/cards")
+        .map(|text| detect_dac_from_cards(&text, aloop_device))
+        .unwrap_or_else(|_| "unknown".to_owned());
+
+    // Read chunksize from CamillaDSP if available; default to 1024.
+    let chunksize = {
+        let chunksize_val = CamillaWs::connect(host, port).ok().and_then(|mut c| {
+            let v = c.query("GetBuffersize", None).ok()?;
+            c.close();
+            v.and_then(|j| j.as_u64())
+        });
+        chunksize_val.map(|n| n as u32).unwrap_or(1024)
+    };
+
+    BenchmarkEnvironment {
+        raspberry_pi,
+        picoreplayer_version,
+        camilladsp_version,
+        dac,
+        dsp_config: "auto-detected (see CamillaDSP active config path)".to_owned(),
+        track: "silence via aplay /dev/zero (automated benchmark)".to_owned(),
+        chunksize,
+        queuelimit: 4,
+        sample_rates_hz: REQUIRED_SAMPLE_RATES_HZ.to_vec(),
+    }
+}
+
+/// Return the first non-loopback ALSA card description from `/proc/asound/cards`.
+fn detect_dac_from_cards(cards_text: &str, aloop_device: &str) -> String {
+    let loopback_name = aloop_device
+        .trim_start_matches("hw:")
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    for line in cards_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Lines look like: " 0 [Loopback       ]: Loopback - Loopback"
+        if let Some(bracket_pos) = line.find('[') {
+            let after_open = &line[bracket_pos + 1..];
+            let name_end = after_open.find(']').unwrap_or(after_open.len());
+            let name = after_open[..name_end].trim().to_ascii_lowercase();
+            if !name.starts_with(&loopback_name) {
+                // Return the description part after the ':'
+                if let Some(desc_pos) = line.find(':') {
+                    return line[desc_pos + 1..].trim().to_owned();
+                }
+                return name;
+            }
+        }
+    }
+    "unknown".to_owned()
+}
+
+// ─── Per-backend measurement ───────────────────────────────────────────────
+
+fn measure_backend(
+    backend: Backend,
+    cfg: &BenchmarkRunnerConfig,
+    env: &BenchmarkEnvironment,
+) -> BenchmarkRun {
+    // Prefer the running controller daemon's PID for resource metrics; fall
+    // back to self if the daemon is not found.
+    let measure_pid = find_controller_pid().unwrap_or_else(std::process::id);
+
+    let rss_kib = collect_rss_kib(measure_pid);
+    let ctx_switches = collect_context_switches(measure_pid);
+    // CPU: 2-second window.
+    let cpu_percent = collect_cpu_percent(measure_pid, 2000);
+
+    match backend {
+        Backend::Aloop => {
+            let (start_ms, stop_ms, xruns) = collect_aloop_timings(&cfg.aloop_device);
+
+            let card_num = find_alsa_card_number(&cfg.aloop_device);
+            let pcm_transport_ms = card_num.and_then(collect_pcm_transport_latency_ms);
+
+            let cdsp_buf_ms = collect_cdsp_buffer_latency_ms(&cfg.host, cfg.port);
+            let total_e2e_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
+
+            BenchmarkRun {
+                backend: Backend::Aloop,
+                metrics: BenchmarkMetrics {
+                    playback_start_latency_ms: start_ms,
+                    transition_44_1_to_48_ms: None,
+                    transition_48_to_96_ms: None,
+                    stop_latency_ms: stop_ms,
+                    pcm_transport_latency_ms: pcm_transport_ms,
+                    total_end_to_end_latency_ms: total_e2e_ms,
+                    cpu_usage_percent: cpu_percent,
+                    context_switches: ctx_switches,
+                    controller_rss_kib: rss_kib,
+                    plugin_overhead_percent: None,
+                    xrun_count: Some(xruns),
+                    stability_24h_passed: None,
+                    stability_7d_passed: None,
+                    recovery_after_dac_error_passed: None,
+                },
+                notes: Some(
+                    "Automatically measured. \
+                     Rate-transition latencies (44.1→48 kHz, 48→96 kHz), plugin overhead, \
+                     and long-running stability/recovery tests require manual collection."
+                        .to_owned(),
+                ),
+            }
+        }
+
+        Backend::Ioplug => {
+            // For the ioplug backend we collect process-level and CamillaDSP WS
+            // metrics.  Playback timing (start/stop latency, XRUN count) requires
+            // an active ioplug stream driven by the real audio player — it cannot
+            // be driven by aplay through the loopback.
+            let cdsp_buf_ms = collect_cdsp_buffer_latency_ms(&cfg.host, cfg.port);
+
+            // PCM transport estimate: ioplug passes audio directly to CamillaDSP
+            // stdin in chunksize-frame blocks.  One chunksize at the active rate
+            // is a reasonable upper bound.
+            let pcm_transport_ms = collect_cdsp_rate(&cfg.host, cfg.port).and_then(|rate| {
+                if rate == 0 {
+                    return None;
+                }
+                Some(env.chunksize as f64 / rate as f64 * 1000.0)
+            });
+
+            let total_e2e_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
+
+            BenchmarkRun {
+                backend: Backend::Ioplug,
+                metrics: BenchmarkMetrics {
+                    playback_start_latency_ms: None,
+                    transition_44_1_to_48_ms: None,
+                    transition_48_to_96_ms: None,
+                    stop_latency_ms: None,
+                    pcm_transport_latency_ms: pcm_transport_ms,
+                    total_end_to_end_latency_ms: total_e2e_ms,
+                    cpu_usage_percent: cpu_percent,
+                    context_switches: ctx_switches,
+                    controller_rss_kib: rss_kib,
+                    plugin_overhead_percent: None,
+                    xrun_count: None,
+                    stability_24h_passed: None,
+                    stability_7d_passed: None,
+                    recovery_after_dac_error_passed: None,
+                },
+                notes: Some(
+                    "Automatically measured (process-level and CamillaDSP WS metrics only). \
+                     Playback timing (start/stop latency, XRUN count) requires an active \
+                     ioplug stream driven by the real audio player — run the player through \
+                     the ioplug device and re-measure with a running CamillaDSP instance. \
+                     Rate-transition latencies, plugin overhead, and stability/recovery tests \
+                     require manual collection."
+                        .to_owned(),
+                ),
+            }
+        }
+    }
+}
+
+/// Return `Some(a + b)` if at least one is `Some`, treating `None` as 0 when
+/// the other value is `Some`.  Returns `None` only if both are `None`.
+fn add_optional(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x + y),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,5 +1360,175 @@ mod tests {
         assert!(report.contains("| Playback start latency (ms) | 12.000 | 10.000 | ioplug |"));
         assert!(report.contains("ioplug currently leads the software-visible latency comparison"));
         assert!(report.contains("ioplug is stable in the recorded checks."));
+    }
+
+    // ── Collector unit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_rss_kib_extracts_vmrss_line() {
+        let status = "Name:\tpicoredsp-controller\nVmRSS:\t 2048 kB\nVmPeak:\t 3000 kB\n";
+        assert_eq!(parse_rss_kib(status), Some(2048));
+    }
+
+    #[test]
+    fn parse_rss_kib_returns_none_when_field_absent() {
+        let status = "Name:\tfoo\nVmPeak:\t 3000 kB\n";
+        assert_eq!(parse_rss_kib(status), None);
+    }
+
+    #[test]
+    fn parse_context_switches_sums_voluntary_and_nonvoluntary() {
+        let status = "voluntary_ctxt_switches:\t100\nnonvoluntary_ctxt_switches:\t25\n";
+        assert_eq!(parse_context_switches(status), Some(125));
+    }
+
+    #[test]
+    fn parse_context_switches_handles_missing_nonvoluntary() {
+        let status = "voluntary_ctxt_switches:\t42\n";
+        assert_eq!(parse_context_switches(status), Some(42));
+    }
+
+    #[test]
+    fn parse_context_switches_returns_none_when_both_absent() {
+        let status = "Name:\tfoo\n";
+        assert_eq!(parse_context_switches(status), None);
+    }
+
+    #[test]
+    fn parse_cpu_jiffies_extracts_utime_stime() {
+        // Minimal /proc/<pid>/stat with a comm that does not contain spaces.
+        let stat = "123 (picoredsp) S 1 123 123 0 -1 4194560 0 0 0 0 12 5 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+        // utime = field 14 (0-based after ')') = index 11 → 12
+        // stime = field 15 → index 12 → 5
+        assert_eq!(parse_cpu_jiffies(stat), Some(17));
+    }
+
+    #[test]
+    fn parse_cpu_jiffies_handles_comm_with_spaces() {
+        // comm = "(my prog)" — last ')' is after the comm
+        let stat = "42 (my prog) S 1 42 42 0 -1 0 0 0 0 0 8 3 0 0 20 0 1 0 0 0 0";
+        assert_eq!(parse_cpu_jiffies(stat), Some(11));
+    }
+
+    #[test]
+    fn count_xruns_in_aplay_output_counts_xrun_lines() {
+        let output = "Playing raw data '/dev/zero' : Signed 16 bit ...\n\
+                      aplay: xrun.c:380: ...\n\
+                      aplay: xrun.c:380: ...\n\
+                      Unrelated line\n";
+        assert_eq!(count_xruns_in_aplay_output(output), 2);
+    }
+
+    #[test]
+    fn count_xruns_in_aplay_output_counts_overrun_and_underrun() {
+        let output = "overrun!!!\nunderrun!!!\nnormal line\n";
+        assert_eq!(count_xruns_in_aplay_output(output), 2);
+    }
+
+    #[test]
+    fn count_xruns_in_aplay_output_zero_when_clean() {
+        let output = "Playing raw data...\nDone.\n";
+        assert_eq!(count_xruns_in_aplay_output(output), 0);
+    }
+
+    #[test]
+    fn parse_pi_model_extracts_model_field() {
+        let cpuinfo = "processor\t: 0\nModel\t\t: Raspberry Pi 4 Model B Rev 1.4\nSerial\t\t: 00000000deadbeef\n";
+        assert_eq!(parse_pi_model(cpuinfo), "Raspberry Pi 4 Model B Rev 1.4");
+    }
+
+    #[test]
+    fn parse_pi_model_falls_back_to_hardware() {
+        let cpuinfo = "processor\t: 0\nHardware\t: BCM2711\nRevision\t: c03114\n";
+        assert_eq!(parse_pi_model(cpuinfo), "BCM2711");
+    }
+
+    #[test]
+    fn parse_pi_model_returns_unknown_when_absent() {
+        let cpuinfo = "processor\t: 0\n";
+        assert_eq!(parse_pi_model(cpuinfo), "unknown");
+    }
+
+    #[test]
+    fn parse_pcp_version_trims_first_nonempty_line() {
+        let text = "\n  9.2.0  \nsome other content\n";
+        assert_eq!(parse_pcp_version(text), "9.2.0");
+    }
+
+    #[test]
+    fn parse_pcp_version_returns_unknown_for_empty_input() {
+        assert_eq!(parse_pcp_version(""), "unknown");
+    }
+
+    #[test]
+    fn aloop_playback_device_derives_playback_side() {
+        assert_eq!(aloop_playback_device("hw:Loopback,0"), "hw:Loopback,1,0");
+        assert_eq!(aloop_playback_device("hw:Loopback,0,0"), "hw:Loopback,1,0");
+        assert_eq!(aloop_playback_device("hw:1,0"), "hw:1,1,0");
+    }
+
+    #[test]
+    fn parse_proc_hwparams_rate_and_period_size() {
+        let hw_params = "access: MMAP_INTERLEAVED\n\
+                         format: S16_LE\n\
+                         subformat: STD\n\
+                         channels: 2\n\
+                         rate: 44100 (44100/1)\n\
+                         period_size: 1024\n\
+                         buffer_size: 4096\n";
+        assert_eq!(parse_proc_hwparams_rate(hw_params), Some(44100));
+        assert_eq!(parse_proc_hwparams_period_size(hw_params), Some(1024));
+    }
+
+    #[test]
+    fn parse_proc_hwparams_returns_none_when_fields_absent() {
+        let hw_params = "state: PREPARED\n";
+        assert_eq!(parse_proc_hwparams_rate(hw_params), None);
+        assert_eq!(parse_proc_hwparams_period_size(hw_params), None);
+    }
+
+    #[test]
+    fn find_alsa_card_number_parses_numeric_card_index() {
+        // "hw:1,0" → card 1 (no /proc lookup needed)
+        assert_eq!(find_alsa_card_number("hw:1,0"), Some(1));
+        assert_eq!(find_alsa_card_number("hw:0,0"), Some(0));
+    }
+
+    #[test]
+    fn detect_dac_from_cards_skips_loopback_returns_first_other() {
+        let cards = " 0 [Loopback       ]: Loopback - Loopback\n \
+                     1 [DAC            ]: USB-Audio - My DAC\n";
+        let dac = detect_dac_from_cards(cards, "hw:Loopback,0");
+        assert!(
+            dac.contains("USB-Audio") || dac.contains("My DAC"),
+            "got: {dac}"
+        );
+    }
+
+    #[test]
+    fn detect_dac_from_cards_returns_unknown_when_only_loopback_present() {
+        let cards = " 0 [Loopback       ]: Loopback - Loopback\n";
+        let dac = detect_dac_from_cards(cards, "hw:Loopback,0");
+        assert_eq!(dac, "unknown");
+    }
+
+    #[test]
+    fn add_optional_sums_both_some() {
+        assert_eq!(add_optional(Some(1.0), Some(2.0)), Some(3.0));
+    }
+
+    #[test]
+    fn add_optional_returns_first_when_second_none() {
+        assert_eq!(add_optional(Some(5.0), None), Some(5.0));
+    }
+
+    #[test]
+    fn add_optional_returns_second_when_first_none() {
+        assert_eq!(add_optional(None, Some(3.0)), Some(3.0));
+    }
+
+    #[test]
+    fn add_optional_returns_none_when_both_none() {
+        assert_eq!(add_optional(None, None), None);
     }
 }
