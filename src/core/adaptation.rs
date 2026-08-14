@@ -1375,7 +1375,7 @@ mod tests {
     fn adapt_config_for_backend_via_symlink_never_writes_baseline() {
         let dir = test_dir("symlink-baseline");
         let baseline = dir.join("MyDSP.yml");
-        let active   = dir.join("active_config.yml");
+        let active = dir.join("active_config.yml");
 
         // Write a minimal config with a fixed sample rate.
         let original_content = base_config("hw:DAC,0", Some("S32_LE"));
@@ -1387,9 +1387,9 @@ mod tests {
         // Simulate three successive streams at different sample rates.
         for rate in [44_100u32, 96_000, 48_000] {
             let wave = WaveFormat {
-                sample_rate:   Some(rate),
+                sample_rate: Some(rate),
                 sample_format: Some("S32_LE".to_owned()),
-                channels:      Some(2),
+                channels: Some(2),
             };
             // The controller reads through the symlink to build an adapted string.
             let adapted = adapt_config_for_backend(&active, &wave, RuntimeBackend::Ioplug)
@@ -1401,7 +1401,10 @@ mod tests {
                 .as_u64()
                 .or_else(|| parsed["devices"]["samplerate"].as_u64())
                 .expect("adapted YAML has no samplerate");
-            assert_eq!(adapted_rate, rate as u64, "adapted rate mismatch at {rate} Hz");
+            assert_eq!(
+                adapted_rate, rate as u64,
+                "adapted rate mismatch at {rate} Hz"
+            );
         }
 
         // After all three adaptations the baseline file must be byte-for-byte unchanged.
