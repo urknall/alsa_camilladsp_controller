@@ -1,33 +1,27 @@
-mod adapt;
-mod alsa_listener;
 mod args;
 mod backend;
 mod benchmark;
-mod camilla_ws;
 mod controller;
-mod error;
-mod logging;
-mod wave;
 
 pub mod camilladsp;
 pub mod core;
 pub mod ipc;
 
-use adapt::{
-    adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
-    get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
-};
-use alsa_listener::AlsaLoopbackListener;
 use args::{parse_args, Args, Backend, Mode};
 use benchmark::{
     make_benchmark_plan_template, make_benchmark_report, run_benchmark_both_backends,
     validate_benchmark_plan, BenchmarkRunnerConfig,
 };
-use camilla_ws::{CamillaClient, CamillaWs};
+use camilladsp::alsa_capture::AlsaLoopbackListener;
+use camilladsp::websocket::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
-use error::{app_error, AppResult};
+use core::adaptation::{
+    adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
+    get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
+};
+use core::config::WaveFormat;
+use core::errors::{app_error, AppResult};
 use serde_json::Value as JsonValue;
-use wave::WaveFormat;
 
 fn run_main() -> AppResult<()> {
     let Some(args) = parse_args()? else {

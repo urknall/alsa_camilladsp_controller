@@ -14,6 +14,16 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > Phase 5 was subsequently re-closed on 2026-08-15 (Step 7 of that plan)
 > after an actual review of current upstream BlueALSA source was performed
 > and documented.
+> As Step 9 of the same plan (2026-08-15), the six leftover re-export shim
+> modules (`src/adapt.rs`, `src/alsa_listener.rs`, `src/camilla_ws.rs`,
+> `src/error.rs`, `src/logging.rs`, `src/wave.rs`) were deleted and their
+> three callers repointed at the real `core::*`/`camilladsp::*` modules, and
+> the 1728-line `src/benchmark.rs` was split into a `src/benchmark/` module
+> folder (`report.rs`, `runner.rs`, `parsing.rs`, `collectors.rs`,
+> `measurement.rs`, `mod.rs`) with its test suite divided across the new
+> files by concern. No architectural checklist gate covered this cleanup;
+> it is recorded here for traceability. All 213 tests continued to pass
+> throughout, and `cargo fmt`/`cargo clippy --all-targets` are clean.
 
 ---
 
