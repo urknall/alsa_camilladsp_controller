@@ -1434,6 +1434,14 @@ cat > "${BUILD_DIR}/usr/local/bin/picoredsp-sync-config" <<EOF
 # statefile when CamillaDSP is offline (CamillaGUI writes the path directly
 # to the statefile in that case).  The CamillaGUI-supplied argument is
 # intentionally discarded to prevent shell injection.
+#
+# ioplug-mode resilience: the Rust controller primes the statefile with the
+# transient runtime config path (under /run/…) before each CamillaDSP spawn.
+# That path lies outside CONFIG_DIR, so the statefile fallback below validates
+# it and, if rejected, falls back further to the current active_config.yml
+# symlink target.  This guarantees that a GUI config switch attempted while
+# CamillaDSP is offline always updates active_config.yml, even when the
+# statefile still holds the stale runtime path from the previous stream.
 ACTIVE_CONFIG_LINK="${ACTIVE_CONFIG_LINK}"
 CONTROLLER="/usr/local/bin/picoredsp-controller"
 CONFIG_DIR="${CONFIG_DIR}"
@@ -1453,8 +1461,38 @@ while [ "\${_ws_attempt}" -lt 3 ]; do
 done
 
 if [ -z "\${config_path}" ]; then
-    config_path=\$("\${CONTROLLER}" --get-config-path "\${STATEFILE}") || {
-        echo "picoredsp-sync-config: failed to read config path from CamillaDSP and statefile" >&2
+    # Statefile fallback: CamillaGUI writes the newly selected config path into
+    # the statefile before calling on_set_active_config, so under normal
+    # circumstances this will return the correct path.
+    #
+    # In ioplug mode the statefile may hold the transient runtime config path
+    # (written by the Rust controller before spawning CamillaDSP) rather than a
+    # user-selected GUI config.  Validate the path before using it, and fall
+    # back to active_config.yml when validation fails.
+    _sf_path=\$("\${CONTROLLER}" --get-config-path "\${STATEFILE}" 2>/dev/null) || _sf_path=""
+    if [ -n "\${_sf_path}" ]; then
+        _sf_canon=\$(readlink -f "\${_sf_path}" 2>/dev/null) || _sf_canon=""
+        case "\${_sf_canon}" in
+            "\${CONFIG_DIR}/"*) config_path="\${_sf_path}" ;;
+            *)
+                # Statefile has a path outside CONFIG_DIR (e.g. a transient
+                # runtime config from the ioplug controller).  Discard it and
+                # fall through to the active_config.yml safety net.
+                echo "picoredsp-sync-config: statefile has non-CONFIG_DIR path \${_sf_canon}; falling back to active_config.yml" >&2
+                ;;
+        esac
+    fi
+fi
+
+if [ -z "\${config_path}" ]; then
+    # Safety net: active_config.yml always holds the last successfully resolved
+    # GUI config.  Using it here lets us update active_config.yml even when both
+    # the WebSocket and statefile paths are unavailable or outside CONFIG_DIR.
+    # Note: this falls back to the *previous* GUI config, not the one the user
+    # just selected.  It keeps the system in a consistent state rather than
+    # leaving active_config.yml stale.
+    config_path=\$(readlink -f "\${ACTIVE_CONFIG_LINK}" 2>/dev/null) || {
+        echo "picoredsp-sync-config: failed to read config path from WebSocket, statefile, and active_config.yml" >&2
         exit 1
     }
 fi
