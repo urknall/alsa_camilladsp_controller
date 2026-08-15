@@ -141,8 +141,13 @@ design intent described in the piCoreDSP roadmap.
 - The ring buffer capacity is a multiple of `buffer_size` (currently 8×)
   to allow the application and the worker to operate without false
   write-stalls during transient bursts.
-- The `pointer()` callback returns `hw_ptr % buffer_size` (not the
-  monotone counter) because ALSA expects a value in `[0, buffer_size)`.
+- When alsa-lib exposes `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA`, the plugin must set
+  that flag and return the monotone `hw_ptr` from `pointer()`.
+- Falling back to `hw_ptr % buffer_size` is only for older alsa-lib builds that
+  lack the boundary-workaround flag.
+- Without the boundary-aware path, `hw_ptr == appl_ptr == 0` after wrap-around
+  is indistinguishable from a full buffer, so writable space never reappears
+  even though the worker has drained audio.
 
 ### `poll`/`revents` behaviour
 
