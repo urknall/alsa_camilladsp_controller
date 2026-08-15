@@ -336,8 +336,10 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 ## Phase 20 — alsa-lib monitoring
 
-- [ ] alsa-lib version tracked separately from BlueALSA
-- [ ] New alsa-lib release triggers the plugin test suite automatically
+- [ ] Create `docs/ALSALIB_TRACKING.md` (or `docs/alsa-lib-upstream.yml`)
+- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant alsa-lib changes or releases, runs the plugin test suite automatically, and opens a GitHub issue (label: `upstream/alsa-lib`; never auto-merges)
+- [ ] Review process established: detect → test suite + issue → manual review → relevant? → update plugin compatibility + regression test, or mark reviewed
 - [ ] Maintenance priority documented:
   - [ ] HIGH: alsa-lib, CamillaDSP, piCorePlayer
   - [ ] MEDIUM: Linux ALSA, BlueALSA reference changes

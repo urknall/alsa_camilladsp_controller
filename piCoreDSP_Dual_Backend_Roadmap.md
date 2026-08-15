@@ -1255,15 +1255,74 @@ reviewed  + add regression test
 
 ## 24. Phase 20 — Monitor alsa-lib separately
 
-BlueALSA is not the real API provider.
+BlueALSA is only a reference implementation.
 
-The more important dependency is:
+The direct API dependency for the ioplug backend is:
 
 ```text
 alsa-lib
 ```
 
-because both BlueALSA and our plugin use its ioplug interface.
+because both BlueALSA and our plugin use its public ioplug interface.  We therefore track alsa-lib
+separately from BlueALSA and treat it as a higher-priority upstream.
+
+Create:
+
+```text
+docs/ALSALIB_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/alsa-lib-upstream.yml
+```
+
+containing:
+
+```text
+repository          https://github.com/alsa-project/alsa-lib
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+pcm_ioplug API and header changes
+PCM plugin lifecycle semantics (open, hw_params, prepare, start, stop, drain, drop, pause, resume)
+poll/pointer/delay/XRUN behaviour
+hw_ptr, appl_ptr, boundary, and avail-update semantics
+versioned compatibility flags and compatibility workarounds
+dynamic loader / install-path / external PCM module behaviour
+release notes or changelog entries affecting plugin ABI/API compatibility
+breaking changes in any of the above
+```
+
+Ignore changes that are unrelated to the userspace PCM plugin API surface we consume.
+
+Preferred process:
+
+```text
+alsa-lib release / relevant commit
+      ↓
+CI notices new release or relevant API change
+      ↓
+plugin test suite runs automatically
+      ↓
+GitHub issue (label: upstream/alsa-lib)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update plugin compatibility handling
+reviewed  + add or update regression test
+```
 
 Maintenance priorities should therefore be:
 
@@ -1281,7 +1340,7 @@ LOW
     unrelated BlueALSA Bluetooth functionality
 ```
 
-A new alsa-lib release should trigger the plugin test suite even if no source change is required.
+Automation should detect new relevant changes, but **never automatically merge them**.
 
 ---
 
