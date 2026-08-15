@@ -424,6 +424,29 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 }
 
 /*
+ * pcdsp_disconnect_on_stream_error — check for a fatal stream error and, if
+ * one is present, proactively transition the ioplug's visible ALSA state to
+ * DISCONNECTED before returning it, matching BlueALSA's bluealsa_prepare(),
+ * bluealsa_drain(), bluealsa_pause() and bluealsa_delay(), each of which
+ * checks `!pcm->connected` at entry and calls
+ * snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED) before returning
+ * -ENODEV. Doing this from every callback (rather than only from pointer())
+ * means the application observes SND_PCM_STATE_DISCONNECTED via
+ * snd_pcm_state() as soon as it calls any of these, not only after its next
+ * pointer()-driven avail update.
+ *
+ * Returns 0 if there is no recorded error, otherwise the recorded error
+ * (always a negative errno).
+ */
+static int pcdsp_disconnect_on_stream_error(snd_pcm_ioplug_t *io, pcdsp_pcm_t *pcdsp)
+{
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0)
+        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
+    return serr;
+}
+
+/*
  * pointer — return the current hw_ptr.
  *
  * The ioplug core uses this value to determine how much space is available
@@ -438,17 +461,25 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* If the worker recorded a fatal stream error (e.g. -EPIPE when
-     * CamillaDSP exited), return it immediately so ALSA sees the error. */
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-    if (serr != 0)
-        return (snd_pcm_sframes_t)serr;
-
     uint64_t hw_total = atomic_load_explicit(&pcdsp->hw_frames, memory_order_acquire);
     snd_pcm_sframes_t hw_ptr = (snd_pcm_sframes_t)hw_total;
 #ifndef SND_PCM_IOPLUG_FLAG_BOUNDARY_WA
     hw_ptr %= (snd_pcm_sframes_t)pcdsp->buffer_size;
 #endif
+
+    /* If the worker recorded a fatal stream error (e.g. -EPIPE when
+     * CamillaDSP exited), this PCM instance cannot recover on its own.
+     * Matching BlueALSA's bluealsa_pointer(): alsa-lib's
+     * snd_pcm_ioplug_hw_ptr_update() treats any negative pointer() return
+     * as XRUN (or drops a draining stream), never as DISCONNECTED, which
+     * would leave the fatal error looking recoverable to the application.
+     * So instead of returning the negative errno here, set the ioplug
+     * state to DISCONNECTED directly and return the last known
+     * (non-negative) hw_ptr — ioplug then leaves that state alone, and
+     * snd_pcm_avail_update()/poll_revents() surface -ENODEV to the caller
+     * because the PCM is DISCONNECTED rather than merely in XRUN. */
+    if (pcdsp_disconnect_on_stream_error(io, pcdsp) != 0)
+        return hw_ptr;
 
     /* Check for XRUN: if the application has written more than buffer_size
      * frames ahead of what the consumer has drained, declare XRUN. */
@@ -457,7 +488,7 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
     if ((wp - rp) > pcdsp->buffer_size)
         return -EPIPE;
 
-    return (snd_pcm_sframes_t)hw_ptr;
+    return hw_ptr;
 }
 
 /*
@@ -653,9 +684,24 @@ static int pcdsp_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *params)
 static int pcdsp_prepare(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Matching BlueALSA's bluealsa_prepare(): once the worker has recorded
+     * a fatal stream error (the pipe to CamillaDSP is broken and cannot be
+     * replaced without a fresh IPC handshake, which only hw_params()
+     * performs), refuse to silently "recover" via prepare(). Clearing
+     * stream_error here and returning success would let the application
+     * believe the stream is healthy again while writes keep hitting the
+     * same broken pipe_fd, immediately re-failing. Instead, surface
+     * DISCONNECTED so the application is told to close() and reopen. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
+    if (serr != 0)
+        return serr;
+
     pcdsp_rb_reset(&pcdsp->rb);
     atomic_store_explicit(&pcdsp->hw_frames, 0, memory_order_release);
-    /* Clear any error/drain state from a previous run. */
+    /* stream_error is already known 0 here (checked above); store it
+     * explicitly anyway as defence-in-depth against a late worker write
+     * racing this reset. */
     atomic_store_explicit(&pcdsp->stream_error, 0, memory_order_release);
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
 
@@ -746,7 +792,9 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
 
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    /* Matching BlueALSA's bluealsa_drain(): if a fatal stream error was
+     * recorded, transition to DISCONNECTED before returning it. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
     if (serr != 0)
         return serr;
     if (timed_out)
@@ -759,6 +807,14 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 static int pcdsp_pause(snd_pcm_ioplug_t *io, int enable)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Matching BlueALSA's bluealsa_pause(): refuse to pause or resume a
+     * stream whose worker has recorded a fatal error, and make that
+     * DISCONNECTED transition visible immediately rather than only on the
+     * next pointer()-driven avail update. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
+    if (serr != 0)
+        return serr;
 
     if (!enable) {
         /* Resume: clear the flag and wake a worker parked in the pause
@@ -867,13 +923,18 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
 
     *revents = 0;
 
-    /* If the worker recorded a fatal stream error, expose it as POLLERR so
-     * the application wakes from poll() and subsequently sees the error in
-     * pointer() or delay(). */
+    /* If the worker recorded a fatal stream error, this PCM instance cannot
+     * recover on its own. Matching BlueALSA's poll_revents() `fail:` path:
+     * proactively transition to DISCONNECTED (rather than leaving state
+     * undecided) and report POLLERR|POLLHUP with -ENODEV, so the
+     * application wakes from poll() and immediately sees a definitive,
+     * non-recoverable error instead of one that could be mistaken for a
+     * transient XRUN. */
     int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
     if (serr != 0) {
-        *revents = POLLERR;
-        return 0;
+        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
+        *revents = POLLERR | POLLHUP;
+        return -ENODEV;
     }
 
     if (pfd[0].revents & POLLIN) {
@@ -936,7 +997,10 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
 static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    /* Matching BlueALSA's bluealsa_delay(): transition to DISCONNECTED
+     * before reporting the error, so the state is visible even if the
+     * application only ever calls delay() and never pointer(). */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
     if (serr != 0)
         return serr;
 

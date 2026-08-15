@@ -248,11 +248,42 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    deliberate, measured divergence in `BLUEALSA_TRACKING.md`'s Delay
 >    accounting section, not an unexamined one.
 >
-> Full C suite re-run after both changes: 7/7 binaries, 0 failures
-> (`cmake --build . -j$(nproc) && ctest --output-on-failure`). `cargo test`
+> 4. **Device disconnect** — BlueALSA's IO thread only ever flips an
+>    `atomic_bool connected = false`; every *app-thread* callback
+>    (`bluealsa_prepare`, `bluealsa_drain`, `bluealsa_pause`,
+>    `bluealsa_delay`, `poll_revents`'s `fail:` path) then proactively calls
+>    `snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)` before
+>    returning `-ENODEV`, and `bluealsa_pointer()` does the same but returns
+>    a non-negative hw_ptr instead of an error (since alsa-lib's
+>    `snd_pcm_ioplug_hw_ptr_update()` treats any negative `pointer()` return
+>    as `XRUN`, never `DISCONNECTED` — confirmed by reading alsa-lib's
+>    `pcm_ioplug.c`). Previously, `pcdsp_pointer()` returned the fatal
+>    error's negative errno directly (→ silently became `XRUN`, and left the
+>    plugin's own `SND_PCM_STATE_DISCONNECTED` case in `pcdsp_poll_revents()`
+>    dead/unreachable code), and `pcdsp_prepare()` unconditionally cleared
+>    `stream_error`, letting an app's `snd_pcm_prepare()` call after a fatal
+>    error look like a successful recovery even though the pipe/IPC
+>    connection can only be refreshed via `hw_params()`. Added a shared
+>    `pcdsp_disconnect_on_stream_error()` helper (`pcm.c`) and wired it into
+>    `pcdsp_pointer()`, `pcdsp_prepare()`, `pcdsp_drain()`, `pcdsp_pause()`,
+>    `pcdsp_delay()`, and `pcdsp_poll_revents()`, mirroring BlueALSA's
+>    multi-callback pattern one-for-one. Two new regression tests in
+>    `test_pcm_integration.c`:
+>    `pointer_and_poll_report_disconnected_after_camilladsp_exits` (closes the
+>    mock server's pipe read end mid-stream, asserts
+>    `snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED` and that a subsequent
+>    `snd_pcm_writei()` returns `-ENODEV`) and
+>    `prepare_refuses_to_silently_clear_a_fatal_stream_error` (asserts
+>    `snd_pcm_prepare()` itself returns `-ENODEV` rather than resetting to a
+>    healthy-looking state).
+>
+> Full C suite re-run after all four changes: 7/7 binaries, 0 failures
+> (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 18/18 checks
+> inside `test_pcm_integration` including the four new tests). `cargo test`
 > re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.
-> `BLUEALSA_TRACKING.md`'s verification table and prose sections updated to
-> cite the new code and tests.
+> `BLUEALSA_TRACKING.md`'s verification table and prose sections (Signal
+> masking, Drain semantics, Delay accounting, Device disconnect / connectivity
+> state) updated to cite the new code and tests.
 
 - [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
 - [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:

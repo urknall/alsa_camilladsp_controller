@@ -223,6 +223,11 @@ typedef struct {
      * can let the server thread return promptly once it is done, instead
      * of waiting out the full hold duration. */
     _Atomic(bool)      *stop_holding;
+    /* When > 0: drain the pipe like drain_pipe, but close the read end as
+     * soon as this many bytes have been read, simulating CamillaDSP exiting
+     * mid-stream (kernel closes the read end, so the worker's next write
+     * gets -EPIPE) rather than a clean drain_pipe-until-EOF shutdown. */
+    long                close_pipe_after_bytes;
 } server_args_t;
 
 /* Upper bound (in 10 ms steps) on how long hold_pipe_no_read keeps the pipe
@@ -322,7 +327,21 @@ static void *mock_server_thread(void *arg)
             }
             (void)send_fd_with_ready(cfd, pipefd[1]);
             close(pipefd[1]);
-            if (a->drain_pipe) {
+            if (a->close_pipe_after_bytes > 0) {
+                uint8_t tmp[4096];
+                ssize_t n;
+                long total = 0;
+                while (total < a->close_pipe_after_bytes &&
+                       (n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
+                    total += n;
+                    if (a->bytes_read)
+                        atomic_fetch_add_explicit(a->bytes_read, (long)n,
+                                                   memory_order_relaxed);
+                }
+                /* Simulate CamillaDSP exiting mid-stream: close the read end
+                 * now instead of draining to EOF, so the worker's next
+                 * write() observes -EPIPE. */
+            } else if (a->drain_pipe) {
                 uint8_t tmp[4096];
                 ssize_t n;
                 while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
@@ -1024,6 +1043,115 @@ TEST(poll_revents_respects_avail_min_from_sw_params)
 }
 
 /* -----------------------------------------------------------------------
+ * Device disconnect (BlueALSA-parity: proactive DISCONNECTED state)
+ * ---------------------------------------------------------------------- */
+
+TEST(pointer_and_poll_report_disconnected_after_camilladsp_exits)
+{
+    /*
+     * Regression: previously, once the worker recorded a fatal stream
+     * error (CamillaDSP exited, kernel closed the pipe read end so the
+     * next write got -EPIPE), pcdsp_pointer() returned that negative errno
+     * directly. alsa-lib's snd_pcm_ioplug_hw_ptr_update() treats any
+     * negative pointer() return as XRUN, never as DISCONNECTED — so the
+     * application could never distinguish "CamillaDSP is permanently gone,
+     * close and reopen" from an ordinary, recoverable XRUN. Matching
+     * BlueALSA's bluealsa_pointer()/poll_revents() exactly: the plugin must
+     * now call snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)
+     * itself and report -ENODEV, not a bare XRUN.
+     */
+    init_sock_path("disconnect");
+    server_args_t args = {
+        .sock_path              = g_sock_path,
+        .response               = PCDSP_ERR_OK,
+        .close_pipe_after_bytes = 512,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0); /* period=1024, buffer_size=4096 frames */
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+
+    /* Keep writing (and letting the worker hand frames to the pipe) until
+     * the plugin observes the pipe close and reports it, or a generous
+     * bound elapses. Every write is deliberately small (257 frames) and
+     * spaced out so the worker has time to actually flush each chunk to
+     * the pipe and hit -EPIPE once the mock server closes its end after
+     * 512 bytes, rather than depending on a single oversized write. */
+    bool became_disconnected = false;
+    for (int i = 0; i < 200 && !became_disconnected; i++) {
+        snd_pcm_writei(pcm, frames, 257); /* ignore rc: EAGAIN/EPIPE both fine here */
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED)
+            became_disconnected = true;
+    }
+
+    CHECK(became_disconnected);
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED);
+
+    /* Matching BlueALSA's contract: once DISCONNECTED, further writes must
+     * report -ENODEV (a permanent, non-recoverable error), not merely
+     * XRUN, so the application knows to close() and reopen rather than
+     * call snd_pcm_prepare() and retry. */
+    snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+    CHECK(rc == -ENODEV);
+
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+TEST(prepare_refuses_to_silently_clear_a_fatal_stream_error)
+{
+    /*
+     * Regression: pcdsp_prepare() previously reset stream_error to 0
+     * unconditionally, so an application that called snd_pcm_prepare()
+     * after a fatal error (e.g. as part of ordinary XRUN recovery) would
+     * be told the stream is healthy again — while writes kept hitting the
+     * same broken pipe_fd (IPC/pipe re-connection only happens in
+     * hw_params(), not prepare()), immediately re-failing. Matching
+     * BlueALSA's bluealsa_prepare(): once disconnected, prepare() itself
+     * must also report the disconnect rather than papering over it.
+     */
+    init_sock_path("disconnect-prepare");
+    server_args_t args = {
+        .sock_path              = g_sock_path,
+        .response               = PCDSP_ERR_OK,
+        .close_pipe_after_bytes = 512,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0);
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+    bool became_disconnected = false;
+    for (int i = 0; i < 200 && !became_disconnected; i++) {
+        snd_pcm_writei(pcm, frames, 257);
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED)
+            became_disconnected = true;
+    }
+    CHECK(became_disconnected);
+
+    /* prepare() must refuse (report the disconnect), not silently reset
+     * the PCM to a state that looks usable. */
+    CHECK(snd_pcm_prepare(pcm) == -ENODEV);
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED);
+
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -1062,6 +1190,10 @@ int main(void)
     /* sw_params avail_min / delay() pipe accounting (Step 4) */
     RUN(delay_accounts_for_frames_queued_in_kernel_pipe);
     RUN(poll_revents_respects_avail_min_from_sw_params);
+
+    /* device disconnect (BlueALSA-parity proactive DISCONNECTED state) */
+    RUN(pointer_and_poll_report_disconnected_after_camilladsp_exits);
+    RUN(prepare_refuses_to_silently_clear_a_fatal_stream_error);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

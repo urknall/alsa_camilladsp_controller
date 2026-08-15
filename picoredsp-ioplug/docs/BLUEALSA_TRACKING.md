@@ -146,20 +146,25 @@ rules out a tautological/mocked test giving a false sense of coverage.
 | `sw_params` | ❌ absent | `pcdsp_sw_params()` implemented and registered in the ioplug callback table, reads `avail_min` via `snd_pcm_sw_params_get_avail_min()` | `pcm.c:626-643`, registered at `pcm.c:951` |
 | `avail_min` | ❌ not captured | Captured by `pcdsp_sw_params()`, consulted by `pcdsp_poll_revents()` to gate `RUNNING`-state readiness (`avail >= avail_min`) | `pcm.c:142-146`, `pcm.c:859-863`. Test `poll_revents_respects_avail_min_from_sw_params` negotiates `avail_min=4096` against a scenario that can never reach it and asserts poll never reports ready |
 | Delay | ⚠️ ring only | `pcdsp_delay()` adds ring-buffer occupancy *and* bytes already queued in the kernel pipe (`ioctl(FIONREAD)`); documented residual gap is CamillaDSP's own post-pipe internal buffering, which is genuinely outside the plugin's visibility, not an oversight. **Evaluated and reverted:** BlueALSA's exact "snapshot from the IO thread + extrapolate elapsed time" technique (avoiding a syscall on every `delay()` call) was implemented and measured against the existing wedged-peer regression test; it silently under-reports delay once CamillaDSP stalls, because it assumes continuous consumption between snapshots — exactly the scenario this plugin's own tests treat as a first-class case (unlike BlueALSA's Bluetooth transport, where a permanently stalled peer isn't the normal case it optimizes for). Kept the always-live `ioctl(FIONREAD)` per call instead, since correctness for a stalled peer matters more here than the syscall saving | `pcm.c:898-923` |
-| Device disconnect | Basic error | `pcdsp_hw_free()` closes the pipe fd and IPC connection on an unexpected hw_free (no stop/drain), so the controller is never left waiting on a STOP that never arrives; `pcdsp_poll_revents()` surfaces `POLLERR`/`POLLHUP`/`-ENODEV` on `SND_PCM_STATE_DISCONNECTED` | `pcm.c:609-624`, `pcm.c:874-878` |
+| Device disconnect | Basic error | Matches BlueALSA's exact multi-callback pattern now: a shared `pcdsp_disconnect_on_stream_error()` helper calls `snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)` proactively from `pcdsp_pointer()`, `pcdsp_prepare()`, `pcdsp_drain()`, `pcdsp_pause()`, `pcdsp_delay()`, and `pcdsp_poll_revents()` as soon as a fatal stream error is recorded — instead of `pcdsp_pointer()` returning the raw negative errno, which alsa-lib's `snd_pcm_ioplug_hw_ptr_update()` would otherwise translate into `SND_PCM_STATE_XRUN`, never `DISCONNECTED` (confirmed by reading alsa-lib's `pcm_ioplug.c`). `pcdsp_prepare()` also now refuses (`-ENODEV`) instead of silently clearing `stream_error` and returning success, since the pipe/IPC connection can only be re-established via a fresh `hw_params()`, not `prepare()`. `pcdsp_hw_free()` still additionally closes the pipe fd and IPC connection on an unexpected hw_free (no stop/drain) | `pcm.c:441-448` (`pcdsp_disconnect_on_stream_error`), call sites in `pcdsp_pointer` (`pcm.c:~479`), `pcdsp_prepare` (`~688-698`), `pcdsp_drain` (`~782-786`), `pcdsp_pause` (`~811-817`), `pcdsp_delay` (`~999-1004`), `pcdsp_poll_revents` (`~923-933`); `pcdsp_hw_free()` at `pcm.c:645-660`. Tests **`pointer_and_poll_report_disconnected_after_camilladsp_exits`** (closes the mock server's pipe read end after 512 bytes, asserts `snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED` and that a subsequent `snd_pcm_writei()` returns `-ENODEV`, not just an XRUN-style error) and **`prepare_refuses_to_silently_clear_a_fatal_stream_error`** (asserts `snd_pcm_prepare()` itself returns `-ENODEV` and does not reset state) in `test_pcm_integration.c` |
 | alsa-lib quirks | Almost no tracked policy | `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA` used when available (monotone `hw_ptr`), with a `hw_ptr %= buffer_size` fallback for older alsa-lib — the same pattern BlueALSA uses | `pcm.c:427-445` (fallback), `pcm.c:1054-1056` (flag opt-in) |
 | Upstream review | ❌ stale | Tracked path corrected to `src/asound/bluealsa-pcm.c`, pinned to commit `84ad90d`, dated 2026-08-15; a machine-readable path-existence check (`scripts/check_upstream_tracking.py::missing_tracked_paths`, added 2026-08-15/16) now catches a future rename automatically instead of relying on a human noticing | This document's Repository Details table and Review Log |
 
 All nine rows above were re-verified by rebuilding and re-running the full C
-test suite after the SIGPIPE and Drain code changes landed
+test suite after each round of code changes landed (SIGPIPE, Drain, Delay
+evaluation, Device disconnect)
 (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 7/7 binaries,
-0 failures, including both new regression tests), and by re-running
+0 failures, including all new regression tests), and by re-running
 `cargo test` (214 passed, 0 failed) to confirm the Rust side is unaffected.
 
-
-No production code changes were needed for these rows; all were already
-correct as of the 2026-08-15 correctness pass and are exercised by tests
-that were re-run (not just re-read) to confirm this.
+Four rows (SIGPIPE, Drain, Device disconnect, and an evaluated-then-reverted
+attempt at Delay) required actual production code changes to match
+BlueALSA's mechanism exactly, not just its externally observable behaviour;
+see the "Exact-mechanism follow-up" note in `ROADMAP_CHECKLIST.md` Phase 5
+for the full narrative. The remaining rows (Pause synchronization,
+`sw_params`, `avail_min`, alsa-lib quirks, Upstream review) were already
+correct as of the 2026-08-15 correctness pass and required no further code
+changes, only re-verification.
 
 ## Findings from 2026-08 review
 
@@ -238,6 +243,57 @@ via a pipe, not a Bluetooth transport via D-Bus/FIFO).
   application. There is no separate `write_pos - read_pos > buffer_size`
   check as earlier notes assumed — that framing came from a generic
   lock-free ring buffer design, not from this codebase.
+
+### Device disconnect / connectivity state
+
+- BlueALSA's IO thread only ever sets an `atomic_bool pcm->connected = false`
+  on a fatal transport error; it never calls
+  `snd_pcm_ioplug_set_state()` itself (that would be a background-thread
+  write into ioplug's unsynchronized `io->state` field, which
+  `snd_pcm_ioplug_set_state()` is not safe to do from anywhere but the
+  callback thread).
+- Instead, **every app-thread-invoked ioplug callback that can observe a
+  dead connection** checks `!pcm->connected` at its own entry and reacts:
+  `bluealsa_prepare()`, `bluealsa_drain()`, `bluealsa_pause()`,
+  `bluealsa_delay()`, and the `poll_revents()` `fail:` path all call
+  `snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)` and return
+  `-ENODEV`.
+- `bluealsa_pointer()` is the one exception, and for a specific alsa-lib
+  reason: alsa-lib's `snd_pcm_ioplug_hw_ptr_update()` treats *any* negative
+  `pointer()` return as `SND_PCM_STATE_XRUN` (or drops a draining stream),
+  never as `DISCONNECTED` — so returning the raw negative errno from
+  `pointer()` would make ioplug itself silently overwrite the
+  `DISCONNECTED` state with `XRUN` on the very next hw_ptr update. BlueALSA
+  avoids this by setting `DISCONNECTED` directly inside `pointer()` and
+  returning a **non-negative** value, so ioplug's own hw_ptr-update logic
+  has nothing negative to reinterpret.
+- **Implemented to match exactly (2026-08-16):** `pcdsp_disconnect_on_stream_error()`
+  is a single shared helper, called from `pcdsp_pointer()`, `pcdsp_prepare()`,
+  `pcdsp_drain()`, `pcdsp_pause()`, `pcdsp_delay()`, and
+  `pcdsp_poll_revents()`, mirroring BlueALSA's multi-callback pattern
+  one-for-one. Before this change, `pcdsp_pointer()` returned the fatal
+  error's negative errno directly, which (per the alsa-lib behaviour above,
+  confirmed by reading `pcm_ioplug.c`) produced `SND_PCM_STATE_XRUN`, not
+  `DISCONNECTED` — meaning the plugin's own `SND_PCM_STATE_DISCONNECTED`
+  case inside `pcdsp_poll_revents()` was dead code that nothing ever
+  reached. `pcdsp_prepare()` also previously reset `stream_error` to `0`
+  unconditionally, which — because the IPC/pipe connection is only
+  re-established in `hw_params()`, not `prepare()` — meant a
+  `snd_pcm_prepare()` call after a fatal error looked like a successful
+  recovery even though the very next write would immediately hit the same
+  broken pipe again. Verified with two new tests in
+  `test_pcm_integration.c`: `pointer_and_poll_report_disconnected_after_camilladsp_exits`
+  (closes the mock server's pipe read end after 512 bytes, then asserts
+  `snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED` and that a subsequent
+  `snd_pcm_writei()` returns `-ENODEV`) and
+  `prepare_refuses_to_silently_clear_a_fatal_stream_error` (asserts
+  `snd_pcm_prepare()` itself returns `-ENODEV` rather than resetting the
+  stream to a state that looks healthy).
+- `pcdsp_hw_free()` additionally closes the pipe fd and IPC connection on an
+  unexpected hw_free (no stop/drain first), so the controller process is
+  never left waiting on a `STOP` message that will never arrive — a
+  piCoreDSP-specific concern with no direct BlueALSA analog (BlueALSA's
+  D-Bus transport doesn't have an equivalent "stray STOP" failure mode).
 
 ### Pause/resume synchronisation
 
