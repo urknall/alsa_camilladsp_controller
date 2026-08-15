@@ -143,6 +143,12 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             args.port.to_string(),
             "--address".to_owned(),
             args.host.clone(),
+            "--logfile".to_owned(),
+            "/tmp/camilladsp.log".to_owned(),
+            "--log_rotate_size".to_owned(),
+            "262144".to_owned(),
+            "--log_keep_nbr".to_owned(),
+            "1".to_owned(),
         ];
         if let Some(sf) = &args.cdsp_statefile {
             cdsp_extra_args.push("--statefile".to_owned());

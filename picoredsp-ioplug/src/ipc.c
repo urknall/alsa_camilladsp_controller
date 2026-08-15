@@ -246,14 +246,14 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
 
     /* Peek at the message type byte first. */
     uint8_t type_byte;
-    int rc = recv_all(conn->fd, &type_byte, 1, PCDSP_IPC_IO_TIMEOUT_MS);
+    int rc = recv_all(conn->fd, &type_byte, 1, PCDSP_IPC_READY_TIMEOUT_MS);
     if (rc < 0)
         return rc;
 
     if (type_byte == PCDSP_MSG_ERROR) {
         /* Read and validate the remaining error fields. */
         uint8_t rest[2]; /* version + code */
-        rc = recv_all(conn->fd, rest, sizeof(rest), PCDSP_IPC_IO_TIMEOUT_MS);
+        rc = recv_all(conn->fd, rest, sizeof(rest), PCDSP_IPC_READY_TIMEOUT_MS);
         if (rc < 0)
             return rc;
         if (rest[0] != conn->negotiated_version)
@@ -271,7 +271,7 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
 
     /* Read the version byte that follows the type byte. */
     uint8_t ver_byte;
-    rc = recv_all(conn->fd, &ver_byte, 1, PCDSP_IPC_IO_TIMEOUT_MS);
+    rc = recv_all(conn->fd, &ver_byte, 1, PCDSP_IPC_READY_TIMEOUT_MS);
     if (rc < 0)
         return rc;
 
@@ -304,7 +304,7 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
 
     struct pollfd pfd = { .fd = conn->fd, .events = POLLIN };
     while (1) {
-        int pr = poll(&pfd, 1, PCDSP_IPC_IO_TIMEOUT_MS);
+        int pr = poll(&pfd, 1, PCDSP_IPC_READY_TIMEOUT_MS);
         if (pr < 0) {
             if (errno == EINTR)
                 continue;

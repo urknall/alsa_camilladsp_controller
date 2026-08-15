@@ -630,6 +630,41 @@ TEST(recv_ready_returns_error_code_on_error_internal)
     pcdsp_ipc_close(&conn);
 }
 
+typedef struct {
+    int fd;
+    useconds_t delay_us;
+} delayed_ready_args_t;
+
+static void *delayed_ready_sender(void *arg)
+{
+    delayed_ready_args_t *a = (delayed_ready_args_t *)arg;
+    usleep(a->delay_us);
+    uint8_t ready[2] = { PCDSP_MSG_READY, PCDSP_IPC_PROTOCOL_VERSION };
+    (void)write_all(a->fd, ready, sizeof(ready));
+    return NULL;
+}
+
+TEST(recv_ready_allows_slow_camilladsp_startup)
+{
+    pcdsp_ipc_conn_t conn;
+    int server_fd;
+    CHECK(make_pair(&conn, &server_fd) == 0);
+
+    /* The controller performs config adaptation + process spawn + a 500 ms
+     * health check before READY.  On a Pi the total can exceed one second.
+     * This delay deliberately exceeds the old 1000 ms timeout. */
+    delayed_ready_args_t args = { .fd = server_fd, .delay_us = 1200000 };
+    pthread_t tid;
+    CHECK(pthread_create(&tid, NULL, delayed_ready_sender, &args) == 0);
+
+    int rc = pcdsp_ipc_recv_ready(&conn, NULL, NULL);
+    CHECK(rc == 0);
+
+    CHECK(pthread_join(tid, NULL) == 0);
+    close(server_fd);
+    pcdsp_ipc_close(&conn);
+}
+
 TEST(recv_ready_fails_on_disconnect_before_type_byte)
 {
     pcdsp_ipc_conn_t conn;
@@ -1021,6 +1056,7 @@ int main(void)
     RUN(recv_ready_returns_error_code_on_error_config);
     RUN(recv_ready_returns_error_code_on_error_playback_device);
     RUN(recv_ready_returns_error_code_on_error_internal);
+    RUN(recv_ready_allows_slow_camilladsp_startup);
     RUN(recv_ready_fails_on_disconnect_before_type_byte);
     RUN(recv_ready_fails_on_disconnect_after_type_byte);
     RUN(recv_ready_fails_on_wrong_message_type);

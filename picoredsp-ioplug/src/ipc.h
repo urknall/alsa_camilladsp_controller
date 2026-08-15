@@ -55,9 +55,16 @@ extern "C" {
 /* Default socket path.  Can be overridden via ALSA config. */
 #define PCDSP_IPC_DEFAULT_SOCKET_PATH   "/run/picoredsp/control.sock"
 
-/* Connect / send / receive timeout (milliseconds). */
+/* IPC timeouts (milliseconds).
+ *
+ * Normal HELLO/frame I/O should fail quickly, but START -> READY includes
+ * writing the runtime config, spawning CamillaDSP and opening the physical
+ * ALSA playback device.  That path can legitimately take more than one
+ * second on Raspberry Pi / piCorePlayer, so give READY its own budget.
+ */
 #define PCDSP_IPC_CONNECT_TIMEOUT_MS    2000
 #define PCDSP_IPC_IO_TIMEOUT_MS         1000
+#define PCDSP_IPC_READY_TIMEOUT_MS      5000
 
 /* -----------------------------------------------------------------------
  * Message type tags  (1 byte)
