@@ -969,9 +969,7 @@ mod tests {
             Some(2)
         );
         assert_eq!(
-            capture
-                .get(yaml_key("format"))
-                .and_then(YamlValue::as_str),
+            capture.get(yaml_key("format")).and_then(YamlValue::as_str),
             Some("S16_LE")
         );
         assert!(capture.contains_key(yaml_key("labels")));
