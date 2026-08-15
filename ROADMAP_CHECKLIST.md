@@ -388,40 +388,58 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 ## Phase 19 — BlueALSA upstream monitoring
 
-- [ ] Create `docs/BLUEALSA_TRACKING.md` (or `docs/bluealsa-upstream.yml`)
-- [ ] Record: repository, tracked source files, last reviewed commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant BlueALSA changes and opens a GitHub issue (never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → port concept/fix or mark reviewed
+> Closed out 2026-08-15 (Step 8 of the correctness follow-up plan):
+> `docs/upstream-tracking.yml` is the machine-readable manifest and
+> `.github/workflows/upstream-tracking.yml` + `scripts/check_upstream_tracking.py`
+> implement the detect → issue automation, scheduled weekly.
+
+- [x] Create `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md` and a `bluealsa` entry in `docs/upstream-tracking.yml`
+- [x] Record: repository, tracked source files, last reviewed commit, review date, relevant topic categories
+- [x] CI automation detects new relevant BlueALSA changes and opens a GitHub issue (never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → port concept/fix or mark reviewed
 
 ## Phase 20 — alsa-lib monitoring
 
-- [ ] alsa-lib version tracked separately from BlueALSA
-- [ ] New alsa-lib release triggers the plugin test suite automatically
-- [ ] Maintenance priority documented:
-  - [ ] HIGH: alsa-lib, CamillaDSP, piCorePlayer
-  - [ ] MEDIUM: Linux ALSA, BlueALSA reference changes
-  - [ ] LOW: unrelated BlueALSA Bluetooth functionality
+> Closed out 2026-08-15: `docs/ALSA_LIB_TRACKING.md` + the `alsa-lib` entry
+> in `docs/upstream-tracking.yml`.
+
+- [x] alsa-lib version tracked separately from BlueALSA
+- [x] New alsa-lib release triggers the plugin test suite automatically (see `docs/ALSA_LIB_TRACKING.md` Automation section)
+- [x] Maintenance priority documented:
+  - [x] HIGH: alsa-lib, CamillaDSP, piCorePlayer
+  - [x] MEDIUM: Linux ALSA, BlueALSA reference changes
+  - [x] LOW: unrelated BlueALSA Bluetooth functionality
 
 ## Phase 20a — CamillaDSP upstream monitoring
 
-- [ ] Create `docs/CAMILLADSP_TRACKING.md` (or `docs/camilladsp-upstream.yml`)
-- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLADSP_TRACKING.md` + the `camilladsp`
+> entry in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLADSP_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entry)
+- [x] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
 
 ## Phase 20b — camilladsp-controller upstream monitoring
 
-- [ ] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (or `docs/camilladsp-controller-upstream.yml`)
-- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLADSP_CONTROLLER_TRACKING.md` + the
+> `camilladsp-controller` entry in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entry)
+- [x] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
 
 ## Phase 20c — CamillaDSP GUI upstream monitoring
 
-- [ ] Create `docs/CAMILLAGUI_TRACKING.md` (or `docs/camillagui-upstream.yml`)
-- [ ] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLAGUI_TRACKING.md` + the
+> `camillagui-backend` / `camillagui` entries in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLAGUI_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entries)
+- [x] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+
 
 ---
 

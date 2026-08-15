@@ -1,0 +1,62 @@
+name: Upstream Tracking
+
+# Phase 5 / Phase 19 / Phase 20 / Phase 20a-c: monitor reference and runtime
+# upstream dependencies (BlueALSA, alsa-lib, CamillaDSP, camilladsp-controller,
+# camillagui) for changes to tracked files, and open a GitHub issue for
+# manual review. This workflow NEVER merges, cherry-picks, or otherwise
+# applies upstream changes automatically - see docs/upstream-tracking.yml.
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/upstream-tracking.yml'
+      - 'scripts/check_upstream_tracking.py'
+      - '.github/workflows/upstream-tracking.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docs/upstream-tracking.yml'
+      - 'scripts/check_upstream_tracking.py'
+      - '.github/workflows/upstream-tracking.yml'
+
+jobs:
+  check:
+    name: Check tracked upstream sources
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Validate manifest syntax
+        run: python3 -c "import yaml; yaml.safe_load(open('docs/upstream-tracking.yml'))"
+
+      # Pull requests only validate the manifest/script; they must not open
+      # issues (no token with issue-write scope is used, and --dry-run is
+      # forced) so a PR touching this workflow cannot spam the tracker.
+      - name: Check for upstream changes (dry run on pull_request)
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/check_upstream_tracking.py --repo "${{ github.repository }}" --dry-run
+
+      - name: Check for upstream changes
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_upstream_tracking.py --repo "${{ github.repository }}"
