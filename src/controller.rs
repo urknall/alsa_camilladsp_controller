@@ -387,7 +387,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                     );
                     retry.record_attempt();
                 }
-                _ => {
+                ErrorCode::Config | ErrorCode::Protocol | ErrorCode::Internal => {
                     log(
                         LogLevel::Error,
                         log_level,
