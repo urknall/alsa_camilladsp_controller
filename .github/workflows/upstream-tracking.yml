@@ -35,6 +35,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    outputs:
+      alsa_lib_release_detected: ${{ steps.check.outputs.alsa_lib_release_detected }}
+      alsa_lib_release_tag: ${{ steps.check.outputs.alsa_lib_release_tag }}
 
     steps:
       - uses: actions/checkout@v5
@@ -63,6 +66,53 @@ jobs:
 
       - name: Check for upstream changes
         if: github.event_name != 'pull_request'
+        id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check_upstream_tracking.py --repo "${{ github.repository }}"
+
+  # New alsa-lib release detected above -> actually build alsa-lib at that
+  # tag and run the native ioplug test suite against it, instead of only
+  # opening a tracking issue that requires a human to remember to do this.
+  test_against_new_alsa_lib_release:
+    name: Build & test against newly released alsa-lib
+    needs: check
+    if: needs.check.outputs.alsa_lib_release_detected == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool \
+            gettext cmake
+
+      - name: Build and install alsa-lib ${{ needs.check.outputs.alsa_lib_release_tag }} from source
+        run: |
+          git clone --branch "${{ needs.check.outputs.alsa_lib_release_tag }}" \
+            --depth 1 https://github.com/alsa-project/alsa-lib.git /tmp/alsa-lib
+          cd /tmp/alsa-lib
+          libtoolize --force --copy --automake
+          aclocal
+          autoheader
+          automake --foreign --copy --add-missing
+          autoconf
+          ./configure --prefix=/usr
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+
+      - name: Configure native test build against the new alsa-lib release
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_new_alsa_lib \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build native test binaries
+        run: cmake --build picoredsp-ioplug/build_new_alsa_lib --parallel
+
+      - name: Run CTest suite against the new alsa-lib release
+        run: ctest --test-dir picoredsp-ioplug/build_new_alsa_lib --output-on-failure

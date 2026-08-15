@@ -250,8 +250,22 @@ static void *worker_thread(void *arg)
      * reports -EPIPE via write() instead of killing the host application,
      * and no other signal can interrupt this thread mid-transfer. See
      * pcdsp_worker_block_all_signals() in pcm_worker.c for the full
-     * rationale. */
-    pcdsp_worker_block_all_signals();
+     * rationale.
+     *
+     * This is not expected to fail with these arguments, but the SIGPIPE
+     * safety invariant it establishes is load bearing: silently continuing
+     * without it would mean an untested assumption that a broken pipe can
+     * never take down the host application. Treat failure as fatal for the
+     * worker — record it via stream_error (so pcdsp_pointer() and
+     * pcdsp_poll_revents() surface it and the PCM transitions to
+     * DISCONNECTED) and exit without ever touching the pipe. */
+    int mask_rc = pcdsp_worker_block_all_signals();
+    if (mask_rc != 0) {
+        atomic_store_explicit(&pcdsp->stream_error, mask_rc, memory_order_release);
+        atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
+        pcdsp_signal_event_fd(pcdsp->event_fd);
+        return NULL;
+    }
 
     while (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         if (atomic_load_explicit(&pcdsp->paused, memory_order_acquire)) {
@@ -435,15 +449,26 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
  * snd_pcm_state() as soon as it calls any of these, not only after its next
  * pointer()-driven avail update.
  *
- * Returns 0 if there is no recorded error, otherwise the recorded error
- * (always a negative errno).
+ * Returns 0 if there is no recorded error. Otherwise returns exactly
+ * -ENODEV, matching BlueALSA's contract byte-for-byte rather than the
+ * low-level errno that caused the disconnect (e.g. -EPIPE): a caller must
+ * not be able to return, say, -EPIPE from prepare()/drain()/pause()/delay()
+ * while simultaneously having just set the ioplug state to DISCONNECTED —
+ * that combination would be a callback being the *first* one to observe a
+ * freshly recorded stream_error, before anything else has externally
+ * observed (and alsa-lib's own generic DISCONNECTED-state guard has thus
+ * had a chance to convert to -ENODEV) the disconnected state. The original
+ * low-level error remains available via pcdsp->stream_error for
+ * diagnostics (e.g. logging), it is simply never returned to the
+ * application from this helper's callers.
  */
 static int pcdsp_disconnect_on_stream_error(snd_pcm_ioplug_t *io, pcdsp_pcm_t *pcdsp)
 {
     int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-    if (serr != 0)
-        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
-    return serr;
+    if (serr == 0)
+        return 0;
+    snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
+    return -ENODEV;
 }
 
 /*

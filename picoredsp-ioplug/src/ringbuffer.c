@@ -136,6 +136,33 @@ size_t pcdsp_rb_read(pcdsp_ringbuffer_t *rb, void *dst, size_t frames)
     return frames;
 }
 
+size_t pcdsp_rb_peek(const pcdsp_ringbuffer_t *rb, void *dst, size_t frames)
+{
+    uint64_t rp    = atomic_load_explicit(&rb->read_pos,  memory_order_relaxed);
+    uint64_t wp    = atomic_load_explicit(&rb->write_pos, memory_order_acquire);
+    size_t   avail = (size_t)(wp - rp);
+
+    if (frames > avail)
+        frames = avail;
+    if (frames == 0)
+        return 0;
+
+    size_t idx1 = (size_t)(rp & rb->mask);
+    size_t cont = rb->capacity - idx1;
+
+    if (frames <= cont) {
+        memcpy(dst, rb->buf + idx1 * rb->frame_bytes, frames * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+    } else {
+        memcpy(dst,                                   rb->buf + idx1 * rb->frame_bytes, cont * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+        memcpy((uint8_t *)dst + cont * rb->frame_bytes, rb->buf,                        (frames - cont) * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+    }
+
+    /* Deliberately no store to read_pos — the caller must call
+     * pcdsp_rb_drop() once the peeked frames' downstream handoff has
+     * actually succeeded. */
+    return frames;
+}
+
 size_t pcdsp_rb_drop(pcdsp_ringbuffer_t *rb, size_t frames)
 {
     uint64_t rp    = atomic_load_explicit(&rb->read_pos,  memory_order_relaxed);

@@ -37,20 +37,34 @@ LOW
 
 ## Automation
 
-A new alsa-lib release should trigger the plugin test suite automatically,
-even if no source change is required in this repository, so that a real
+A new alsa-lib release triggers the plugin test suite automatically, even
+if no source change is required in this repository, so that a real
 regression (not just a stale review-log entry) is caught. This is
-implemented as a scheduled job in
-`.github/workflows/upstream-tracking.yml`: on detecting a newer alsa-lib
-release tag than `last_reviewed_tag` in `docs/upstream-tracking.yml`, it
-opens a GitHub issue (label `upstream/alsa-lib`) prompting a manual review
-and a run of the full `native_c_tests` / `asan` / `ubsan` / `tsan` CI jobs
-against the new alsa-lib package version, if available in the CI image.
+implemented in `scripts/check_upstream_tracking.py` /
+`.github/workflows/upstream-tracking.yml`:
+
+1. `check_upstream_tracking.py` compares `last_reviewed_tag` in
+   `docs/upstream-tracking.yml` against alsa-lib's newest published GitHub
+   Release (falling back to its newest git tag if no release is published)
+   via the GitHub API — independently of the general tracked-path/commit
+   diff check, which for alsa-lib (`tracked_paths: []`) only ever reflects
+   its default-branch HEAD commit, not a tagged release.
+2. When a newer release/tag is found, the `check` job opens a GitHub issue
+   (label `upstream/alsa-lib`) *and* emits `alsa_lib_release_detected` /
+   `alsa_lib_release_tag` step outputs (because alsa-lib's manifest entry
+   sets `run_tests_on_release: true`).
+3. A second job, `test_against_new_alsa_lib_release`, runs only when those
+   outputs are set: it builds alsa-lib from source at the detected release
+   tag, installs it, then configures and runs the native `picoredsp-ioplug`
+   CTest suite (`test_ringbuffer`, `test_pcm_worker`, `test_pcm_integration`,
+   etc.) against that freshly built alsa-lib — so a real regression is
+   caught automatically, not just flagged for a human to remember to check.
 
 > **Important:** alsa-lib version bumps are never auto-merged. The
-> automation only opens a tracking issue; upgrading the pinned/expected
-> alsa-lib version (e.g. in CI images or documentation) is a manual,
-> reviewed decision.
+> automation only opens a tracking issue and runs the existing test suite
+> against the new release; upgrading the pinned/expected alsa-lib version
+> (e.g. in CI images or documentation) and updating `last_reviewed_tag` /
+> `last_reviewed_commit` remain a manual, reviewed decision.
 
 ## Review Log
 

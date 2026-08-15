@@ -66,7 +66,7 @@ struct BenchmarkMetrics {
     transition_48_to_96_ms: Option<f64>,
     stop_latency_ms: Option<f64>,
     pcm_transport_latency_ms: Option<f64>,
-    total_end_to_end_latency_ms: Option<f64>,
+    software_visible_latency_ms: Option<f64>,
     cpu_usage_percent: Option<f64>,
     context_switches: Option<u64>,
     controller_rss_kib: Option<u64>,

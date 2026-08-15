@@ -92,8 +92,28 @@ size_t pcdsp_rb_write(pcdsp_ringbuffer_t *rb, const void *src, size_t frames);
 size_t pcdsp_rb_read(pcdsp_ringbuffer_t *rb, void *dst, size_t frames);
 
 /*
+ * pcdsp_rb_peek — copy up to `frames` frames from the ring buffer into `dst`
+ * WITHOUT advancing read_pos.
+ *
+ * Use this together with pcdsp_rb_drop() to implement "commit only after a
+ * successful downstream handoff" consumers: peek the frames, hand them to a
+ * potentially-blocking/cancellable sink (e.g. a pipe write), and only call
+ * pcdsp_rb_drop() once the handoff has actually completed. This keeps the
+ * ring buffer the single authoritative queue for "has this audio left the
+ * plugin yet?" — unlike pcdsp_rb_read(), which removes frames from the ring
+ * before the caller has done anything with them, creating a window where the
+ * frames are in neither the ring buffer nor the downstream sink.
+ *
+ * Returns the number of frames actually peeked (may be less than `frames`
+ * if fewer are available). Does not mutate read_pos or write_pos.
+ */
+size_t pcdsp_rb_peek(const pcdsp_ringbuffer_t *rb, void *dst, size_t frames);
+
+/*
  * pcdsp_rb_drop — advance read_pos by `frames` without copying data.
- * Equivalent to discarding `frames` frames.
+ * Equivalent to discarding `frames` frames (or, paired with pcdsp_rb_peek(),
+ * committing frames previously peeked once their downstream handoff has
+ * completed).
  */
 size_t pcdsp_rb_drop(pcdsp_ringbuffer_t *rb, size_t frames);
 

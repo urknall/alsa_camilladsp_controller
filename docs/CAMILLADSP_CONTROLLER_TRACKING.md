@@ -4,10 +4,16 @@
 
 [`camilladsp-controller`](https://github.com/HEnquist/camilladsp-controller)
 is the official Python reference controller and WebSocket client for
-CamillaDSP. It defines the authoritative command/response API and control
-flow that this project's Rust `camilladsp::websocket` client and
-`core::state_machine` control loop re-implement natively. It is a design
-reference for protocol/behaviour, not a runtime or build dependency.
+CamillaDSP. CamillaDSP itself is the authority for its command/response
+protocol (the WebSocket API it accepts/emits); `camilladsp-controller` is a
+reference client and control-policy implementation of that protocol, useful
+here as a design reference for how a well-behaved client drives CamillaDSP
+- not as the source that defines the protocol. This project's Rust
+`camilladsp::websocket` client and `core::state_machine` control loop
+re-implement the same protocol natively, taking CamillaDSP's own behaviour
+(and release notes) as the ground truth, with `camilladsp-controller`
+consulted for control-flow/policy patterns. It is a design reference, not a
+runtime or build dependency.
 
 ---
 

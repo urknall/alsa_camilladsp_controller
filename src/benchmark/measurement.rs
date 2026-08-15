@@ -31,7 +31,7 @@ pub(crate) fn measure_backend(
             let pcm_transport_ms = card_num.and_then(collect_pcm_transport_latency_ms);
 
             let cdsp_buf_ms = collect_cdsp_buffer_latency_ms(&cfg.host, cfg.port);
-            let total_e2e_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
+            let software_visible_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
 
             BenchmarkRun {
                 backend: Backend::Aloop,
@@ -41,7 +41,7 @@ pub(crate) fn measure_backend(
                     transition_48_to_96_ms: None,
                     stop_latency_ms: stop_ms,
                     pcm_transport_latency_ms: pcm_transport_ms,
-                    total_end_to_end_latency_ms: total_e2e_ms,
+                    software_visible_latency_ms: software_visible_ms,
                     cpu_usage_percent: cpu_percent,
                     context_switches: ctx_switches,
                     controller_rss_kib: rss_kib,
@@ -77,7 +77,7 @@ pub(crate) fn measure_backend(
                 Some(env.chunksize as f64 / rate as f64 * 1000.0)
             });
 
-            let total_e2e_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
+            let software_visible_ms = add_optional(pcm_transport_ms, cdsp_buf_ms);
 
             BenchmarkRun {
                 backend: Backend::Ioplug,
@@ -87,7 +87,7 @@ pub(crate) fn measure_backend(
                     transition_48_to_96_ms: None,
                     stop_latency_ms: None,
                     pcm_transport_latency_ms: pcm_transport_ms,
-                    total_end_to_end_latency_ms: total_e2e_ms,
+                    software_visible_latency_ms: software_visible_ms,
                     cpu_usage_percent: cpu_percent,
                     context_switches: ctx_switches,
                     controller_rss_kib: rss_kib,

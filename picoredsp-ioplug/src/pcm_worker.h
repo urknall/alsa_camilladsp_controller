@@ -62,6 +62,19 @@ extern "C" {
  * The production caller uses a non-blocking pipe fd plus `keep_running`; this
  * prevents stream shutdown from depending on close(2) interrupting a write in
  * another thread (which Linux does not guarantee).
+ *
+ * Ring buffer ownership: each chunk is peeked (pcdsp_rb_peek(), read_pos not
+ * advanced) rather than removed up front, and only committed via
+ * pcdsp_rb_drop() once that exact chunk has been written to `pipe_fd` in
+ * full. This closes a drain-completion race where pcdsp_drain()'s "ring
+ * buffer empty" check could otherwise observe success while the final
+ * chunk of a period was still sitting in this function's local buffer (or
+ * stuck retrying against a stalled pipe) — i.e. frames that had left the
+ * ring buffer but had not yet reached the pipe. Consequently, if this
+ * function returns early (cancellation via `keep_running`, or a pipe
+ * error), any not-yet-fully-written chunk remains in the ring buffer
+ * exactly as if it had never been touched, so no audio is silently lost or
+ * double-counted.
  */
 ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
                                     int                  pipe_fd,
@@ -106,8 +119,15 @@ ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
  * dedicated pipe-writer thread has no other purpose for its entire
  * lifetime, so there is no later point at which re-enabling delivery of a
  * signal that may have gone pending while blocked would be safe.
+ *
+ * Returns 0 on success, or -errno if pthread_sigmask() itself failed (this
+ * is not expected with these arguments, but matching BlueALSA exactly means
+ * checking rather than assuming: the SIGPIPE-safety invariant this
+ * establishes is load bearing, so the caller must treat a failure here as
+ * fatal for the worker thread rather than silently proceeding as if signals
+ * were blocked).
  */
-void pcdsp_worker_block_all_signals(void);
+int pcdsp_worker_block_all_signals(void);
 
 /*
  * pcdsp_drain_period_null_sink — drain one period worth of frames from `rb`
