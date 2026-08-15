@@ -91,16 +91,12 @@ impl Default for RetryState {
 /// Tracks the canonicalized symlink target (catches CamillaGUI config
 /// switches), the target file's mtime/size (catches in-place edits), and the
 /// inode number (distinguishes files with identical size and visible mtime).
-///
-/// Additionally hashes file content to detect rapid in-place edits that can
-/// preserve coarse-grained metadata (e.g. same inode/size and rounded mtime).
 #[derive(Debug, Eq, PartialEq)]
 pub struct ConfigFingerprint {
     target: PathBuf,
     modified: Option<SystemTime>,
     size: u64,
     ino: u64,
-    content_hash: u64,
 }
 
 impl ConfigFingerprint {
@@ -111,7 +107,6 @@ impl ConfigFingerprint {
             modified: None,
             size: 0,
             ino: 0,
-            content_hash: 0,
         }
     }
 
@@ -122,30 +117,13 @@ impl ConfigFingerprint {
         let modified = meta.as_ref().ok().and_then(|m| m.modified().ok());
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
         let ino = meta.as_ref().map(|m| m.ino()).unwrap_or(0);
-        let content_hash = fs::read(path)
-            .ok()
-            .map(|bytes| stable_content_hash64(&bytes))
-            .unwrap_or(0);
         Self {
             target,
             modified,
             size,
             ino,
-            content_hash,
         }
     }
-}
-
-fn stable_content_hash64(bytes: &[u8]) -> u64 {
-    // FNV-1a 64-bit; deterministic across processes/platforms.
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for &byte in bytes {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -246,24 +224,6 @@ mod tests {
         std::fs::write(&path, "after_with_more_bytes").unwrap();
         let fp2 = ConfigFingerprint::sample(&path);
         assert_ne!(fp1, fp2);
-    }
-
-    #[test]
-    fn fingerprint_detects_same_size_content_change() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "picoredsp-fp-same-size-change-{}-{stamp}.txt",
-            std::process::id()
-        ));
-        std::fs::write(&path, "aaaa").unwrap();
-        let fp1 = ConfigFingerprint::sample(&path);
-        std::fs::write(&path, "bbbb").unwrap();
-        let fp2 = ConfigFingerprint::sample(&path);
-        assert_ne!(fp1, fp2);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
