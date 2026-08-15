@@ -228,11 +228,11 @@ Unit/integration tests:
 - [x] CamillaDSP early exit / delayed startup / DAC unavailable
 
 CI requirements:
-- [ ] ASAN run in CI (CMake `ASAN` option exists; core suites have been validated manually)
-- [ ] UBSAN run in CI (CMake `UBSAN` option exists; core suites have been validated manually)
-- [ ] TSAN run in CI where practical (CMake `TSAN` option exists; core suites have been validated manually)
+- [x] ASAN run in CI (`asan` job in `build.yml`, ASAN=ON, clang, `detect_leaks=1`)
+- [x] UBSAN run in CI (`ubsan` job in `build.yml`, UBSAN=ON, clang, `halt_on_error=1`)
+- [x] TSAN run in CI where practical (`tsan` job in `build.yml`, TSAN=ON, clang, `halt_on_error=1`)
 - [x] clang and gcc warnings enabled in the native ioplug CTest job
-- [ ] Static analysis run in CI (CMake `CLANG_TIDY` option exists but is not wired into the workflow)
+- [x] Static analysis run in CI (`clang_tidy` job in `build.yml`, CLANG_TIDY=ON, `--warnings-as-errors=*`)
 - [x] Compiled with `-Wall -Wextra -Wpedantic -Werror` for the native GCC/Clang test configurations
 
 **Milestone M11: Run audio-integrity tests**
@@ -349,19 +349,21 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 **Milestone M14: Experimental real-hardware release**
 
+Field test log: [`docs/GATE14_FIELD_TEST_LOG.md`](docs/GATE14_FIELD_TEST_LOG.md)
+
 - [ ] ioplug released as `backend=ioplug, status=experimental`; aloop remains `status=recommended`
 - [ ] Tested on:
   - [ ] Multiple Raspberry Pi generations
   - [ ] Multiple DACs
-  - [ ] Long-running playback
-  - [ ] Frequent sample-rate changes
-  - [ ] AirPlay
-  - [ ] Bluetooth
-  - [ ] Squeezelite
-  - [ ] GUI editing
-  - [ ] Reboots
-  - [ ] Controller restarts
-  - [ ] CamillaDSP failures
+  - [ ] Long-running playback (Scenario 12 — 24 h stability)
+  - [ ] Frequent sample-rate changes (Scenario 2 + 11)
+  - [ ] AirPlay (Scenario 3)
+  - [ ] Bluetooth (Scenario 4)
+  - [ ] Squeezelite (Scenario 1)
+  - [ ] GUI editing (Scenario 10)
+  - [ ] Reboots (Scenario 5)
+  - [ ] Controller restarts (Scenario 6)
+  - [ ] CamillaDSP failures (Scenario 7)
 
 **Milestone M15: Long-term field testing**
 

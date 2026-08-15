@@ -319,10 +319,15 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 }
 
 /*
- * pointer — return the current hw_ptr (frames consumed mod buffer_size).
+ * pointer — return the current hw_ptr.
  *
  * The ioplug core uses this value to determine how much space is available
  * for the application to write.  We return a negative value to signal XRUN.
+ *
+ * When alsa-lib exposes SND_PCM_IOPLUG_FLAG_BOUNDARY_WA, return the monotone
+ * hardware pointer so the ioplug core can distinguish "buffer empty" from
+ * "buffer full" across wrap-around. Older alsa-lib versions lack that flag,
+ * so fall back to modulo buffer_size there.
  */
 static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
 {
@@ -335,7 +340,10 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
         return (snd_pcm_sframes_t)serr;
 
     uint64_t hw_total = atomic_load_explicit(&pcdsp->hw_frames, memory_order_acquire);
-    snd_pcm_uframes_t hw_ptr = (snd_pcm_uframes_t)(hw_total % pcdsp->buffer_size);
+    snd_pcm_sframes_t hw_ptr = (snd_pcm_sframes_t)hw_total;
+#ifndef SND_PCM_IOPLUG_FLAG_BOUNDARY_WA
+    hw_ptr %= (snd_pcm_sframes_t)pcdsp->buffer_size;
+#endif
 
     /* Check for XRUN: if the application has written more than buffer_size
      * frames ahead of what the consumer has drained, declare XRUN. */
@@ -526,6 +534,13 @@ static int pcdsp_prepare(snd_pcm_ioplug_t *io)
     while (read(pcdsp->event_fd, &dummy, sizeof(dummy)) > 0)
         ;
 
+    /* Playback clients that poll() before the start threshold is reached must
+     * still see the PCM as writable immediately after prepare().  Arm the
+     * eventfd once here; poll_revents() re-arms it while the PCM remains ready. */
+    if (io->stream == SND_PCM_STREAM_PLAYBACK &&
+        pcdsp_rb_write_avail(&pcdsp->rb) > 0)
+        pcdsp_signal_event_fd(pcdsp->event_fd);
+
     return 0;
 }
 
@@ -635,8 +650,53 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
     if (pfd[0].revents & POLLIN) {
         /* Consume the eventfd counter. */
         uint64_t val;
-        if (read(pfd[0].fd, &val, sizeof(val)) > 0)
-            *revents = POLLOUT;  /* space available */
+        if (read(pfd[0].fd, &val, sizeof(val)) > 0) {
+            snd_pcm_sframes_t avail = snd_pcm_avail(io->pcm);
+            bool ready = false;
+
+            if (avail < 0) {
+                *revents = POLLERR;
+                return 0;
+            }
+
+            switch (io->state) {
+            case SND_PCM_STATE_SETUP:
+            case SND_PCM_STATE_PREPARED:
+                ready = io->stream == SND_PCM_STREAM_PLAYBACK;
+                break;
+            case SND_PCM_STATE_RUNNING:
+                if (io->stream == SND_PCM_STREAM_PLAYBACK)
+                    ready = (snd_pcm_uframes_t)avail > 0;
+                break;
+            case SND_PCM_STATE_DRAINING:
+                /* Keep playback wakeups level-triggered until the last
+                 * buffered frames have been consumed, so blocking writers and
+                 * drain completion do not stall after a one-shot eventfd edge. */
+                if (io->stream == SND_PCM_STREAM_PLAYBACK)
+                    ready = pcdsp_rb_read_avail(&pcdsp->rb) == 0;
+                break;
+            case SND_PCM_STATE_XRUN:
+            case SND_PCM_STATE_PAUSED:
+            case SND_PCM_STATE_SUSPENDED:
+                *revents = POLLERR;
+                break;
+            case SND_PCM_STATE_OPEN:
+                *revents = POLLERR;
+                return -EBADF;
+            case SND_PCM_STATE_DISCONNECTED:
+                *revents = POLLERR | POLLHUP;
+                return -ENODEV;
+            default:
+                break;
+            }
+
+            if (ready) {
+                *revents = io->stream == SND_PCM_STREAM_CAPTURE ? POLLIN : POLLOUT;
+                /* eventfd is edge-triggered; re-arm it while the PCM remains
+                 * writable so ALSA observes level-triggered readiness. */
+                pcdsp_signal_event_fd(pcdsp->event_fd);
+            }
+        }
     }
     return 0;
 }
@@ -760,8 +820,14 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
 
     pcdsp->io.version      = SND_PCM_IOPLUG_VERSION;
     pcdsp->io.name         = "piCoreDSP ioplug";
-    pcdsp->io.flags        = SND_PCM_IOPLUG_FLAG_LISTED;
-    pcdsp->io.mmap_rw      = 1;
+    pcdsp->io.flags        = SND_PCM_IOPLUG_FLAG_LISTED | SND_PCM_IOPLUG_FLAG_MONOTONIC;
+#ifdef SND_PCM_IOPLUG_FLAG_BOUNDARY_WA
+    pcdsp->io.flags       |= SND_PCM_IOPLUG_FLAG_BOUNDARY_WA;
+#endif
+    /* The plugin provides an explicit transfer() callback and keeps its own
+     * ring buffer. Pseudo-mmap mode bypasses that callback and leaves the
+     * worker with no frames to drain, so keep mmap emulation disabled. */
+    pcdsp->io.mmap_rw      = 0;
     pcdsp->io.callback     = &pcdsp_callbacks;
     pcdsp->io.private_data = pcdsp;
 
@@ -775,10 +841,9 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     /* Set hw constraints. */
     static const unsigned int access_list[] = {
         SND_PCM_ACCESS_RW_INTERLEAVED,
-        SND_PCM_ACCESS_MMAP_INTERLEAVED,
     };
     snd_pcm_ioplug_set_param_list(&pcdsp->io, SND_PCM_IOPLUG_HW_ACCESS,
-                                  2, access_list);
+                                  1, access_list);
 
     unsigned int fmt_list[16];
     size_t       fmt_count = pcdsp_format_list(fmt_list, 16);

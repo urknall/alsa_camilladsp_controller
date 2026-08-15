@@ -289,11 +289,122 @@ jobs:
       - name: Run CTest suite
         run: ctest --test-dir picoredsp-ioplug/build_${{ matrix.compiler }} --output-on-failure
 
+  # ─── AddressSanitiser run ──────────────────────────────────────────────────
+  asan:
+    name: ASAN
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev clang
+
+      - name: Configure (Debug, ASAN=ON)
+        env:
+          CC: clang
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_asan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DASAN=ON
+
+      - name: Build
+        run: cmake --build picoredsp-ioplug/build_asan --parallel
+
+      - name: Run CTest suite under ASAN
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:halt_on_error=1
+        run: ctest --test-dir picoredsp-ioplug/build_asan --output-on-failure
+
+  # ─── UndefinedBehaviourSanitiser run ──────────────────────────────────────
+  ubsan:
+    name: UBSAN
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev clang
+
+      - name: Configure (Debug, UBSAN=ON)
+        env:
+          CC: clang
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_ubsan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DUBSAN=ON
+
+      - name: Build
+        run: cmake --build picoredsp-ioplug/build_ubsan --parallel
+
+      - name: Run CTest suite under UBSAN
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir picoredsp-ioplug/build_ubsan --output-on-failure
+
+  # ─── ThreadSanitiser run ───────────────────────────────────────────────────
+  tsan:
+    name: TSAN
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev clang
+
+      - name: Configure (Debug, TSAN=ON)
+        env:
+          CC: clang
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_tsan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DTSAN=ON
+
+      - name: Build
+        run: cmake --build picoredsp-ioplug/build_tsan --parallel
+
+      - name: Run CTest suite under TSAN
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir picoredsp-ioplug/build_tsan --output-on-failure
+
+  # ─── clang-tidy static analysis ───────────────────────────────────────────
+  clang_tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake libasound2-dev clang clang-tidy
+
+      - name: Configure (Debug, CLANG_TIDY=ON)
+        env:
+          CC: clang
+        run: |
+          cmake -S picoredsp-ioplug -B picoredsp-ioplug/build_tidy \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCLANG_TIDY=ON
+
+      - name: Build (clang-tidy runs during compilation)
+        run: cmake --build picoredsp-ioplug/build_tidy --parallel
+
   # ─── Cross-compile release binaries ──────────────────────────────────────
   build:
     name: Build (${{ matrix.binary_suffix }})
     runs-on: ubuntu-24.04
-    needs: [fmt, clippy, msrv, test, installer_shell_syntax, native_c_tests]
+    needs: [fmt, clippy, msrv, test, installer_shell_syntax, native_c_tests, asan, ubsan, tsan, clang_tidy]
     permissions:
       contents: read
 

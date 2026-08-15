@@ -176,6 +176,7 @@ static int set_hw_params(snd_pcm_t *pcm)
 typedef struct {
     const char         *sock_path;
     pcdsp_error_code_t  response;   /* PCDSP_ERR_OK → send READY; else send ERROR */
+    bool                drain_pipe; /* read from transferred pipe until EOF */
 } server_args_t;
 
 static int send_fd_with_ready(int socket_fd, int send_fd)
@@ -261,8 +262,13 @@ static void *mock_server_thread(void *arg)
         int pipefd[2];
         if (pipe(pipefd) == 0) {
             (void)send_fd_with_ready(cfd, pipefd[1]);
-            close(pipefd[0]);
             close(pipefd[1]);
+            if (a->drain_pipe) {
+                uint8_t tmp[4096];
+                while (read(pipefd[0], tmp, sizeof(tmp)) > 0)
+                    ;
+            }
+            close(pipefd[0]);
         }
     } else {
         pcdsp_msg_error_t err = {
@@ -478,8 +484,11 @@ TEST(poll_revents_returns_pollout_when_eventfd_signalled)
      * snd_pcm_poll_descriptors_revents() and check for POLLOUT.
      */
     init_sock_path("poll-revt");
+    server_args_t args = { .sock_path = g_sock_path, .response = PCDSP_ERR_OK };
+    pthread_t srv = start_mock_server(&args);
     snd_pcm_t *pcm = NULL;
     CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0);
 
     struct pollfd pfds[1];
     int count = snd_pcm_poll_descriptors(pcm, pfds, 1);
@@ -504,6 +513,8 @@ TEST(poll_revents_returns_pollout_when_eventfd_signalled)
     CHECK(revents & POLLOUT);
 
     snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
 }
 
 /* -----------------------------------------------------------------------
@@ -533,6 +544,50 @@ TEST(rapid_format_change_open_close_cycle)
     }
 }
 
+TEST(nonblocking_write_loop_completes_without_wait_timeout)
+{
+    /*
+     * Regression for the real-runtime hang where playback reaches a state with
+     * free ring-buffer space, but ALSA keeps timing out in poll() because the
+     * plugin exposes only a one-shot eventfd edge. The mock controller keeps
+     * the transferred pipe readable so the worker can make forward progress.
+     */
+    init_sock_path("write-loop");
+    server_args_t args = {
+        .sock_path  = g_sock_path,
+        .response   = PCDSP_ERR_OK,
+        .drain_pipe = true,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0);
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+    size_t written = 0;
+    const size_t total_frames = 48000;
+
+    while (written < total_frames) {
+        snd_pcm_uframes_t chunk = (total_frames - written) > 257 ? 257 : (snd_pcm_uframes_t)(total_frames - written);
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, chunk);
+        if (rc == -EAGAIN) {
+            int ready = snd_pcm_wait(pcm, 1000);
+            CHECK(ready > 0);
+            continue;
+        }
+        CHECK(rc >= 0);
+        written += (size_t)rc;
+    }
+
+    CHECK(snd_pcm_nonblock(pcm, 0) == 0);
+    CHECK(snd_pcm_drain(pcm) == 0);
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
 /* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
@@ -560,6 +615,9 @@ int main(void)
 
     /* Rapid format change */
     RUN(rapid_format_change_open_close_cycle);
+
+    /* Playback completion regression */
+    RUN(nonblocking_write_loop_completes_without_wait_timeout);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
