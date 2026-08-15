@@ -212,6 +212,93 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > against ALSA's public `pcm_ioplug.h`, so "vs. original `alsa_cdsp` fork
 > point" is reframed as "vs. current upstream BlueALSA reference" — see the
 > tracking doc for details.
+>
+> **Exact-mechanism follow-up (2026-08-15/16):** a further pass re-checked
+> the reviewer's incomplete-topics table against BlueALSA's *exact*
+> mechanism, not just its outcome, for two rows that were previously
+> "functionally equivalent but different in mechanism":
+> 1. **Signal masking** — the worker thread previously blocked only
+>    `SIGPIPE` (`sigaddset`+`SIG_BLOCK`). Changed to block the full signal
+>    set via `sigfillset()` + `pthread_sigmask(SIG_SETMASK, ...)`, matching
+>    BlueALSA's `io_thread_setup()` exactly. Renamed
+>    `pcdsp_worker_block_sigpipe()` → `pcdsp_worker_block_all_signals()`
+>    (`pcm_worker.c`/`pcm_worker.h`). New regression test
+>    `block_all_signals_blocks_full_signal_set_not_just_sigpipe`
+>    (`test_pcm_worker.c`) captures the worker thread's own signal mask and
+>    proves `SIGUSR1`/`SIGTERM`/`SIGHUP` are blocked in addition to
+>    `SIGPIPE`.
+> 2. **Drain timeout and error-path state** — `pcdsp_drain()` previously
+>    used a flat 5 s constant. Replaced with `pcdsp_drain_timeout_ns()`
+>    (`pcm.c`), computing BlueALSA's own formula
+>    `100ms + periods_remaining * period_time` from the frames actually
+>    queued at drain-entry. New regression test
+>    `drain_timeout_scales_with_backlog_not_flat_constant`
+>    (`test_pcm_integration.c`) measures wall-clock `-ETIMEDOUT` latency for
+>    a small vs. large period/buffer configuration and asserts the bound
+>    scales with backlog (>2× difference) rather than being fixed.
+>    Additionally, matching BlueALSA's drain() error paths exactly:
+>    alsa-lib's generic `snd_pcm_ioplug_drain()` only auto-drops the stream
+>    when the plugin's `drain()` callback returns `0` (confirmed in
+>    `pcm_ioplug.c`), so a nonzero return (timeout, undrained buffer)
+>    previously left the PCM stuck in `SND_PCM_STATE_DRAINING` with the
+>    worker thread still running. `pcdsp_drain()` now calls
+>    `pcdsp_stop_worker()` and `snd_pcm_ioplug_set_state(io,
+>    SND_PCM_STATE_SETUP)` on those error paths itself, exactly as
+>    `bluealsa_drain()` does. New test
+>    `drain_timeout_stops_worker_and_resets_state_to_setup` proves the PCM
+>    lands in `SND_PCM_STATE_SETUP` (not stuck in `DRAINING`) and that a
+>    subsequent `snd_pcm_prepare()` succeeds. (BlueALSA's `io->nonblock == 2`
+>    signal-abort sentinel was evaluated and deliberately not ported — see
+>    `BLUEALSA_TRACKING.md`'s Drain semantics section for why.)
+>
+> 3. **Delay accounting — evaluated and reverted.** BlueALSA's
+>    snapshot+extrapolate delay technique (`io_thread_update_delay()` +
+>    `bluealsa_calculate_delay()`) was also ported verbatim and measured
+>    against the existing `delay_accounts_for_frames_queued_in_kernel_pipe`
+>    regression test. It broke that test: extrapolating elapsed time assumes
+>    continuous downstream consumption, which silently under-reports delay
+>    once CamillaDSP stalls — a first-class tested scenario for this plugin,
+>    unlike BlueALSA's Bluetooth transport. Reverted in favor of keeping the
+>    always-live `ioctl(FIONREAD)` per `delay()` call; recorded as a
+>    deliberate, measured divergence in `BLUEALSA_TRACKING.md`'s Delay
+>    accounting section, not an unexamined one.
+>
+> 4. **Device disconnect** — BlueALSA's IO thread only ever flips an
+>    `atomic_bool connected = false`; every *app-thread* callback
+>    (`bluealsa_prepare`, `bluealsa_drain`, `bluealsa_pause`,
+>    `bluealsa_delay`, `poll_revents`'s `fail:` path) then proactively calls
+>    `snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)` before
+>    returning `-ENODEV`, and `bluealsa_pointer()` does the same but returns
+>    a non-negative hw_ptr instead of an error (since alsa-lib's
+>    `snd_pcm_ioplug_hw_ptr_update()` treats any negative `pointer()` return
+>    as `XRUN`, never `DISCONNECTED` — confirmed by reading alsa-lib's
+>    `pcm_ioplug.c`). Previously, `pcdsp_pointer()` returned the fatal
+>    error's negative errno directly (→ silently became `XRUN`, and left the
+>    plugin's own `SND_PCM_STATE_DISCONNECTED` case in `pcdsp_poll_revents()`
+>    dead/unreachable code), and `pcdsp_prepare()` unconditionally cleared
+>    `stream_error`, letting an app's `snd_pcm_prepare()` call after a fatal
+>    error look like a successful recovery even though the pipe/IPC
+>    connection can only be refreshed via `hw_params()`. Added a shared
+>    `pcdsp_disconnect_on_stream_error()` helper (`pcm.c`) and wired it into
+>    `pcdsp_pointer()`, `pcdsp_prepare()`, `pcdsp_drain()`, `pcdsp_pause()`,
+>    `pcdsp_delay()`, and `pcdsp_poll_revents()`, mirroring BlueALSA's
+>    multi-callback pattern one-for-one. Two new regression tests in
+>    `test_pcm_integration.c`:
+>    `pointer_and_poll_report_disconnected_after_camilladsp_exits` (closes the
+>    mock server's pipe read end mid-stream, asserts
+>    `snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED` and that a subsequent
+>    `snd_pcm_writei()` returns `-ENODEV`) and
+>    `prepare_refuses_to_silently_clear_a_fatal_stream_error` (asserts
+>    `snd_pcm_prepare()` itself returns `-ENODEV` rather than resetting to a
+>    healthy-looking state).
+>
+> Full C suite re-run after all changes: 7/7 binaries, 0 failures
+> (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 19/19 checks
+> inside `test_pcm_integration` including all new tests). `cargo test`
+> re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.
+> `BLUEALSA_TRACKING.md`'s verification table and prose sections (Signal
+> masking, Drain semantics, Delay accounting, Device disconnect / connectivity
+> state) updated to cite the new code and tests.
 
 - [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
 - [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:

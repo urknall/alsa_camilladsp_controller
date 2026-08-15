@@ -402,7 +402,7 @@ int main(void)
      * Block SIGPIPE the same way worker_thread() does in pcm.c rather than
      * setting a process-wide SIG_IGN disposition, so this test exercises the
      * real fix instead of masking the underlying issue. */
-    pcdsp_worker_block_sigpipe();
+    pcdsp_worker_block_all_signals();
 
     printf("test_audio_integrity\n");
 

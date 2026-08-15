@@ -43,9 +43,11 @@
  *
  * Drain and pause synchronisation
  * --------------------------------
- * pcdsp_drain() waits for the ring buffer to empty, bounded by
- * PCDSP_DRAIN_TIMEOUT_NS so a CamillaDSP that stops reading stdin without
- * signalling EPIPE cannot block snd_pcm_drain() forever.
+ * pcdsp_drain() waits for the ring buffer to empty, bounded by a timeout
+ * computed from the periods remaining to drain (pcdsp_drain_timeout_ns(),
+ * matching BlueALSA's `100ms + periods_remaining * period_time` formula) so
+ * a CamillaDSP that stops reading stdin without signalling EPIPE cannot
+ * block snd_pcm_drain() forever.
  * pcdsp_pause(enable=1) blocks (bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS) until
  * the worker acknowledges via pause_mutex/pause_cond that it has reached a
  * safe point (parked, not mid-write) — so pause() cannot return while a
@@ -112,12 +114,12 @@ static const unsigned int k_rates[] = {
 #define BUFFER_SIZE_MIN   (PERIOD_SIZE_MIN * 2u)
 #define BUFFER_SIZE_MAX   (PERIOD_SIZE_MAX * RB_PERIODS)
 
-/* pcdsp_drain() ceiling: a healthy CamillaDSP consumes a period (a few ms of
- * audio) almost immediately, so the ring buffer (at most BUFFER_SIZE_MAX
- * frames, a few hundred ms even at the lowest supported rate) drains well
- * within this bound under normal operation. This exists solely to prevent
- * snd_pcm_drain() from blocking forever if CamillaDSP stops reading stdin
- * (process alive but wedged) without signalling EPIPE. */
+/* pcdsp_drain() fallback ceiling, used only if rate or period_size is
+ * unexpectedly zero at drain() time (should not happen post-hw_params).
+ * The primary bound is computed dynamically by pcdsp_drain_timeout_ns()
+ * from the periods actually remaining to drain, matching BlueALSA's
+ * `100ms + periods_remaining * period_time` formula instead of a flat
+ * constant — see that function for the rationale. */
 #define PCDSP_DRAIN_TIMEOUT_NS   (5ULL * 1000000000ULL) /* 5 s */
 
 /* pcdsp_pause(enable=1) ceiling: bounds how long pause() waits for the
@@ -242,11 +244,14 @@ static void *worker_thread(void *arg)
 {
     pcdsp_pcm_t *pcdsp = arg;
 
-    /* This thread writes to the CamillaDSP stdin pipe; block SIGPIPE for it
-     * (thread-scoped, not process-wide) so a broken pipe reports -EPIPE via
-     * write() instead of killing the host application. See
-     * pcdsp_worker_block_sigpipe() in pcm_worker.c for the full rationale. */
-    pcdsp_worker_block_sigpipe();
+    /* This thread writes to the CamillaDSP stdin pipe; block *all* signals
+     * for it (thread-scoped, not process-wide) — matching BlueALSA's
+     * io_thread_setup() exactly, not just SIGPIPE — so a broken pipe
+     * reports -EPIPE via write() instead of killing the host application,
+     * and no other signal can interrupt this thread mid-transfer. See
+     * pcdsp_worker_block_all_signals() in pcm_worker.c for the full
+     * rationale. */
+    pcdsp_worker_block_all_signals();
 
     while (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         if (atomic_load_explicit(&pcdsp->paused, memory_order_acquire)) {
@@ -419,6 +424,29 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 }
 
 /*
+ * pcdsp_disconnect_on_stream_error — check for a fatal stream error and, if
+ * one is present, proactively transition the ioplug's visible ALSA state to
+ * DISCONNECTED before returning it, matching BlueALSA's bluealsa_prepare(),
+ * bluealsa_drain(), bluealsa_pause() and bluealsa_delay(), each of which
+ * checks `!pcm->connected` at entry and calls
+ * snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED) before returning
+ * -ENODEV. Doing this from every callback (rather than only from pointer())
+ * means the application observes SND_PCM_STATE_DISCONNECTED via
+ * snd_pcm_state() as soon as it calls any of these, not only after its next
+ * pointer()-driven avail update.
+ *
+ * Returns 0 if there is no recorded error, otherwise the recorded error
+ * (always a negative errno).
+ */
+static int pcdsp_disconnect_on_stream_error(snd_pcm_ioplug_t *io, pcdsp_pcm_t *pcdsp)
+{
+    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    if (serr != 0)
+        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
+    return serr;
+}
+
+/*
  * pointer — return the current hw_ptr.
  *
  * The ioplug core uses this value to determine how much space is available
@@ -433,17 +461,25 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* If the worker recorded a fatal stream error (e.g. -EPIPE when
-     * CamillaDSP exited), return it immediately so ALSA sees the error. */
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-    if (serr != 0)
-        return (snd_pcm_sframes_t)serr;
-
     uint64_t hw_total = atomic_load_explicit(&pcdsp->hw_frames, memory_order_acquire);
     snd_pcm_sframes_t hw_ptr = (snd_pcm_sframes_t)hw_total;
 #ifndef SND_PCM_IOPLUG_FLAG_BOUNDARY_WA
     hw_ptr %= (snd_pcm_sframes_t)pcdsp->buffer_size;
 #endif
+
+    /* If the worker recorded a fatal stream error (e.g. -EPIPE when
+     * CamillaDSP exited), this PCM instance cannot recover on its own.
+     * Matching BlueALSA's bluealsa_pointer(): alsa-lib's
+     * snd_pcm_ioplug_hw_ptr_update() treats any negative pointer() return
+     * as XRUN (or drops a draining stream), never as DISCONNECTED, which
+     * would leave the fatal error looking recoverable to the application.
+     * So instead of returning the negative errno here, set the ioplug
+     * state to DISCONNECTED directly and return the last known
+     * (non-negative) hw_ptr — ioplug then leaves that state alone, and
+     * snd_pcm_avail_update()/poll_revents() surface -ENODEV to the caller
+     * because the PCM is DISCONNECTED rather than merely in XRUN. */
+    if (pcdsp_disconnect_on_stream_error(io, pcdsp) != 0)
+        return hw_ptr;
 
     /* Check for XRUN: if the application has written more than buffer_size
      * frames ahead of what the consumer has drained, declare XRUN. */
@@ -452,7 +488,7 @@ static snd_pcm_sframes_t pcdsp_pointer(snd_pcm_ioplug_t *io)
     if ((wp - rp) > pcdsp->buffer_size)
         return -EPIPE;
 
-    return (snd_pcm_sframes_t)hw_ptr;
+    return hw_ptr;
 }
 
 /*
@@ -648,9 +684,24 @@ static int pcdsp_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *params)
 static int pcdsp_prepare(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Matching BlueALSA's bluealsa_prepare(): once the worker has recorded
+     * a fatal stream error (the pipe to CamillaDSP is broken and cannot be
+     * replaced without a fresh IPC handshake, which only hw_params()
+     * performs), refuse to silently "recover" via prepare(). Clearing
+     * stream_error here and returning success would let the application
+     * believe the stream is healthy again while writes keep hitting the
+     * same broken pipe_fd, immediately re-failing. Instead, surface
+     * DISCONNECTED so the application is told to close() and reopen. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
+    if (serr != 0)
+        return serr;
+
     pcdsp_rb_reset(&pcdsp->rb);
     atomic_store_explicit(&pcdsp->hw_frames, 0, memory_order_release);
-    /* Clear any error/drain state from a previous run. */
+    /* stream_error is already known 0 here (checked above); store it
+     * explicitly anyway as defence-in-depth against a late worker write
+     * racing this reset. */
     atomic_store_explicit(&pcdsp->stream_error, 0, memory_order_release);
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
 
@@ -669,6 +720,35 @@ static int pcdsp_prepare(snd_pcm_ioplug_t *io)
     return 0;
 }
 
+/*
+ * pcdsp_drain_timeout_ns — bound for pcdsp_drain()'s wait, computed the same
+ * way BlueALSA's playback drain bounds its own wait in bluealsa-pcm.c:
+ * `100ms + periods_remaining * period_time`, rather than a single flat
+ * constant. A flat timeout either aborts a slow-but-healthy drain of a large,
+ * mostly-full buffer too early, or leaves a nearly-empty buffer waiting far
+ * longer than it should if CamillaDSP is genuinely wedged. Scaling the bound
+ * to how much audio is actually left to drain avoids both failure modes.
+ *
+ * periods_remaining is computed once at drain() entry (ceiling division of
+ * frames currently queued by period_size); period_time is period_size /
+ * rate. Falls back to a fixed floor if rate or period_size is unexpectedly
+ * zero (should not happen post-hw_params, but must not divide by zero).
+ */
+static uint64_t pcdsp_drain_timeout_ns(const pcdsp_pcm_t *pcdsp, size_t avail_frames)
+{
+    const uint64_t floor_ns = 100ULL * 1000000ULL; /* 100 ms, matches BlueALSA */
+
+    unsigned int rate        = pcdsp->io.rate;
+    size_t       period_size = pcdsp->period_size;
+    if (rate == 0 || period_size == 0)
+        return PCDSP_DRAIN_TIMEOUT_NS;
+
+    size_t periods_remaining = (avail_frames + period_size - 1) / period_size;
+    uint64_t period_time_ns  = (uint64_t)period_size * 1000000000ULL / rate;
+
+    return floor_ns + (uint64_t)periods_remaining * period_time_ns;
+}
+
 static int pcdsp_drain(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
@@ -681,10 +761,14 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     /* Bound the wait so a CamillaDSP that stops reading stdin (process
      * alive, pipe never returns POLLOUT/EPIPE) cannot block drain()
      * forever. pcdsp_clock_now() failure (should not happen in practice)
-     * degrades to an unbounded wait rather than a false-positive timeout. */
+     * degrades to an unbounded wait rather than a false-positive timeout.
+     * The bound itself scales with how much is left to drain (see
+     * pcdsp_drain_timeout_ns()), matching BlueALSA's approach instead of a
+     * flat ceiling. */
     uint64_t start_ns    = 0;
     bool     have_clock  = (pcdsp_clock_now(&start_ns) == 0);
     bool     timed_out   = false;
+    uint64_t timeout_ns  = pcdsp_drain_timeout_ns(pcdsp, pcdsp_rb_read_avail(&pcdsp->rb));
 
     /* Wait until the ring buffer is empty, the worker stops (no consumer
      * → buffer will never drain), a fatal stream error is recorded, or the
@@ -697,7 +781,7 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
         if (have_clock) {
             uint64_t now_ns;
             if (pcdsp_clock_now(&now_ns) == 0 &&
-                now_ns - start_ns >= PCDSP_DRAIN_TIMEOUT_NS) {
+                now_ns - start_ns >= timeout_ns) {
                 timed_out = true;
                 break;
             }
@@ -708,19 +792,42 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 
     atomic_store_explicit(&pcdsp->draining, false, memory_order_release);
 
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    /* Matching BlueALSA's bluealsa_drain(): if a fatal stream error was
+     * recorded, transition to DISCONNECTED before returning it. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
     if (serr != 0)
         return serr;
-    if (timed_out)
-        return -ETIMEDOUT;
-    if (pcdsp_rb_read_avail(&pcdsp->rb) > 0)
-        return -EPIPE;
+    if (timed_out || pcdsp_rb_read_avail(&pcdsp->rb) > 0) {
+        /* Matching BlueALSA's drain() error paths exactly: on timeout (or
+         * poll error) it does not just return an error and leave the PCM
+         * sitting in SND_PCM_STATE_DRAINING — it calls bluealsa_stop() and
+         * sets the state to SND_PCM_STATE_SETUP itself. This matters
+         * because alsa-lib's generic snd_pcm_ioplug_drain() wrapper only
+         * auto-drops the stream when the plugin's drain() callback returns
+         * 0 (confirmed in pcm_ioplug.c: `if (!err && state != SETUP)
+         * snd_pcm_ioplug_drop(pcm)`); when drain() returns a nonzero error,
+         * as it does here, nothing else stops the worker or moves the PCM
+         * out of DRAINING, so without this the worker would keep running
+         * (still trying to write frames CamillaDSP will never read) even
+         * though the application has already been told drain() failed. */
+        pcdsp_stop_worker(pcdsp);
+        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_SETUP);
+        return timed_out ? -ETIMEDOUT : -EPIPE;
+    }
     return 0;
 }
 
 static int pcdsp_pause(snd_pcm_ioplug_t *io, int enable)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Matching BlueALSA's bluealsa_pause(): refuse to pause or resume a
+     * stream whose worker has recorded a fatal error, and make that
+     * DISCONNECTED transition visible immediately rather than only on the
+     * next pointer()-driven avail update. */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
+    if (serr != 0)
+        return serr;
 
     if (!enable) {
         /* Resume: clear the flag and wake a worker parked in the pause
@@ -829,13 +936,16 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
 
     *revents = 0;
 
-    /* If the worker recorded a fatal stream error, expose it as POLLERR so
-     * the application wakes from poll() and subsequently sees the error in
-     * pointer() or delay(). */
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-    if (serr != 0) {
-        *revents = POLLERR;
-        return 0;
+    /* If the worker recorded a fatal stream error, this PCM instance cannot
+     * recover on its own. Matching BlueALSA's poll_revents() `fail:` path:
+     * proactively transition to DISCONNECTED (rather than leaving state
+     * undecided) and report POLLERR|POLLHUP with -ENODEV, so the
+     * application wakes from poll() and immediately sees a definitive,
+     * non-recoverable error instead of one that could be mistaken for a
+     * transient XRUN. */
+    if (pcdsp_disconnect_on_stream_error(io, pcdsp) != 0) {
+        *revents = POLLERR | POLLHUP;
+        return -ENODEV;
     }
 
     if (pfd[0].revents & POLLIN) {
@@ -898,7 +1008,10 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
 static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
+    /* Matching BlueALSA's bluealsa_delay(): transition to DISCONNECTED
+     * before reporting the error, so the state is visible even if the
+     * application only ever calls delay() and never pointer(). */
+    int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
     if (serr != 0)
         return serr;
 
@@ -909,6 +1022,20 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
      * CamillaDSP are also audio that hasn't reached the DAC yet. FIONREAD
      * reports the pipe's current queued byte count; add the equivalent
      * frame count as a minimum additional delay.
+     *
+     * BlueALSA avoids this syscall on every delay() call by snapshotting
+     * the FIFO occupancy from its IO thread and extrapolating with elapsed
+     * time in bluealsa_calculate_delay(). A direct (measured, not tried)
+     * port of that technique was evaluated here and reverted: it assumes
+     * the downstream peer keeps consuming at the nominal rate between
+     * snapshots, which silently under-reports delay once a wedged/stalled
+     * CamillaDSP stops reading stdin — exactly the scenario
+     * `delay_accounts_for_frames_queued_in_kernel_pipe` (below) exists to
+     * guard against, and unlike BlueALSA's Bluetooth transport, a stalled
+     * peer is a first-class, explicitly-tested case for this plugin (see
+     * also the Drain and Pause tests). Re-querying the kernel on every call
+     * keeps that guarantee exact rather than trading it for a syscall
+     * saving BlueALSA's own use case doesn't need us to make.
      *
      * Known limitation: this still does not account for CamillaDSP's own
      * internal buffering (resampler/filter/pipeline latency) once bytes

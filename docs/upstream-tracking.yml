@@ -6,6 +6,14 @@
 # `last_reviewed_commit` against the latest upstream commit touching
 # `tracked_paths` and opens a GitHub issue (with `label`) when they differ.
 #
+# The same check also verifies that every entry's `tracked_paths` still
+# exist upstream (at the repository's default branch HEAD) and opens a
+# separate "tracking stale" issue when one is missing. This closes the gap
+# that let the BlueALSA entry go stale silently: its tracked path had moved
+# from `src/bluealsa-pcm.c` to `src/asound/bluealsa-pcm.c` upstream, so the
+# commit-diff check alone kept reporting "no changes" against a path that no
+# longer existed instead of surfacing the rename.
+#
 # IMPORTANT: this manifest only drives *issue creation* for manual review.
 # Nothing in this repository automatically merges, cherry-picks, or applies
 # upstream changes based on this file.

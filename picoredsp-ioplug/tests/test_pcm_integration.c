@@ -151,9 +151,13 @@ static int open_plugin(snd_pcm_t **pcm, const char *socket_path)
 }
 
 /*
- * Negotiate hw_params: stereo S16_LE at 48 kHz with a 1024-frame period.
+ * Negotiate hw_params: stereo S16_LE at the given rate with a period near
+ * `period_hint` frames and a buffer of 4 periods. Used to vary how much
+ * audio can be queued so drain-timeout tests can prove the bound scales
+ * with the backlog rather than being a single flat constant.
  */
-static int set_hw_params(snd_pcm_t *pcm)
+static int set_hw_params_ex(snd_pcm_t *pcm, snd_pcm_uframes_t period_hint,
+                             unsigned int rate)
 {
     snd_pcm_hw_params_t *params;
     snd_pcm_hw_params_alloca(&params);
@@ -166,16 +170,23 @@ static int set_hw_params(snd_pcm_t *pcm)
                  SND_PCM_FORMAT_S16_LE)) < 0) return rc;
     if ((rc = snd_pcm_hw_params_set_channels(pcm, params, 2)) < 0)
         return rc;
-    unsigned int rate = 48000;
     if ((rc = snd_pcm_hw_params_set_rate_near(pcm, params, &rate, 0)) < 0)
         return rc;
-    snd_pcm_uframes_t period = 1024;
+    snd_pcm_uframes_t period = period_hint;
     if ((rc = snd_pcm_hw_params_set_period_size_near(pcm, params, &period, 0)) < 0)
         return rc;
     snd_pcm_uframes_t buf = period * 4;
     if ((rc = snd_pcm_hw_params_set_buffer_size_near(pcm, params, &buf)) < 0)
         return rc;
     return snd_pcm_hw_params(pcm, params);
+}
+
+/*
+ * Negotiate hw_params: stereo S16_LE at 48 kHz with a 1024-frame period.
+ */
+static int set_hw_params(snd_pcm_t *pcm)
+{
+    return set_hw_params_ex(pcm, 1024, 48000);
 }
 
 /* -----------------------------------------------------------------------
@@ -200,6 +211,11 @@ typedef struct {
      * can let the server thread return promptly once it is done, instead
      * of waiting out the full hold duration. */
     _Atomic(bool)      *stop_holding;
+    /* When > 0: drain the pipe like drain_pipe, but close the read end as
+     * soon as this many bytes have been read, simulating CamillaDSP exiting
+     * mid-stream (kernel closes the read end, so the worker's next write
+     * gets -EPIPE) rather than a clean drain_pipe-until-EOF shutdown. */
+    long                close_pipe_after_bytes;
 } server_args_t;
 
 /* Upper bound (in 10 ms steps) on how long hold_pipe_no_read keeps the pipe
@@ -299,7 +315,21 @@ static void *mock_server_thread(void *arg)
             }
             (void)send_fd_with_ready(cfd, pipefd[1]);
             close(pipefd[1]);
-            if (a->drain_pipe) {
+            if (a->close_pipe_after_bytes > 0) {
+                uint8_t tmp[4096];
+                ssize_t n;
+                long total = 0;
+                while (total < a->close_pipe_after_bytes &&
+                       (n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
+                    total += n;
+                    if (a->bytes_read)
+                        atomic_fetch_add_explicit(a->bytes_read, (long)n,
+                                                   memory_order_relaxed);
+                }
+                /* Simulate CamillaDSP exiting mid-stream: close the read end
+                 * now instead of draining to EOF, so the worker's next
+                 * write() observes -EPIPE. */
+            } else if (a->drain_pipe) {
                 uint8_t tmp[4096];
                 ssize_t n;
                 while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
@@ -647,8 +677,9 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
      * empty with no bound. If CamillaDSP is alive but stops reading stdin
      * (wedged) without ever closing its end (no -EPIPE), the kernel pipe
      * fills up and write() never sees POLLOUT again, so the ring buffer
-     * never empties. snd_pcm_drain() must return -ETIMEDOUT once
-     * PCDSP_DRAIN_TIMEOUT_NS elapses instead of hanging forever.
+     * never empties. snd_pcm_drain() must return -ETIMEDOUT once the
+     * dynamic bound computed by pcdsp_drain_timeout_ns() elapses instead of
+     * hanging forever.
      */
     init_sock_path("drain-timeout");
     _Atomic(bool) stop_holding = false;
@@ -672,7 +703,7 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
         snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
         if (rc == -EAGAIN)
             break;
-        CHECK(rc >= 0 || rc == -EAGAIN);
+        CHECK(rc >= 0);
     }
 
     struct timespec drain_start, drain_end;
@@ -693,6 +724,174 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
     snd_pcm_close(pcm);
     pthread_join(srv, NULL);
     unlink(g_sock_path);
+}
+
+TEST(drain_timeout_stops_worker_and_resets_state_to_setup)
+{
+    /*
+     * Regression: matching BlueALSA's drain() error paths exactly —
+     * bluealsa_drain() calls bluealsa_stop(io) and sets
+     * io->state = SND_PCM_STATE_SETUP itself on timeout, rather than
+     * relying on alsa-lib's generic post-drain auto-drop (confirmed via
+     * pcm_ioplug.c: snd_pcm_ioplug_drain() only auto-drops when the
+     * plugin's drain() callback returns 0). Previously pcdsp_drain()
+     * returned -ETIMEDOUT but left the PCM in SND_PCM_STATE_DRAINING with
+     * the worker thread still running (still retrying writes CamillaDSP
+     * will never read). Verify the PCM is left in SND_PCM_STATE_SETUP
+     * (not stuck in DRAINING) immediately after a timed-out drain, and
+     * that the plugin can be started again from that state.
+     */
+    init_sock_path("drain-timeout-state");
+    _Atomic(bool) stop_holding2 = false;
+    server_args_t args2 = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding2,
+    };
+    pthread_t srv2 = start_mock_server(&args2);
+
+    snd_pcm_t *pcm2 = NULL;
+    CHECK(open_plugin(&pcm2, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm2) == 0);
+    CHECK(snd_pcm_nonblock(pcm2, 1) == 0);
+
+    int16_t frames2[257 * 2] = { 0 };
+    for (int i = 0; i < 64; i++) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm2, frames2, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+    }
+
+    CHECK(snd_pcm_nonblock(pcm2, 0) == 0);
+    int drain_rc2 = snd_pcm_drain(pcm2);
+    CHECK(drain_rc2 == -ETIMEDOUT);
+
+    /* Must not be left stuck in DRAINING: the plugin itself transitions to
+     * SETUP on a timed-out drain, matching BlueALSA exactly. */
+    CHECK(snd_pcm_state(pcm2) == SND_PCM_STATE_SETUP);
+
+    /* The PCM must still be usable afterward: a fresh prepare() should
+     * succeed, proving the worker was actually stopped (not left spinning)
+     * and can be restarted cleanly rather than the instance being wedged. */
+    CHECK(snd_pcm_prepare(pcm2) == 0);
+    CHECK(snd_pcm_state(pcm2) == SND_PCM_STATE_PREPARED);
+
+    atomic_store_explicit(&stop_holding2, true, memory_order_release);
+    snd_pcm_close(pcm2);
+    pthread_join(srv2, NULL);
+    unlink(g_sock_path);
+}
+
+/*
+ * Helper for drain_timeout_scales_with_backlog_not_flat_constant: negotiate
+ * hw_params with the given period, fill the pipeline, hold the peer's read
+ * end open without reading, and return how long snd_pcm_drain() took to
+ * give up with -ETIMEDOUT.
+ */
+/* Like CHECK, but records the failure and jumps to `cleanup` instead of
+ * returning directly — for measure_drain_timeout(), which must always run
+ * its cleanup (stop the mock server, close the pcm, join the thread, unlink
+ * the socket) even on an early failure, unlike a TEST() body where CHECK's
+ * bare `return` is fine. */
+#define CHECK_OR_CLEANUP(expr) \
+    do { \
+        if (!(expr)) { \
+            printf("FAIL\n  assertion failed: %s  (%s:%d)\n", \
+                   #expr, __FILE__, __LINE__); \
+            g_fail++; \
+            goto cleanup; \
+        } \
+    } while (0)
+
+static double measure_drain_timeout(const char *sock_suffix,
+                                     snd_pcm_uframes_t period_hint,
+                                     unsigned int rate)
+{
+    init_sock_path(sock_suffix);
+    _Atomic(bool) stop_holding = false;
+    server_args_t args = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    /* Every failure path below jumps to `cleanup` rather than returning
+     * directly, so the mock server thread is always stopped and joined and
+     * the socket path is always unlinked — an early bare `return` here
+     * would leave `srv` running against this function's about-to-be-freed
+     * stack locals (`args`, `stop_holding`), and leak the thread/socket for
+     * the caller's second measure_drain_timeout() call. */
+    double     result = -1.0;
+    snd_pcm_t *pcm     = NULL;
+
+    CHECK_OR_CLEANUP(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK_OR_CLEANUP(set_hw_params_ex(pcm, period_hint, rate) == 0);
+    CHECK_OR_CLEANUP(snd_pcm_nonblock(pcm, 1) == 0);
+
+    {
+        int16_t frames[257 * 2] = { 0 };
+        for (int i = 0; i < 256; i++) {
+            snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+            if (rc == -EAGAIN)
+                break;
+            CHECK_OR_CLEANUP(rc >= 0);
+        }
+    }
+
+    struct timespec drain_start, drain_end;
+    clock_gettime(CLOCK_MONOTONIC, &drain_start);
+    CHECK_OR_CLEANUP(snd_pcm_nonblock(pcm, 0) == 0);
+    int drain_rc = snd_pcm_drain(pcm);
+    clock_gettime(CLOCK_MONOTONIC, &drain_end);
+
+    CHECK_OR_CLEANUP(drain_rc == -ETIMEDOUT);
+
+    result = (double)(drain_end.tv_sec - drain_start.tv_sec) +
+             (double)(drain_end.tv_nsec - drain_start.tv_nsec) / 1e9;
+
+cleanup:
+    atomic_store_explicit(&stop_holding, true, memory_order_release);
+    if (pcm)
+        snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+
+    return result;
+}
+
+TEST(drain_timeout_scales_with_backlog_not_flat_constant)
+{
+    /*
+     * Regression: pcdsp_drain()'s bound used to be the single flat
+     * PCDSP_DRAIN_TIMEOUT_NS (5 s) no matter how much audio was actually
+     * left to drain. BlueALSA instead computes
+     * `100ms + periods_remaining * period_time` so a small backlog gives up
+     * quickly and a large backlog gets proportionally more time before
+     * -ETIMEDOUT. Prove both properties on the picoredsp plugin itself
+     * (not just by inspecting the formula): a tiny period/buffer times out
+     * much faster than a large period/buffer, and neither takes anywhere
+     * near the old flat 5 s ceiling.
+     */
+    double small_s = measure_drain_timeout("drain-scale-small", 64, 48000);
+    double large_s = measure_drain_timeout("drain-scale-large", 8192, 48000);
+
+    /* Both must have actually timed out (measure_drain_timeout returns -1.0
+     * on any assertion failure along the way). */
+    CHECK(small_s >= 0.0);
+    CHECK(large_s >= 0.0);
+
+    /* Neither should resemble the old flat 5 s constant. */
+    CHECK(small_s < 1.0);
+    CHECK(large_s < 5.0);
+
+    /* The larger backlog must take meaningfully longer than the tiny one —
+     * this is the actual BlueALSA-style scaling behaviour, not merely "some
+     * bound exists". */
+    CHECK(large_s > small_s * 2.0);
 }
 
 TEST(pause_blocks_until_worker_stops_writing_before_returning)
@@ -919,6 +1118,115 @@ TEST(poll_revents_respects_avail_min_from_sw_params)
 }
 
 /* -----------------------------------------------------------------------
+ * Device disconnect (BlueALSA-parity: proactive DISCONNECTED state)
+ * ---------------------------------------------------------------------- */
+
+TEST(pointer_and_poll_report_disconnected_after_camilladsp_exits)
+{
+    /*
+     * Regression: previously, once the worker recorded a fatal stream
+     * error (CamillaDSP exited, kernel closed the pipe read end so the
+     * next write got -EPIPE), pcdsp_pointer() returned that negative errno
+     * directly. alsa-lib's snd_pcm_ioplug_hw_ptr_update() treats any
+     * negative pointer() return as XRUN, never as DISCONNECTED — so the
+     * application could never distinguish "CamillaDSP is permanently gone,
+     * close and reopen" from an ordinary, recoverable XRUN. Matching
+     * BlueALSA's bluealsa_pointer()/poll_revents() exactly: the plugin must
+     * now call snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED)
+     * itself and report -ENODEV, not a bare XRUN.
+     */
+    init_sock_path("disconnect");
+    server_args_t args = {
+        .sock_path              = g_sock_path,
+        .response               = PCDSP_ERR_OK,
+        .close_pipe_after_bytes = 512,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0); /* period=1024, buffer_size=4096 frames */
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+
+    /* Keep writing (and letting the worker hand frames to the pipe) until
+     * the plugin observes the pipe close and reports it, or a generous
+     * bound elapses. Every write is deliberately small (257 frames) and
+     * spaced out so the worker has time to actually flush each chunk to
+     * the pipe and hit -EPIPE once the mock server closes its end after
+     * 512 bytes, rather than depending on a single oversized write. */
+    bool became_disconnected = false;
+    for (int i = 0; i < 200 && !became_disconnected; i++) {
+        snd_pcm_writei(pcm, frames, 257); /* ignore rc: EAGAIN/EPIPE both fine here */
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED)
+            became_disconnected = true;
+    }
+
+    CHECK(became_disconnected);
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED);
+
+    /* Matching BlueALSA's contract: once DISCONNECTED, further writes must
+     * report -ENODEV (a permanent, non-recoverable error), not merely
+     * XRUN, so the application knows to close() and reopen rather than
+     * call snd_pcm_prepare() and retry. */
+    snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+    CHECK(rc == -ENODEV);
+
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+TEST(prepare_refuses_to_silently_clear_a_fatal_stream_error)
+{
+    /*
+     * Regression: pcdsp_prepare() previously reset stream_error to 0
+     * unconditionally, so an application that called snd_pcm_prepare()
+     * after a fatal error (e.g. as part of ordinary XRUN recovery) would
+     * be told the stream is healthy again — while writes kept hitting the
+     * same broken pipe_fd (IPC/pipe re-connection only happens in
+     * hw_params(), not prepare()), immediately re-failing. Matching
+     * BlueALSA's bluealsa_prepare(): once disconnected, prepare() itself
+     * must also report the disconnect rather than papering over it.
+     */
+    init_sock_path("disconnect-prepare");
+    server_args_t args = {
+        .sock_path              = g_sock_path,
+        .response               = PCDSP_ERR_OK,
+        .close_pipe_after_bytes = 512,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0);
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+    bool became_disconnected = false;
+    for (int i = 0; i < 200 && !became_disconnected; i++) {
+        snd_pcm_writei(pcm, frames, 257);
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED)
+            became_disconnected = true;
+    }
+    CHECK(became_disconnected);
+
+    /* prepare() must refuse (report the disconnect), not silently reset
+     * the PCM to a state that looks usable. */
+    CHECK(snd_pcm_prepare(pcm) == -ENODEV);
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_DISCONNECTED);
+
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -951,11 +1259,17 @@ int main(void)
 
     /* Drain timeout / pause synchronisation (Step 3) */
     RUN(drain_times_out_when_camilladsp_stops_reading_pipe);
+    RUN(drain_timeout_stops_worker_and_resets_state_to_setup);
+    RUN(drain_timeout_scales_with_backlog_not_flat_constant);
     RUN(pause_blocks_until_worker_stops_writing_before_returning);
 
     /* sw_params avail_min / delay() pipe accounting (Step 4) */
     RUN(delay_accounts_for_frames_queued_in_kernel_pipe);
     RUN(poll_revents_respects_avail_min_from_sw_params);
+
+    /* device disconnect (BlueALSA-parity proactive DISCONNECTED state) */
+    RUN(pointer_and_poll_report_disconnected_after_camilladsp_exits);
+    RUN(prepare_refuses_to_silently_clear_a_fatal_stream_error);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

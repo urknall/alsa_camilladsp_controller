@@ -17,6 +17,7 @@ on:
     paths:
       - 'docs/upstream-tracking.yml'
       - 'scripts/check_upstream_tracking.py'
+      - 'scripts/test_check_upstream_tracking.py'
       - '.github/workflows/upstream-tracking.yml'
   pull_request:
     branches:
@@ -24,6 +25,7 @@ on:
     paths:
       - 'docs/upstream-tracking.yml'
       - 'scripts/check_upstream_tracking.py'
+      - 'scripts/test_check_upstream_tracking.py'
       - '.github/workflows/upstream-tracking.yml'
 
 jobs:
@@ -47,6 +49,10 @@ jobs:
 
       - name: Validate manifest syntax
         run: python3 -c "import yaml; yaml.safe_load(open('docs/upstream-tracking.yml'))"
+
+      - name: Run tracking script unit tests
+        run: python3 -m unittest test_check_upstream_tracking -v
+        working-directory: scripts
 
       # Pull requests only validate the manifest/script; they must not open
       # issues (no token with issue-write scope is used, and --dry-run is
