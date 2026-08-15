@@ -703,7 +703,7 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
         snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
         if (rc == -EAGAIN)
             break;
-        CHECK(rc >= 0 || rc == -EAGAIN);
+        CHECK(rc >= 0);
     }
 
     struct timespec drain_start, drain_end;
@@ -761,7 +761,7 @@ TEST(drain_timeout_stops_worker_and_resets_state_to_setup)
         snd_pcm_sframes_t rc = snd_pcm_writei(pcm2, frames2, 257);
         if (rc == -EAGAIN)
             break;
-        CHECK(rc >= 0 || rc == -EAGAIN);
+        CHECK(rc >= 0);
     }
 
     CHECK(snd_pcm_nonblock(pcm2, 0) == 0);
