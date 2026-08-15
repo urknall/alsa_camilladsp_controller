@@ -96,6 +96,18 @@ static int g_fail = 0;
         } \
     } while (0)
 
+/* Like CHECK, but for helpers that return a value instead of void (e.g.
+ * measure_drain_timeout(), which is not itself a TEST() body). */
+#define CHECK_RET(expr, retval) \
+    do { \
+        if (!(expr)) { \
+            printf("FAIL\n  assertion failed: %s  (%s:%d)\n", \
+                   #expr, __FILE__, __LINE__); \
+            g_fail++; \
+            return (retval); \
+        } \
+    } while (0)
+
 /* -----------------------------------------------------------------------
  * ALSA config helpers
  * ---------------------------------------------------------------------- */
@@ -151,9 +163,13 @@ static int open_plugin(snd_pcm_t **pcm, const char *socket_path)
 }
 
 /*
- * Negotiate hw_params: stereo S16_LE at 48 kHz with a 1024-frame period.
+ * Negotiate hw_params: stereo S16_LE at the given rate with a period near
+ * `period_hint` frames and a buffer of 4 periods. Used to vary how much
+ * audio can be queued so drain-timeout tests can prove the bound scales
+ * with the backlog rather than being a single flat constant.
  */
-static int set_hw_params(snd_pcm_t *pcm)
+static int set_hw_params_ex(snd_pcm_t *pcm, snd_pcm_uframes_t period_hint,
+                             unsigned int rate)
 {
     snd_pcm_hw_params_t *params;
     snd_pcm_hw_params_alloca(&params);
@@ -166,16 +182,23 @@ static int set_hw_params(snd_pcm_t *pcm)
                  SND_PCM_FORMAT_S16_LE)) < 0) return rc;
     if ((rc = snd_pcm_hw_params_set_channels(pcm, params, 2)) < 0)
         return rc;
-    unsigned int rate = 48000;
     if ((rc = snd_pcm_hw_params_set_rate_near(pcm, params, &rate, 0)) < 0)
         return rc;
-    snd_pcm_uframes_t period = 1024;
+    snd_pcm_uframes_t period = period_hint;
     if ((rc = snd_pcm_hw_params_set_period_size_near(pcm, params, &period, 0)) < 0)
         return rc;
     snd_pcm_uframes_t buf = period * 4;
     if ((rc = snd_pcm_hw_params_set_buffer_size_near(pcm, params, &buf)) < 0)
         return rc;
     return snd_pcm_hw_params(pcm, params);
+}
+
+/*
+ * Negotiate hw_params: stereo S16_LE at 48 kHz with a 1024-frame period.
+ */
+static int set_hw_params(snd_pcm_t *pcm)
+{
+    return set_hw_params_ex(pcm, 1024, 48000);
 }
 
 /* -----------------------------------------------------------------------
@@ -647,8 +670,9 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
      * empty with no bound. If CamillaDSP is alive but stops reading stdin
      * (wedged) without ever closing its end (no -EPIPE), the kernel pipe
      * fills up and write() never sees POLLOUT again, so the ring buffer
-     * never empties. snd_pcm_drain() must return -ETIMEDOUT once
-     * PCDSP_DRAIN_TIMEOUT_NS elapses instead of hanging forever.
+     * never empties. snd_pcm_drain() must return -ETIMEDOUT once the
+     * dynamic bound computed by pcdsp_drain_timeout_ns() elapses instead of
+     * hanging forever.
      */
     init_sock_path("drain-timeout");
     _Atomic(bool) stop_holding = false;
@@ -693,6 +717,87 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
     snd_pcm_close(pcm);
     pthread_join(srv, NULL);
     unlink(g_sock_path);
+}
+
+/*
+ * Helper for drain_timeout_scales_with_backlog_not_flat_constant: negotiate
+ * hw_params with the given period, fill the pipeline, hold the peer's read
+ * end open without reading, and return how long snd_pcm_drain() took to
+ * give up with -ETIMEDOUT.
+ */
+static double measure_drain_timeout(const char *sock_suffix,
+                                     snd_pcm_uframes_t period_hint,
+                                     unsigned int rate)
+{
+    init_sock_path(sock_suffix);
+    _Atomic(bool) stop_holding = false;
+    server_args_t args = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK_RET(open_plugin(&pcm, g_sock_path) == 0, -1.0);
+    CHECK_RET(set_hw_params_ex(pcm, period_hint, rate) == 0, -1.0);
+    CHECK_RET(snd_pcm_nonblock(pcm, 1) == 0, -1.0);
+
+    int16_t frames[257 * 2] = { 0 };
+    for (int i = 0; i < 256; i++) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK_RET(rc >= 0 || rc == -EAGAIN, -1.0);
+    }
+
+    struct timespec drain_start, drain_end;
+    clock_gettime(CLOCK_MONOTONIC, &drain_start);
+    CHECK_RET(snd_pcm_nonblock(pcm, 0) == 0, -1.0);
+    int drain_rc = snd_pcm_drain(pcm);
+    clock_gettime(CLOCK_MONOTONIC, &drain_end);
+
+    CHECK_RET(drain_rc == -ETIMEDOUT, -1.0);
+
+    atomic_store_explicit(&stop_holding, true, memory_order_release);
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+
+    return (double)(drain_end.tv_sec - drain_start.tv_sec) +
+           (double)(drain_end.tv_nsec - drain_start.tv_nsec) / 1e9;
+}
+
+TEST(drain_timeout_scales_with_backlog_not_flat_constant)
+{
+    /*
+     * Regression: pcdsp_drain()'s bound used to be the single flat
+     * PCDSP_DRAIN_TIMEOUT_NS (5 s) no matter how much audio was actually
+     * left to drain. BlueALSA instead computes
+     * `100ms + periods_remaining * period_time` so a small backlog gives up
+     * quickly and a large backlog gets proportionally more time before
+     * -ETIMEDOUT. Prove both properties on the picoredsp plugin itself
+     * (not just by inspecting the formula): a tiny period/buffer times out
+     * much faster than a large period/buffer, and neither takes anywhere
+     * near the old flat 5 s ceiling.
+     */
+    double small_s = measure_drain_timeout("drain-scale-small", 64, 48000);
+    double large_s = measure_drain_timeout("drain-scale-large", 8192, 48000);
+
+    /* Both must have actually timed out (measure_drain_timeout returns -1.0
+     * on any assertion failure along the way). */
+    CHECK(small_s >= 0.0);
+    CHECK(large_s >= 0.0);
+
+    /* Neither should resemble the old flat 5 s constant. */
+    CHECK(small_s < 1.0);
+    CHECK(large_s < 5.0);
+
+    /* The larger backlog must take meaningfully longer than the tiny one —
+     * this is the actual BlueALSA-style scaling behaviour, not merely "some
+     * bound exists". */
+    CHECK(large_s > small_s * 2.0);
 }
 
 TEST(pause_blocks_until_worker_stops_writing_before_returning)
@@ -951,6 +1056,7 @@ int main(void)
 
     /* Drain timeout / pause synchronisation (Step 3) */
     RUN(drain_times_out_when_camilladsp_stops_reading_pipe);
+    RUN(drain_timeout_scales_with_backlog_not_flat_constant);
     RUN(pause_blocks_until_worker_stops_writing_before_returning);
 
     /* sw_params avail_min / delay() pipe accounting (Step 4) */

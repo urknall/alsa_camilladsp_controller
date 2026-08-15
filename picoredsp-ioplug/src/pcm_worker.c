@@ -23,16 +23,18 @@
 #include <unistd.h>
 
 /* -----------------------------------------------------------------------
- * pcdsp_worker_block_sigpipe
+ * pcdsp_worker_block_all_signals
  * ---------------------------------------------------------------------- */
 
-void pcdsp_worker_block_sigpipe(void)
+void pcdsp_worker_block_all_signals(void)
 {
     sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGPIPE);
-    /* Thread-directed: affects only the calling thread's signal mask. */
-    pthread_sigmask(SIG_BLOCK, &set, NULL);
+    sigfillset(&set);
+    /* Thread-directed: SIG_SETMASK replaces (not merely adds to) the
+     * calling thread's signal mask, affecting only this thread — matching
+     * BlueALSA's io_thread_setup() exactly rather than only blocking
+     * SIGPIPE. See the rationale in pcm_worker.h. */
+    pthread_sigmask(SIG_SETMASK, &set, NULL);
 }
 
 /* -----------------------------------------------------------------------

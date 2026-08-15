@@ -212,6 +212,35 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > against ALSA's public `pcm_ioplug.h`, so "vs. original `alsa_cdsp` fork
 > point" is reframed as "vs. current upstream BlueALSA reference" — see the
 > tracking doc for details.
+>
+> **Exact-mechanism follow-up (2026-08-15/16):** a further pass re-checked
+> the reviewer's incomplete-topics table against BlueALSA's *exact*
+> mechanism, not just its outcome, for two rows that were previously
+> "functionally equivalent but different in mechanism":
+> 1. **Signal masking** — the worker thread previously blocked only
+>    `SIGPIPE` (`sigaddset`+`SIG_BLOCK`). Changed to block the full signal
+>    set via `sigfillset()` + `pthread_sigmask(SIG_SETMASK, ...)`, matching
+>    BlueALSA's `io_thread_setup()` exactly. Renamed
+>    `pcdsp_worker_block_sigpipe()` → `pcdsp_worker_block_all_signals()`
+>    (`pcm_worker.c`/`pcm_worker.h`). New regression test
+>    `block_all_signals_blocks_full_signal_set_not_just_sigpipe`
+>    (`test_pcm_worker.c`) captures the worker thread's own signal mask and
+>    proves `SIGUSR1`/`SIGTERM`/`SIGHUP` are blocked in addition to
+>    `SIGPIPE`.
+> 2. **Drain timeout** — `pcdsp_drain()` previously used a flat 5 s
+>    constant. Replaced with `pcdsp_drain_timeout_ns()` (`pcm.c`), computing
+>    BlueALSA's own formula `100ms + periods_remaining * period_time` from
+>    the frames actually queued at drain-entry. New regression test
+>    `drain_timeout_scales_with_backlog_not_flat_constant`
+>    (`test_pcm_integration.c`) measures wall-clock `-ETIMEDOUT` latency for
+>    a small vs. large period/buffer configuration and asserts the bound
+>    scales with backlog (>2× difference) rather than being fixed.
+>
+> Full C suite re-run after both changes: 7/7 binaries, 0 failures
+> (`cmake --build . -j$(nproc) && ctest --output-on-failure`). `cargo test`
+> re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.
+> `BLUEALSA_TRACKING.md`'s verification table and prose sections updated to
+> cite the new code and tests.
 
 - [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
 - [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:

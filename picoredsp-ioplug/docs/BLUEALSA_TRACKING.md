@@ -121,8 +121,15 @@ The job should be idempotent (does not re-open already-reviewed issues).
 A follow-up review (2026-08-15/16) re-checked each row of a reviewer-supplied
 table claiming these topics were incomplete in piCoreDSP's ioplug relative to
 BlueALSA. Re-reading the current `picoredsp-ioplug/src/pcm.c` and
-`pcm_worker.c` shows every row is already implemented — this table exists so
-that claim doesn't need to be re-investigated from scratch again later.
+`pcm_worker.c` showed most rows already matched BlueALSA's behavioural intent
+(bounded waits, tracked `sw_params`/`avail_min`, etc.), but two rows —
+**SIGPIPE** and **Drain** — matched BlueALSA's *outcome* without matching its
+*exact mechanism*: signal masking blocked only `SIGPIPE` (BlueALSA blocks the
+full signal set), and the drain timeout was a flat constant (BlueALSA scales
+it with the remaining backlog). Per explicit follow-up direction, both were
+changed to match BlueALSA's mechanism exactly rather than being left as
+"functionally equivalent" divergences — see the SIGPIPE and Drain rows below
+for the resulting code and the tests that prove it.
 
 Each row below was verified by **running** the C test suite
 (`cmake --build . && ctest`, 7/7 binaries, 0 failures) and reading the
@@ -133,15 +140,22 @@ rules out a tautological/mocked test giving a false sense of coverage.
 
 | Topic | Reviewer's claim | Actual current state | Evidence (code + a test that would fail/crash without the fix) |
 |-------|-------------------|-----------------------|----------|
-| SIGPIPE | ❌ unsafe | Blocked (not ignored) for the worker thread only, via `pthread_sigmask`, so `write()` returns `-EPIPE` instead of raising the signal | `pcm_worker.c:31-35` + `pcm.c:245`. Test `test_pcm_worker.c`'s **"SIGPIPE safety regression (release blocker)"** deliberately leaves `SIGPIPE` at process-wide `SIG_DFL`, closes the pipe read-end, then writes from the worker thread — if the thread hadn't blocked `SIGPIPE` for itself, this would kill the whole test binary, not just fail an assertion |
+| SIGPIPE | ❌ unsafe | Blocked for the worker thread via `pthread_sigmask` — and, matching BlueALSA's `io_thread_setup()` exactly (not just the `SIGPIPE`-only fix from the earlier pass), the worker now blocks the **full signal set** (`sigfillset()` + `SIG_SETMASK`, replacing rather than adding to the thread's mask) so no other signal can interrupt in-flight pipe I/O either | `pcm_worker.c:24-48` (`pcdsp_worker_block_all_signals`, renamed from `pcdsp_worker_block_sigpipe`) + call site `pcm.c:252`. Test `test_pcm_worker.c`'s **"SIGPIPE safety regression (release blocker)"** would crash the whole test binary (not just fail an assertion) if `SIGPIPE` weren't blocked; new test **`block_all_signals_blocks_full_signal_set_not_just_sigpipe`** spawns the worker, captures its own mask via a dedicated capture thread, and asserts `SIGPIPE`, `SIGUSR1`, `SIGTERM`, and `SIGHUP` are all blocked (proving full-set blocking, not just `SIGPIPE`), while confirming the *main* thread's mask is left untouched |
 | Pause synchronization | ⚠️ atomic + sleep | Mutex/condvar rendezvous: `pcdsp_pause(enable=1)` blocks on `pause_cond` until the worker acknowledges (under `pause_mutex`) it reached a safe point, bounded by `PCDSP_PAUSE_ACK_TIMEOUT_NS` | `pcm.c:721-769` + worker ack at `pcm.c:252-273`. Test `pause_blocks_until_worker_stops_writing_before_returning` streams real audio, calls `snd_pcm_pause(pcm, 1)`, and asserts observed pipe byte count stops changing immediately after `pause()` returns |
-| Drain | ⚠️ unbounded wait | Bounded by `PCDSP_DRAIN_TIMEOUT_NS` (5 s); returns `-ETIMEDOUT` instead of blocking forever | `pcm.c:672-718`. Test `drain_times_out_when_camilladsp_stops_reading_pipe` wedges the mock reader, calls `snd_pcm_drain()`, and asserts (via `clock_gettime`) it returns `-ETIMEDOUT` in well under the would-be-infinite wait |
+| Drain | ⚠️ unbounded wait | Bound is now **dynamic**, matching BlueALSA's own formula exactly: `pcdsp_drain_timeout_ns()` computes `100ms + periods_remaining * period_time` from the frames actually queued at drain-entry, instead of a flat constant (`PCDSP_DRAIN_TIMEOUT_NS` is now only a fallback for the unreachable `rate == 0`/`period_size == 0` case) | `pcm.c:675-700` (`pcdsp_drain_timeout_ns`), used by `pcdsp_drain()` at `pcm.c:702-751`. Test `drain_times_out_when_camilladsp_stops_reading_pipe` still proves the bounded-timeout property; new test **`drain_timeout_scales_with_backlog_not_flat_constant`** proves the *scaling* property directly by measuring wall-clock `-ETIMEDOUT` latency for a tiny (64-frame period) vs. large (8192-frame period) configuration and asserting the large one takes more than 2× as long as the small one, and that neither resembles the old flat 5 s constant |
 | `sw_params` | ❌ absent | `pcdsp_sw_params()` implemented and registered in the ioplug callback table, reads `avail_min` via `snd_pcm_sw_params_get_avail_min()` | `pcm.c:626-643`, registered at `pcm.c:951` |
 | `avail_min` | ❌ not captured | Captured by `pcdsp_sw_params()`, consulted by `pcdsp_poll_revents()` to gate `RUNNING`-state readiness (`avail >= avail_min`) | `pcm.c:142-146`, `pcm.c:859-863`. Test `poll_revents_respects_avail_min_from_sw_params` negotiates `avail_min=4096` against a scenario that can never reach it and asserts poll never reports ready |
 | Delay | ⚠️ ring only | `pcdsp_delay()` adds ring-buffer occupancy *and* bytes already queued in the kernel pipe (`ioctl(FIONREAD)`); documented residual gap is CamillaDSP's own post-pipe internal buffering, which is genuinely outside the plugin's visibility, not an oversight | `pcm.c:898-923` |
 | Device disconnect | Basic error | `pcdsp_hw_free()` closes the pipe fd and IPC connection on an unexpected hw_free (no stop/drain), so the controller is never left waiting on a STOP that never arrives; `pcdsp_poll_revents()` surfaces `POLLERR`/`POLLHUP`/`-ENODEV` on `SND_PCM_STATE_DISCONNECTED` | `pcm.c:609-624`, `pcm.c:874-878` |
 | alsa-lib quirks | Almost no tracked policy | `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA` used when available (monotone `hw_ptr`), with a `hw_ptr %= buffer_size` fallback for older alsa-lib — the same pattern BlueALSA uses | `pcm.c:427-445` (fallback), `pcm.c:1054-1056` (flag opt-in) |
 | Upstream review | ❌ stale | Tracked path corrected to `src/asound/bluealsa-pcm.c`, pinned to commit `84ad90d`, dated 2026-08-15; a machine-readable path-existence check (`scripts/check_upstream_tracking.py::missing_tracked_paths`, added 2026-08-15/16) now catches a future rename automatically instead of relying on a human noticing | This document's Repository Details table and Review Log |
+
+All nine rows above were re-verified by rebuilding and re-running the full C
+test suite after the SIGPIPE and Drain code changes landed
+(`cmake --build . -j$(nproc) && ctest --output-on-failure`, 7/7 binaries,
+0 failures, including both new regression tests), and by re-running
+`cargo test` (214 passed, 0 failed) to confirm the Rust side is unaffected.
+
 
 No production code changes were needed for these rows; all were already
 correct as of the 2026-08-15 correctness pass and are exercised by tests
@@ -262,9 +276,11 @@ via a pipe, not a Bluetooth transport via D-Bus/FIFO).
   periods remaining** (`100ms + periods_remaining * period_time`) rather than
   an unbounded wait — a fixed timeout (or infinite poll) would either abort
   slow-but-healthy drains too early or hang forever on a truly stuck
-  transport. This bounded-timeout pattern matches the fix already applied to
-  piCoreDSP's `pcdsp_drain()` (Step 3), which likewise avoids an
-  open-ended wait.
+  transport. piCoreDSP's `pcdsp_drain()` now computes the identical formula
+  via `pcdsp_drain_timeout_ns()` (`pcm.c:675-700`) instead of the flat
+  constant used before this pass, so the bound scales the same way BlueALSA's
+  does; see the Drain row in the verification table above for the test that
+  measures this directly.
 - Once the local buffer is empty, BlueALSA additionally sends a D-Bus
   `Drain` control command so the *far side* (Bluetooth transport) can flush
   before the ALSA-level state moves to `SETUP`.
@@ -291,11 +307,12 @@ via a pipe, not a Bluetooth transport via D-Bus/FIFO).
   *all* signals in the IO thread, explicitly to (a) guarantee `EPIPE` is
   returned from `write()` instead of raising `SIGPIPE`, and (b) so `SIGIO`
   (used for resume) is only ever consumed via `sigwait()`, never delivered
-  asynchronously. piCoreDSP's worker (`pcm_worker.c`) similarly blocks
-  `SIGPIPE` per Step 3/Step 4 of the correctness pass; this review confirms
-  blocking the full signal set (not just `SIGPIPE`) in the transport thread
-  is the more robust upstream pattern worth keeping in mind if piCoreDSP
-  adds more signal-driven control paths later.
+  asynchronously. piCoreDSP's worker (`pcm_worker.c:pcdsp_worker_block_all_signals`)
+  now uses the identical `sigfillset()` + `SIG_SETMASK` call, blocking the
+  full signal set rather than only `SIGPIPE` as in the earlier pass — see the
+  SIGPIPE row in the verification table above for the test that captures the
+  worker thread's own mask and proves `SIGUSR1`/`SIGTERM`/`SIGHUP` are
+  blocked too, not just `SIGPIPE`.
 
 ### Delay accounting
 

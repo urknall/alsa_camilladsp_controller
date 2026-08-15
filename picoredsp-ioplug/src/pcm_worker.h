@@ -70,30 +70,44 @@ ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
                                     const _Atomic(bool) *keep_running);
 
 /*
- * pcdsp_worker_block_sigpipe — block SIGPIPE for the calling thread only.
+ * pcdsp_worker_block_all_signals — block all signals for the calling thread
+ * only (thread-directed via pthread_sigmask, never process-wide).
  *
- * Must be called once, at the start of any thread that writes to the
- * CamillaDSP stdin pipe (production: the ioplug worker thread; see
- * worker_thread() in pcm.c).  write() to a pipe whose read end has been
- * closed (CamillaDSP exited) raises SIGPIPE; with the default disposition
- * this terminates the *entire* process — unacceptable here because this
- * plugin is loaded inside an arbitrary host application (Squeezelite,
- * AirPlay receivers, etc.), not a process we control.
+ * Must be called once, at the start of the dedicated pipe-writer thread
+ * (production: the ioplug worker thread; see worker_thread() in pcm.c).
+ * Matches BlueALSA's `io_thread_setup()` signal-masking pattern in
+ * `bluealsa-pcm.c` (`sigfillset()` + `pthread_sigmask(SIG_SETMASK, ...)`)
+ * rather than blocking only SIGPIPE, for the same two reasons documented
+ * there:
  *
- * pthread_sigmask() only changes the calling thread's signal mask, so this
- * confines the fix to the dedicated pipe-writer thread instead of calling
- * signal(SIGPIPE, SIG_IGN), which would change disposition for the entire
- * process — including threads owned by the host application.
+ *   (a) write() to a pipe whose read end has been closed (CamillaDSP
+ *       exited) raises SIGPIPE; with the default disposition this
+ *       terminates the *entire* process — unacceptable here because this
+ *       plugin is loaded inside an arbitrary host application (Squeezelite,
+ *       AirPlay receivers, etc.), not a process we control. Blocking (not
+ *       ignoring) SIGPIPE keeps write() returning -EPIPE, which
+ *       pcdsp_drain_period_to_pipe() already handles, without changing
+ *       process-wide signal disposition via signal(SIGPIPE, SIG_IGN).
+ *   (b) blocking the *full* signal set (not just SIGPIPE) for this thread
+ *       guarantees no other signal can ever interrupt it asynchronously —
+ *       this worker has no signal-driven control path today, but a stray
+ *       process-wide signal (delivered to an arbitrary thread by the
+ *       kernel) hitting this thread mid-write would otherwise be an
+ *       unnecessary source of EINTR/undefined interaction with a host
+ *       application's own signal handlers. Blocking everything up front
+ *       removes that class of surprise entirely, matching BlueALSA's
+ *       stated rationale in its IO thread setup.
  *
- * With SIGPIPE blocked (not ignored) for this thread, write() still returns
- * -EPIPE on a broken pipe (the syscall failure is independent of whether the
- * generated signal is delivered), which pcdsp_drain_period_to_pipe() already
- * handles.  The mask is intentionally never restored: a dedicated pipe-writer
- * thread has no other purpose for its entire lifetime, so there is no later
- * point at which re-enabling delivery of a signal that may have gone pending
- * while blocked would be safe.
+ * pthread_sigmask(SIG_SETMASK, &fullset, NULL) only changes the calling
+ * thread's signal mask (thread-directed, per POSIX), so this confines the
+ * fix to the dedicated pipe-writer thread instead of calling
+ * signal(SIGPIPE, SIG_IGN) or sigprocmask() (which would affect disposition
+ * or the whole process). The mask is intentionally never restored: a
+ * dedicated pipe-writer thread has no other purpose for its entire
+ * lifetime, so there is no later point at which re-enabling delivery of a
+ * signal that may have gone pending while blocked would be safe.
  */
-void pcdsp_worker_block_sigpipe(void);
+void pcdsp_worker_block_all_signals(void);
 
 /*
  * pcdsp_drain_period_null_sink — drain one period worth of frames from `rb`

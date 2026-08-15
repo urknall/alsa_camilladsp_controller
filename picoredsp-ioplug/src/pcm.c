@@ -43,9 +43,11 @@
  *
  * Drain and pause synchronisation
  * --------------------------------
- * pcdsp_drain() waits for the ring buffer to empty, bounded by
- * PCDSP_DRAIN_TIMEOUT_NS so a CamillaDSP that stops reading stdin without
- * signalling EPIPE cannot block snd_pcm_drain() forever.
+ * pcdsp_drain() waits for the ring buffer to empty, bounded by a timeout
+ * computed from the periods remaining to drain (pcdsp_drain_timeout_ns(),
+ * matching BlueALSA's `100ms + periods_remaining * period_time` formula) so
+ * a CamillaDSP that stops reading stdin without signalling EPIPE cannot
+ * block snd_pcm_drain() forever.
  * pcdsp_pause(enable=1) blocks (bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS) until
  * the worker acknowledges via pause_mutex/pause_cond that it has reached a
  * safe point (parked, not mid-write) — so pause() cannot return while a
@@ -112,12 +114,12 @@ static const unsigned int k_rates[] = {
 #define BUFFER_SIZE_MIN   (PERIOD_SIZE_MIN * 2u)
 #define BUFFER_SIZE_MAX   (PERIOD_SIZE_MAX * RB_PERIODS)
 
-/* pcdsp_drain() ceiling: a healthy CamillaDSP consumes a period (a few ms of
- * audio) almost immediately, so the ring buffer (at most BUFFER_SIZE_MAX
- * frames, a few hundred ms even at the lowest supported rate) drains well
- * within this bound under normal operation. This exists solely to prevent
- * snd_pcm_drain() from blocking forever if CamillaDSP stops reading stdin
- * (process alive but wedged) without signalling EPIPE. */
+/* pcdsp_drain() fallback ceiling, used only if rate or period_size is
+ * unexpectedly zero at drain() time (should not happen post-hw_params).
+ * The primary bound is computed dynamically by pcdsp_drain_timeout_ns()
+ * from the periods actually remaining to drain, matching BlueALSA's
+ * `100ms + periods_remaining * period_time` formula instead of a flat
+ * constant — see that function for the rationale. */
 #define PCDSP_DRAIN_TIMEOUT_NS   (5ULL * 1000000000ULL) /* 5 s */
 
 /* pcdsp_pause(enable=1) ceiling: bounds how long pause() waits for the
@@ -242,11 +244,14 @@ static void *worker_thread(void *arg)
 {
     pcdsp_pcm_t *pcdsp = arg;
 
-    /* This thread writes to the CamillaDSP stdin pipe; block SIGPIPE for it
-     * (thread-scoped, not process-wide) so a broken pipe reports -EPIPE via
-     * write() instead of killing the host application. See
-     * pcdsp_worker_block_sigpipe() in pcm_worker.c for the full rationale. */
-    pcdsp_worker_block_sigpipe();
+    /* This thread writes to the CamillaDSP stdin pipe; block *all* signals
+     * for it (thread-scoped, not process-wide) — matching BlueALSA's
+     * io_thread_setup() exactly, not just SIGPIPE — so a broken pipe
+     * reports -EPIPE via write() instead of killing the host application,
+     * and no other signal can interrupt this thread mid-transfer. See
+     * pcdsp_worker_block_all_signals() in pcm_worker.c for the full
+     * rationale. */
+    pcdsp_worker_block_all_signals();
 
     while (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         if (atomic_load_explicit(&pcdsp->paused, memory_order_acquire)) {
@@ -669,6 +674,35 @@ static int pcdsp_prepare(snd_pcm_ioplug_t *io)
     return 0;
 }
 
+/*
+ * pcdsp_drain_timeout_ns — bound for pcdsp_drain()'s wait, computed the same
+ * way BlueALSA's playback drain bounds its own wait in bluealsa-pcm.c:
+ * `100ms + periods_remaining * period_time`, rather than a single flat
+ * constant. A flat timeout either aborts a slow-but-healthy drain of a large,
+ * mostly-full buffer too early, or leaves a nearly-empty buffer waiting far
+ * longer than it should if CamillaDSP is genuinely wedged. Scaling the bound
+ * to how much audio is actually left to drain avoids both failure modes.
+ *
+ * periods_remaining is computed once at drain() entry (ceiling division of
+ * frames currently queued by period_size); period_time is period_size /
+ * rate. Falls back to a fixed floor if rate or period_size is unexpectedly
+ * zero (should not happen post-hw_params, but must not divide by zero).
+ */
+static uint64_t pcdsp_drain_timeout_ns(const pcdsp_pcm_t *pcdsp, size_t avail_frames)
+{
+    const uint64_t floor_ns = 100ULL * 1000000ULL; /* 100 ms, matches BlueALSA */
+
+    unsigned int rate        = pcdsp->io.rate;
+    size_t       period_size = pcdsp->period_size;
+    if (rate == 0 || period_size == 0)
+        return PCDSP_DRAIN_TIMEOUT_NS;
+
+    size_t periods_remaining = (avail_frames + period_size - 1) / period_size;
+    uint64_t period_time_ns  = (uint64_t)period_size * 1000000000ULL / rate;
+
+    return floor_ns + (uint64_t)periods_remaining * period_time_ns;
+}
+
 static int pcdsp_drain(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
@@ -681,10 +715,14 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     /* Bound the wait so a CamillaDSP that stops reading stdin (process
      * alive, pipe never returns POLLOUT/EPIPE) cannot block drain()
      * forever. pcdsp_clock_now() failure (should not happen in practice)
-     * degrades to an unbounded wait rather than a false-positive timeout. */
+     * degrades to an unbounded wait rather than a false-positive timeout.
+     * The bound itself scales with how much is left to drain (see
+     * pcdsp_drain_timeout_ns()), matching BlueALSA's approach instead of a
+     * flat ceiling. */
     uint64_t start_ns    = 0;
     bool     have_clock  = (pcdsp_clock_now(&start_ns) == 0);
     bool     timed_out   = false;
+    uint64_t timeout_ns  = pcdsp_drain_timeout_ns(pcdsp, pcdsp_rb_read_avail(&pcdsp->rb));
 
     /* Wait until the ring buffer is empty, the worker stops (no consumer
      * → buffer will never drain), a fatal stream error is recorded, or the
@@ -697,7 +735,7 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
         if (have_clock) {
             uint64_t now_ns;
             if (pcdsp_clock_now(&now_ns) == 0 &&
-                now_ns - start_ns >= PCDSP_DRAIN_TIMEOUT_NS) {
+                now_ns - start_ns >= timeout_ns) {
                 timed_out = true;
                 break;
             }

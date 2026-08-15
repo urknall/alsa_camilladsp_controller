@@ -118,7 +118,7 @@ static void *drain_thread_main(void *arg)
      * drain call inside a thread that does the same, instead of relying on
      * process-wide signal(SIGPIPE, SIG_IGN), which would hide whether the
      * fix is actually thread-scoped. */
-    pcdsp_worker_block_sigpipe();
+    pcdsp_worker_block_all_signals();
     drain_thread_args_t *a = arg;
     a->result = pcdsp_drain_period_to_pipe(
         a->rb, a->pipe_fd, a->period_frames, a->frame_bytes, a->keep_running);
@@ -754,7 +754,7 @@ TEST(failure_camilladsp_early_exit_detected_via_epipe)
  * would have masked a regression to the unsafe behaviour.  This test
  * verifies the actual production fix: SIGPIPE remains at its default,
  * process-wide disposition, and only the dedicated writer thread blocks it
- * for itself via pcdsp_worker_block_sigpipe() (mirroring worker_thread() in
+ * for itself via pcdsp_worker_block_all_signals() (mirroring worker_thread() in
  * pcm.c). If that thread-scoping were ever broken (e.g. reverted to a
  * process-wide signal(SIGPIPE, SIG_IGN) call), this test would still pass by
  * accident; what it *does* prove is that the fix is thread-local rather than
@@ -774,7 +774,7 @@ TEST(worker_survives_default_sigpipe_disposition_via_thread_scoped_block)
     CHECK(old_action.sa_handler == SIG_DFL);
 
     /* Snapshot this (main) thread's own signal mask so we can prove below
-     * that pcdsp_worker_block_sigpipe() — called only inside the dedicated
+     * that pcdsp_worker_block_all_signals() — called only inside the dedicated
      * writer thread — did not leak into the caller's mask. */
     sigset_t mask_before;
     CHECK(pthread_sigmask(SIG_BLOCK, NULL, &mask_before) == 0);
@@ -808,6 +808,51 @@ TEST(worker_survives_default_sigpipe_disposition_via_thread_scoped_block)
 
     close(pipefd[1]);
     pcdsp_rb_free(&rb);
+}
+
+/* -----------------------------------------------------------------------
+ * Full signal-set masking regression (matches BlueALSA's io_thread_setup())
+ *
+ * BlueALSA's IO thread blocks *every* signal (sigfillset + SIG_SETMASK), not
+ * just SIGPIPE, so that no signal can ever interrupt it asynchronously.
+ * pcdsp_worker_block_all_signals() must do the same. Verify this directly by
+ * capturing the worker thread's own mask (not the caller's) after calling it,
+ * and checking that an arbitrary sample of signals beyond SIGPIPE are blocked.
+ * ---------------------------------------------------------------------- */
+
+static void *capture_mask_after_block_thread(void *arg)
+{
+    sigset_t *out = arg;
+    pcdsp_worker_block_all_signals();
+    pthread_sigmask(SIG_BLOCK, NULL, out);
+    return NULL;
+}
+
+TEST(block_all_signals_blocks_full_signal_set_not_just_sigpipe)
+{
+    sigset_t worker_mask;
+    memset(&worker_mask, 0, sizeof(worker_mask));
+
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, capture_mask_after_block_thread,
+                          &worker_mask) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+
+    /* SIGPIPE (the historically-fixed signal) and a representative sample of
+     * unrelated signals (SIGUSR1, SIGTERM, SIGHUP) must all be blocked — a
+     * regression to blocking only SIGPIPE would fail this on SIGUSR1/
+     * SIGTERM/SIGHUP even though the original SIGPIPE-only test above would
+     * still pass. */
+    CHECK(sigismember(&worker_mask, SIGPIPE));
+    CHECK(sigismember(&worker_mask, SIGUSR1));
+    CHECK(sigismember(&worker_mask, SIGTERM));
+    CHECK(sigismember(&worker_mask, SIGHUP));
+
+    /* The calling (main) thread's own mask must remain untouched — the
+     * effect is strictly thread-directed. */
+    sigset_t main_mask;
+    CHECK(pthread_sigmask(SIG_BLOCK, NULL, &main_mask) == 0);
+    CHECK(!sigismember(&main_mask, SIGUSR1));
 }
 
 /* -----------------------------------------------------------------------
@@ -952,6 +997,7 @@ int main(void)
     RUN(failure_rust_daemon_restart_ipc_send_stop_fails_gracefully);
     RUN(failure_camilladsp_early_exit_detected_via_epipe);
     RUN(worker_survives_default_sigpipe_disposition_via_thread_scoped_block);
+    RUN(block_all_signals_blocks_full_signal_set_not_just_sigpipe);
 
     /* Buffer-safety regression (finding #2: stack overflow with max frame bytes) */
     RUN(drain_period_max_frame_bytes_stereo_s32le_no_overflow);
