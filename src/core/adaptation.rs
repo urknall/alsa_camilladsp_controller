@@ -1542,28 +1542,6 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Locate a real CamillaDSP binary for opt-in live compatibility tests.
-    ///
-    /// These tests are `#[ignore]`d by default — they need a real CamillaDSP
-    /// binary, which is not part of this repository or its normal `cargo
-    /// test` job — and must be run explicitly, e.g.
-    /// `PICOREDSP_TEST_CAMILLADSP_BIN=/path/to/camilladsp cargo test -- --ignored`.
-    /// If the environment variable is unset the test prints a skip notice
-    /// and returns rather than failing, so `--ignored` can still be run in
-    /// environments without the binary without spurious failures.
-    fn live_camilladsp_binary() -> Option<PathBuf> {
-        let path = env::var_os("PICOREDSP_TEST_CAMILLADSP_BIN")?;
-        let path = PathBuf::from(path);
-        if !path.is_file() {
-            eprintln!(
-                "PICOREDSP_TEST_CAMILLADSP_BIN={} is not a file — skipping live CamillaDSP test",
-                path.display()
-            );
-            return None;
-        }
-        Some(path)
-    }
-
     /// Regression test for the `S24_4_LE`/`S24_4_RJ_LE` schema mismatch
     /// between CamillaDSP's `Alsa` and generic device types (see
     /// `alsa_only_format_to_generic`'s doc comment): every sample format the
@@ -1575,6 +1553,8 @@ mod tests {
     #[test]
     #[ignore = "requires PICOREDSP_TEST_CAMILLADSP_BIN pointing at a real CamillaDSP binary"]
     fn ioplug_adapted_config_validates_against_real_camilladsp_for_all_formats() {
+        use crate::test_support::live_camilladsp_binary;
+
         let Some(cdsp) = live_camilladsp_binary() else {
             return;
         };

@@ -7,6 +7,9 @@ pub mod camilladsp;
 pub mod core;
 pub mod ipc;
 
+#[cfg(test)]
+mod test_support;
+
 use crate::core::adaptation::{
     adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
     get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,

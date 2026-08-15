@@ -536,28 +536,6 @@ mod tests {
         assert_eq!(buffer_latency_ms_from_client(&mut client), None);
     }
 
-    /// Locate a real CamillaDSP binary for opt-in live compatibility tests.
-    ///
-    /// These tests are `#[ignore]`d by default — they need a real CamillaDSP
-    /// binary, which is not part of this repository or its normal `cargo
-    /// test` job — and must be run explicitly, e.g.
-    /// `PICOREDSP_TEST_CAMILLADSP_BIN=/path/to/camilladsp cargo test -- --ignored`.
-    /// If the environment variable is unset the test prints a skip notice
-    /// and returns rather than failing, so `--ignored` can still be run in
-    /// environments without the binary without spurious failures.
-    fn live_camilladsp_binary() -> Option<std::path::PathBuf> {
-        let path = std::env::var_os("PICOREDSP_TEST_CAMILLADSP_BIN")?;
-        let path = std::path::PathBuf::from(path);
-        if !path.is_file() {
-            eprintln!(
-                "PICOREDSP_TEST_CAMILLADSP_BIN={} is not a file — skipping live CamillaDSP test",
-                path.display()
-            );
-            return None;
-        }
-        Some(path)
-    }
-
     /// Regression test for the benchmark WebSocket API drift this module's
     /// doc comments warn about: `GetSamplerate`/`GetBuffersize` do not exist
     /// in CamillaDSP 4.x and would silently return errors/`None`. Unlike the
@@ -570,6 +548,7 @@ mod tests {
     #[test]
     #[ignore = "requires PICOREDSP_TEST_CAMILLADSP_BIN pointing at a real CamillaDSP binary"]
     fn live_collectors_work_against_real_camilladsp() {
+        use crate::test_support::live_camilladsp_binary;
         use std::io::Write;
         use std::process::{Command, Stdio};
 

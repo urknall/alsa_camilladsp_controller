@@ -184,7 +184,7 @@ jobs:
       - name: Run live CamillaDSP compatibility tests
         env:
           PICOREDSP_TEST_CAMILLADSP_BIN: /tmp/camilladsp/camilladsp
-        run: cargo test --locked -- --ignored --test-threads=1
+        run: cargo test --locked -- --ignored --test-threads=1 real_camilladsp
 
   # ─── CamillaDSP live compatibility (latest upstream release) ────────────
   #
@@ -235,7 +235,7 @@ jobs:
       - name: Run live CamillaDSP compatibility tests (latest)
         env:
           PICOREDSP_TEST_CAMILLADSP_BIN: /tmp/camilladsp-latest/camilladsp
-        run: cargo test --locked -- --ignored --test-threads=1
+        run: cargo test --locked -- --ignored --test-threads=1 real_camilladsp
 
   # ─── Installer shell syntax checks ────────────────────────────────────────
   installer_shell_syntax:
