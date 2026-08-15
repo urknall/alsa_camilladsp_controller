@@ -10,14 +10,16 @@
  *   ✓ plugin sends HELLO (version negotiation)
  *   ✓ plugin sends START(rate, format, channels)
  *   ✓ plugin waits for READY (or ERROR) before allowing PCM transfer
- *   ✓ stop sends STOP to the controller
+ *   ✓ stop closes the local data path first, then sends STOP to the
+ *     controller (see pcdsp_stop() for why this order matters)
  *
  * Gate 8 adds the stdin pipe transport:
  *   ✓ Rust controller creates a pipe, spawns CamillaDSP with read-end as stdin
  *   ✓ Rust sends READY with the pipe write-end via SCM_RIGHTS
  *   ✓ plugin receives the write-end fd in pcdsp_ipc_recv_ready()
  *   ✓ worker thread drains the ring buffer by writing to the pipe fd
- *   ✓ on STOP / disconnect the plugin closes the fd, Rust also closes its copy
+ *   ✓ on stop, the plugin stops the worker and closes its fd *before*
+ *     notifying the controller; Rust also closes its copy
  *   ✓ CamillaDSP sees EOF on stdin and shuts down
  *
  * Data path (Gate 8):
@@ -38,6 +40,31 @@
  * We use a single eventfd as the poll descriptor.  The worker signals
  * it (writes 1) each time it completes a period worth of consumption,
  * indicating to the application that more space is available.
+ *
+ * Drain and pause synchronisation
+ * --------------------------------
+ * pcdsp_drain() waits for the ring buffer to empty, bounded by
+ * PCDSP_DRAIN_TIMEOUT_NS so a CamillaDSP that stops reading stdin without
+ * signalling EPIPE cannot block snd_pcm_drain() forever.
+ * pcdsp_pause(enable=1) blocks (bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS) until
+ * the worker acknowledges via pause_mutex/pause_cond that it has reached a
+ * safe point (parked, not mid-write) — so pause() cannot return while a
+ * write to the pipe is still in flight.
+ *
+ * sw_params / avail_min and delay() accounting
+ * ---------------------------------------------
+ * pcdsp_sw_params() records the application's negotiated avail_min so
+ * pcdsp_poll_revents() only reports readiness once that many frames are
+ * free, instead of waking on any single available frame. pcdsp_delay()
+ * additionally counts frames already handed off to the kernel pipe (via
+ * FIONREAD) on top of the ring buffer, since those frames have left the
+ * ring buffer but have not yet reached CamillaDSP/the DAC. A small,
+ * documented gap remains: (a) the worker pulls frames out of the ring
+ * buffer in PCDSP_PIPE_CHUNK_FRAMES-sized chunks before writing them to
+ * the pipe, so at most one in-flight chunk can transiently be counted by
+ * neither the ring buffer nor FIONREAD; (b) CamillaDSP's own internal
+ * buffering (resampler/filter/pipeline latency) once bytes leave the pipe
+ * is not visible to the plugin and is not accounted for here.
  */
 
 #define _GNU_SOURCE
@@ -62,6 +89,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 /* -----------------------------------------------------------------------
@@ -83,6 +112,21 @@ static const unsigned int k_rates[] = {
 #define BUFFER_SIZE_MIN   (PERIOD_SIZE_MIN * 2u)
 #define BUFFER_SIZE_MAX   (PERIOD_SIZE_MAX * RB_PERIODS)
 
+/* pcdsp_drain() ceiling: a healthy CamillaDSP consumes a period (a few ms of
+ * audio) almost immediately, so the ring buffer (at most BUFFER_SIZE_MAX
+ * frames, a few hundred ms even at the lowest supported rate) drains well
+ * within this bound under normal operation. This exists solely to prevent
+ * snd_pcm_drain() from blocking forever if CamillaDSP stops reading stdin
+ * (process alive but wedged) without signalling EPIPE. */
+#define PCDSP_DRAIN_TIMEOUT_NS   (5ULL * 1000000000ULL) /* 5 s */
+
+/* pcdsp_pause(enable=1) ceiling: bounds how long pause() waits for the
+ * worker thread to acknowledge it has reached a safe point (i.e. is not
+ * mid-write to the pipe) before returning anyway. Guards against wedging
+ * pause() forever if the worker has stopped responding for an unrelated
+ * reason. */
+#define PCDSP_PAUSE_ACK_TIMEOUT_NS  (2ULL * 1000000000ULL) /* 2 s */
+
 /* -----------------------------------------------------------------------
  * Plugin private data
  * ---------------------------------------------------------------------- */
@@ -94,6 +138,12 @@ typedef struct pcdsp_pcm {
     size_t              frame_bytes;
     snd_pcm_uframes_t   period_size;
     snd_pcm_uframes_t   buffer_size;
+
+    /* sw_params-negotiated avail_min (frames). Gates poll_revents() readiness
+     * so the application is only woken once at least this many frames are
+     * free, matching real ALSA driver semantics. Defaults to 1 (wake as soon
+     * as any space is free) until/unless ALSA calls pcdsp_sw_params(). */
+    snd_pcm_uframes_t   avail_min;
 
     /* Ring buffer */
     pcdsp_ringbuffer_t  rb;
@@ -121,6 +171,15 @@ typedef struct pcdsp_pcm {
      * pcdsp_poll_revents() so applications are woken and see the error. */
     _Atomic(int)        stream_error;
 
+    /* Pause acknowledgement.  Guarded by pause_mutex/pause_cond (not a plain
+     * atomic) so pcdsp_pause(enable=1) can *block* until the worker reaches a
+     * safe point — i.e. it has observed `paused` and is parked, not mid-write
+     * to the pipe — instead of returning to ALSA immediately and racing the
+     * worker's in-flight write. */
+    pthread_mutex_t     pause_mutex;
+    pthread_cond_t      pause_cond;
+    bool                worker_paused_ack;
+
     /* IPC connection to the Rust controller */
     pcdsp_ipc_conn_t    conn;
     /* Write end of the stdin pipe received from the Rust controller via
@@ -145,6 +204,13 @@ static void pcdsp_stop_worker(pcdsp_pcm_t *pcdsp)
 {
     atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
     atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
+
+    /* Wake a worker parked in the pause wait (pcdsp_pause condvar) so it
+     * re-checks worker_running and exits instead of waiting for the ack
+     * timeout. */
+    pthread_mutex_lock(&pcdsp->pause_mutex);
+    pthread_cond_broadcast(&pcdsp->pause_cond);
+    pthread_mutex_unlock(&pcdsp->pause_mutex);
 
     if (pcdsp->worker_joinable) {
         pcdsp_signal_event_fd(pcdsp->event_fd);
@@ -176,10 +242,35 @@ static void *worker_thread(void *arg)
 {
     pcdsp_pcm_t *pcdsp = arg;
 
+    /* This thread writes to the CamillaDSP stdin pipe; block SIGPIPE for it
+     * (thread-scoped, not process-wide) so a broken pipe reports -EPIPE via
+     * write() instead of killing the host application. See
+     * pcdsp_worker_block_sigpipe() in pcm_worker.c for the full rationale. */
+    pcdsp_worker_block_sigpipe();
+
     while (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         if (atomic_load_explicit(&pcdsp->paused, memory_order_acquire)) {
-            struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1 ms */
-            nanosleep(&ts, NULL);
+            /* Reached a safe point: no write is in flight. Acknowledge the
+             * pause so a blocked pcdsp_pause(enable=1) can return, then wait
+             * (bounded, so worker_running transitions are still observed
+             * promptly) until resumed or told to stop. */
+            pthread_mutex_lock(&pcdsp->pause_mutex);
+            pcdsp->worker_paused_ack = true;
+            pthread_cond_broadcast(&pcdsp->pause_cond);
+            while (atomic_load_explicit(&pcdsp->paused, memory_order_acquire) &&
+                   atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
+                struct timespec deadline;
+                clock_gettime(CLOCK_REALTIME, &deadline);
+                deadline.tv_nsec += 20000000L; /* 20 ms */
+                if (deadline.tv_nsec >= 1000000000L) {
+                    deadline.tv_nsec -= 1000000000L;
+                    deadline.tv_sec  += 1;
+                }
+                pthread_cond_timedwait(&pcdsp->pause_cond, &pcdsp->pause_mutex,
+                                        &deadline);
+            }
+            pcdsp->worker_paused_ack = false;
+            pthread_mutex_unlock(&pcdsp->pause_mutex);
             continue;
         }
 
@@ -294,21 +385,30 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* Gate 7: notify the controller that the stream is ending. */
-    if (pcdsp->conn.fd >= 0)
-        pcdsp_ipc_send_stop(&pcdsp->conn);
-
-    /* Stop/reap the worker before closing pipe_fd.  The worker uses bounded
-     * non-blocking pipe writes, so it observes worker_running=false promptly. */
+    /* Shut down the local data path *before* notifying the controller:
+     * stop/reap the worker thread, then close our pipe write-end so
+     * CamillaDSP sees EOF once Rust also closes its copy.  The worker uses
+     * bounded non-blocking pipe writes, so it observes worker_running=false
+     * promptly.
+     *
+     * Ordering matters: sending STOP first (as this used to do) let Rust
+     * proceed to supervisor.stop_stream() — which waits for CamillaDSP to
+     * exit — while the worker thread here could still be mid-write. Tearing
+     * down the producer/data path first guarantees that by the time the
+     * controller learns the stream ended, nothing on the plugin side can
+     * still be writing to CamillaDSP's stdin. */
     pcdsp_stop_worker(pcdsp);
     pcdsp_timer_stop(&pcdsp->timer);
 
-    /* Gate 8: close the pipe write-end so CamillaDSP sees EOF once Rust
-     * also closes its copy. */
     if (pcdsp->pipe_fd >= 0) {
         close(pcdsp->pipe_fd);
         pcdsp->pipe_fd = -1;
     }
+
+    /* Gate 7: notify the controller that the stream is ending, now that the
+     * local data path has already been fully torn down. */
+    if (pcdsp->conn.fd >= 0)
+        pcdsp_ipc_send_stop(&pcdsp->conn);
 
     /* Drain eventfd. */
     uint64_t dummy;
@@ -395,6 +495,10 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 
     pcdsp->period_size = io->period_size;
     pcdsp->buffer_size = io->buffer_size;
+    /* Reset to the wake-on-any-space default; pcdsp_sw_params() (called
+     * after hw_params, if the application configures sw_params) will raise
+     * this to the negotiated avail_min. */
+    pcdsp->avail_min    = 1;
 
     /* Defensive renegotiation path: no worker may reference the old ring
      * buffer or pipe while hw_params replaces stream resources. */
@@ -520,6 +624,27 @@ static int pcdsp_hw_free(snd_pcm_ioplug_t *io)
     return 0;
 }
 
+/*
+ * sw_params — capture avail_min (and validate boundary) so poll_revents()
+ * gates readiness the same way a real ALSA driver does: the application is
+ * only woken once at least avail_min frames are free, not as soon as any
+ * single frame is. Called by alsa-lib whenever the application configures
+ * (or reconfigures) software parameters via snd_pcm_sw_params(); optional,
+ * so applications that never call it keep the wake-on-any-space default set
+ * in pcdsp_hw_params()/plugin open.
+ */
+static int pcdsp_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *params)
+{
+    pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    snd_pcm_uframes_t avail_min = 0;
+    int rc = snd_pcm_sw_params_get_avail_min(params, &avail_min);
+    if (rc == 0 && avail_min > 0)
+        pcdsp->avail_min = avail_min;
+
+    return 0;
+}
+
 static int pcdsp_prepare(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
@@ -553,11 +678,30 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
      * deadlock where the final partial period never reaches period_size. */
     atomic_store_explicit(&pcdsp->draining, true, memory_order_release);
 
-    /* Wait until the ring buffer is empty or the worker stops (no consumer
-     * → buffer will never drain). */
+    /* Bound the wait so a CamillaDSP that stops reading stdin (process
+     * alive, pipe never returns POLLOUT/EPIPE) cannot block drain()
+     * forever. pcdsp_clock_now() failure (should not happen in practice)
+     * degrades to an unbounded wait rather than a false-positive timeout. */
+    uint64_t start_ns    = 0;
+    bool     have_clock  = (pcdsp_clock_now(&start_ns) == 0);
+    bool     timed_out   = false;
+
+    /* Wait until the ring buffer is empty, the worker stops (no consumer
+     * → buffer will never drain), a fatal stream error is recorded, or the
+     * timeout elapses. */
     while (pcdsp_rb_read_avail(&pcdsp->rb) > 0) {
         if (!atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire))
             break;
+        if (atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire) != 0)
+            break;
+        if (have_clock) {
+            uint64_t now_ns;
+            if (pcdsp_clock_now(&now_ns) == 0 &&
+                now_ns - start_ns >= PCDSP_DRAIN_TIMEOUT_NS) {
+                timed_out = true;
+                break;
+            }
+        }
         struct timespec ts = { .tv_nsec = 1000000 };
         nanosleep(&ts, NULL);
     }
@@ -567,6 +711,8 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
     if (serr != 0)
         return serr;
+    if (timed_out)
+        return -ETIMEDOUT;
     if (pcdsp_rb_read_avail(&pcdsp->rb) > 0)
         return -EPIPE;
     return 0;
@@ -575,11 +721,45 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
 static int pcdsp_pause(snd_pcm_ioplug_t *io, int enable)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
-    atomic_store_explicit(&pcdsp->paused, (bool)enable, memory_order_release);
-    if (!enable)
+
+    if (!enable) {
+        /* Resume: clear the flag and wake a worker parked in the pause
+         * wait immediately; no ack is required to observe a resume. */
+        pthread_mutex_lock(&pcdsp->pause_mutex);
+        atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
+        pthread_cond_broadcast(&pcdsp->pause_cond);
+        pthread_mutex_unlock(&pcdsp->pause_mutex);
         pcdsp_timer_start(&pcdsp->timer);
-    else
-        pcdsp_timer_stop(&pcdsp->timer);
+        return 0;
+    }
+
+    /* Pause: request the worker to park, then block until it has actually
+     * acknowledged the pause (reached a safe point, not mid-write) or has
+     * stopped running — so pause() cannot return while a write is still
+     * in flight. Bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS in case the worker
+     * is wedged for an unrelated reason. */
+    pthread_mutex_lock(&pcdsp->pause_mutex);
+    atomic_store_explicit(&pcdsp->paused, true, memory_order_release);
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec  += (time_t)(PCDSP_PAUSE_ACK_TIMEOUT_NS / 1000000000ULL);
+    deadline.tv_nsec += (long)(PCDSP_PAUSE_ACK_TIMEOUT_NS % 1000000000ULL);
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_nsec -= 1000000000L;
+        deadline.tv_sec  += 1;
+    }
+
+    while (!pcdsp->worker_paused_ack &&
+           atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
+        int wr = pthread_cond_timedwait(&pcdsp->pause_cond, &pcdsp->pause_mutex,
+                                         &deadline);
+        if (wr == ETIMEDOUT)
+            break;
+    }
+    pthread_mutex_unlock(&pcdsp->pause_mutex);
+
+    pcdsp_timer_stop(&pcdsp->timer);
     return 0;
 }
 
@@ -604,6 +784,9 @@ static int pcdsp_close(snd_pcm_ioplug_t *io)
         close(pcdsp->event_fd);
         pcdsp->event_fd = -1;
     }
+
+    pthread_mutex_destroy(&pcdsp->pause_mutex);
+    pthread_cond_destroy(&pcdsp->pause_cond);
 
     free(pcdsp);
     return 0;
@@ -665,8 +848,11 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
                 ready = io->stream == SND_PCM_STREAM_PLAYBACK;
                 break;
             case SND_PCM_STATE_RUNNING:
+                /* Gate readiness on avail_min (sw_params), matching real
+                 * ALSA driver semantics, instead of waking as soon as a
+                 * single frame is free. */
                 if (io->stream == SND_PCM_STREAM_PLAYBACK)
-                    ready = (snd_pcm_uframes_t)avail > 0;
+                    ready = (snd_pcm_uframes_t)avail >= pcdsp->avail_min;
                 break;
             case SND_PCM_STATE_DRAINING:
                 /* Keep playback wakeups level-triggered until the last
@@ -707,8 +893,26 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
     int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
     if (serr != 0)
         return serr;
-    /* Delay = frames currently in the ring buffer awaiting consumption. */
-    *delayp = (snd_pcm_sframes_t)pcdsp_rb_read_avail(&pcdsp->rb);
+
+    /* Frames written by the application but not yet consumed by the worker. */
+    snd_pcm_sframes_t delay = (snd_pcm_sframes_t)pcdsp_rb_read_avail(&pcdsp->rb);
+
+    /* Frames already handed to the kernel pipe but not yet read by
+     * CamillaDSP are also audio that hasn't reached the DAC yet. FIONREAD
+     * reports the pipe's current queued byte count; add the equivalent
+     * frame count as a minimum additional delay.
+     *
+     * Known limitation: this still does not account for CamillaDSP's own
+     * internal buffering (resampler/filter/pipeline latency) once bytes
+     * leave the pipe — the plugin has no visibility into that from the
+     * transport side. See docs/BLUEALSA_TRACKING.md "Delay accounting". */
+    if (pcdsp->pipe_fd >= 0 && pcdsp->frame_bytes > 0) {
+        int queued_bytes = 0;
+        if (ioctl(pcdsp->pipe_fd, FIONREAD, &queued_bytes) == 0 && queued_bytes > 0)
+            delay += (snd_pcm_sframes_t)((size_t)queued_bytes / pcdsp->frame_bytes);
+    }
+
+    *delayp = delay;
     return 0;
 }
 
@@ -736,6 +940,7 @@ static const snd_pcm_ioplug_callback_t pcdsp_callbacks = {
     .close                  = pcdsp_close,
     .hw_params              = pcdsp_hw_params,
     .hw_free                = pcdsp_hw_free,
+    .sw_params              = pcdsp_sw_params,
     .prepare                = pcdsp_prepare,
     .drain                  = pcdsp_drain,
     .pause                  = pcdsp_pause,
@@ -777,6 +982,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     pcdsp->conn.fd                 = -1;
     pcdsp->conn.negotiated_version = 0;
     pcdsp->pipe_fd                 = -1;
+    pcdsp->avail_min                = 1;
 
     atomic_init(&pcdsp->worker_running, false);
     pcdsp->worker_joinable = false;
@@ -784,6 +990,21 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     atomic_init(&pcdsp->draining,       false);
     atomic_init(&pcdsp->stream_error,   0);
     atomic_init(&pcdsp->hw_frames,      0);
+    pcdsp->worker_paused_ack = false;
+
+    int mutex_rc = pthread_mutex_init(&pcdsp->pause_mutex, NULL);
+    if (mutex_rc != 0) {
+        close(pcdsp->event_fd);
+        free(pcdsp);
+        return -mutex_rc;
+    }
+    int cond_rc = pthread_cond_init(&pcdsp->pause_cond, NULL);
+    if (cond_rc != 0) {
+        pthread_mutex_destroy(&pcdsp->pause_mutex);
+        close(pcdsp->event_fd);
+        free(pcdsp);
+        return -cond_rc;
+    }
 
     /* Parse optional ALSA config parameters. */
     const char *socket_path = NULL;
@@ -810,6 +1031,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     if (socket_path) {
         size_t socket_path_len = strlen(socket_path);
         if (socket_path_len >= sizeof(pcdsp->socket_path)) {
+            pthread_cond_destroy(&pcdsp->pause_cond);
+            pthread_mutex_destroy(&pcdsp->pause_mutex);
             close(pcdsp->event_fd);
             free(pcdsp);
             return -ENAMETOOLONG;
@@ -833,6 +1056,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
 
     int rc = snd_pcm_ioplug_create(&pcdsp->io, name, stream, mode);
     if (rc < 0) {
+        pthread_cond_destroy(&pcdsp->pause_cond);
+        pthread_mutex_destroy(&pcdsp->pause_mutex);
         close(pcdsp->event_fd);
         free(pcdsp);
         return rc;

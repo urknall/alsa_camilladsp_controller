@@ -1266,7 +1266,7 @@ mod tests {
             // Stale wave values from a previous stream must be ignored.
             wave: WaveFormat {
                 sample_rate: Some(96000),
-                sample_format: Some("S24_3LE".to_owned()),
+                sample_format: Some("S24_3_LE".to_owned()),
                 channels: Some(6),
             },
         };
@@ -1769,7 +1769,7 @@ mod tests {
             active: true,
             wave: WaveFormat {
                 sample_rate: Some(48000),
-                sample_format: Some("S24_3LE".to_owned()),
+                sample_format: Some("S24_3_LE".to_owned()),
                 channels: Some(2),
             },
         };

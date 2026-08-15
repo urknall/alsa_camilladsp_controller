@@ -13,13 +13,53 @@
 //! Rust is never in the PCM data path.  When the stream ends the plugin closes
 //! its copy of the write-end; the read-end sees EOF and CamillaDSP shuts down.
 
+use std::collections::VecDeque;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::core::errors::{app_error, AppResult};
+
+/// Number of most-recent CamillaDSP stderr lines retained for classifying an
+/// early exit (see `classify_early_exit_error` in `controller.rs`). Bounded
+/// so a chatty or misbehaving CamillaDSP process cannot grow this buffer
+/// without limit.
+const STDERR_TAIL_LINES: usize = 40;
+
+// ─── stderr capture ────────────────────────────────────────────────────────
+
+/// Spawn a background thread that copies `stderr` line-by-line to our own
+/// stderr (preserving the console visibility previously provided by
+/// `Stdio::inherit()`) while also retaining the last `STDERR_TAIL_LINES`
+/// lines in a shared, bounded buffer.
+///
+/// The thread runs until it observes EOF (the child exited or closed its
+/// stderr) and is not joined; it is expected to finish shortly after the
+/// child process does.
+fn spawn_stderr_capture(stderr: ChildStderr) -> Arc<Mutex<VecDeque<String>>> {
+    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)));
+    let tail_for_thread = Arc::clone(&tail);
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            eprintln!("{line}");
+            if let Ok(mut buf) = tail_for_thread.lock() {
+                if buf.len() >= STDERR_TAIL_LINES {
+                    buf.pop_front();
+                }
+                buf.push_back(line);
+            }
+        }
+    });
+    tail
+}
 
 // ─── pipe() helpers ────────────────────────────────────────────────────────
 
@@ -53,6 +93,10 @@ pub struct StdinPipeProcess {
     /// Write end of the pipe.  `None` once it has been closed by `shutdown`.
     write_fd: Option<OwnedFd>,
     child: Child,
+    /// Bounded tail of CamillaDSP's stderr output, used to classify an
+    /// immediate exit as a config error vs. a playback-device error (see
+    /// `classify_early_exit_error` in `controller.rs`).
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl StdinPipeProcess {
@@ -98,10 +142,10 @@ impl StdinPipeProcess {
         for arg in extra_args {
             cmd.arg(arg);
         }
-        let child = cmd
+        let mut child = cmd
             .stdin(stdin_stdio)
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|err| {
                 app_error(format!(
@@ -110,9 +154,16 @@ impl StdinPipeProcess {
                 ))
             })?;
 
+        let stderr_tail = child
+            .stderr
+            .take()
+            .map(spawn_stderr_capture)
+            .unwrap_or_else(|| Arc::new(Mutex::new(VecDeque::new())));
+
         Ok(Self {
             write_fd: Some(write_fd),
             child,
+            stderr_tail,
         })
     }
 
@@ -124,6 +175,20 @@ impl StdinPipeProcess {
             .as_ref()
             .map(|fd| fd.as_raw_fd())
             .unwrap_or(-1)
+    }
+
+    /// Return the most recently captured lines of CamillaDSP's stderr
+    /// output, oldest first, joined with newlines. Empty if nothing has
+    /// been captured yet (or stderr capture failed to start).
+    ///
+    /// Used to classify an immediate exit as a config error vs. a
+    /// playback-device error — see `classify_early_exit_error` in
+    /// `controller.rs`.
+    pub fn recent_stderr(&self) -> String {
+        self.stderr_tail
+            .lock()
+            .map(|buf| buf.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
     }
 
     /// Drop the controller's copy of the pipe write-end after it has been
@@ -323,5 +388,64 @@ mod tests {
         let missing = std::env::temp_dir().join("picoredsp-no-such-file-xyz.txt");
         let result = resolve_config_path(&missing);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn recent_stderr_captures_child_stderr_output() {
+        // Emulate CamillaDSP logging a playback-device failure to stderr,
+        // then keep reading stdin (so shutdown() can close it cleanly).
+        let proc = StdinPipeProcess::spawn(
+            "/bin/sh",
+            "-c",
+            &["echo 'Playback error: snd_pcm_open failed' 1>&2; cat".to_owned()],
+        )
+        .unwrap();
+
+        assert!(
+            wait_until(Duration::from_secs(2), || proc
+                .recent_stderr()
+                .contains("Playback error")),
+            "expected captured stderr to contain the emitted line, got: {:?}",
+            proc.recent_stderr()
+        );
+
+        proc.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn recent_stderr_is_empty_when_child_produces_no_output() {
+        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        // Give the (silent) child a moment to run before asserting.
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(proc.recent_stderr(), "");
+        proc.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn recent_stderr_is_bounded_to_the_tail_when_output_exceeds_the_cap() {
+        // Emit more lines than STDERR_TAIL_LINES; only the most recent lines
+        // (including the last one) should survive.
+        let proc =
+            StdinPipeProcess::spawn("/bin/sh", "-c", &["seq 1 200 1>&2; cat".to_owned()]).unwrap();
+
+        assert!(
+            wait_until(Duration::from_secs(2), || proc
+                .recent_stderr()
+                .contains("200")),
+            "expected the last emitted line to survive in the tail, got: {:?}",
+            proc.recent_stderr()
+        );
+        let tail = proc.recent_stderr();
+        assert!(
+            !tail.contains("\n1\n") && !tail.starts_with("1\n"),
+            "expected the earliest lines to have been evicted, got: {tail:?}"
+        );
+        let line_count = tail.lines().count();
+        assert!(
+            line_count <= STDERR_TAIL_LINES,
+            "expected at most {STDERR_TAIL_LINES} retained lines, got {line_count}"
+        );
+
+        proc.shutdown(Duration::from_secs(2)).unwrap();
     }
 }

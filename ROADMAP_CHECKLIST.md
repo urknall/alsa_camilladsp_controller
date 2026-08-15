@@ -3,6 +3,32 @@
 Generated from [`piCoreDSP_Dual_Backend_Roadmap.md`](piCoreDSP_Dual_Backend_Roadmap.md).
 Each section maps to a milestone or gate. Check items off as work is completed.
 
+> **Checklist honesty pass (2026-08):** an independent architecture review
+> found drift in both directions — items checked without meeting their
+> stated bar, and items left unchecked despite being implemented. Phase 5
+> (BlueALSA review) and the Gate 10 `ERROR_PLAYBACK_DEVICE` item were
+> reopened because they weren't actually true yet; Phase 18 and Gate 13's
+> parent box were checked off because the underlying work already existed.
+> See inline notes below each affected item, and the correctness-fix plan
+> tracked alongside this checklist for the remediation work in progress.
+> Phase 5 was subsequently re-closed on 2026-08-15 (Step 7 of that plan)
+> after an actual review of current upstream BlueALSA source was performed
+> and documented.
+> As Step 9 of the same plan (2026-08-15), the six leftover re-export shim
+> modules (`src/adapt.rs`, `src/alsa_listener.rs`, `src/camilla_ws.rs`,
+> `src/error.rs`, `src/logging.rs`, `src/wave.rs`) were deleted and their
+> three callers repointed at the real `core::*`/`camilladsp::*` modules, and
+> the 1728-line `src/benchmark.rs` was split into a `src/benchmark/` module
+> folder (`report.rs`, `runner.rs`, `parsing.rs`, `collectors.rs`,
+> `measurement.rs`, `mod.rs`) with its test suite divided across the new
+> files by concern. No architectural checklist gate covered this cleanup;
+> it is recorded here for traceability. All 213 tests continued to pass
+> throughout, and `cargo fmt`/`cargo clippy --all-targets` are clean.
+> Step 10 (2026-08-15, hygiene): added a top-level `LICENSE` file (MIT,
+> matching `Cargo.toml`'s existing `license = "MIT"`) and refreshed
+> `Cargo.toml`'s `description` to name both backends instead of only
+> `snd-aloop`.
+
 ---
 
 ## Gate 0 — Freeze current aloop baseline
@@ -123,8 +149,19 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ## Phase 5 — BlueALSA reference review
 
-- [x] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
-- [x] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
+> Closed out 2026-08-15 (Step 7 of the correctness follow-up plan):
+> `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md` now records an actual review
+> of current upstream `src/asound/bluealsa-pcm.c` at commit `84ad90d`
+> (2026-08-15), including the corrected tracked-path layout and a finding
+> that BlueALSA has no separate ring-buffer file (contrary to the earlier
+> "design intent" notes, which assumed one). No `alsa_cdsp` code was ever
+> imported into this project; piCoreDSP's ioplug was written from scratch
+> against ALSA's public `pcm_ioplug.h`, so "vs. original `alsa_cdsp` fork
+> point" is reframed as "vs. current upstream BlueALSA reference" — see the
+> tracking doc for details.
+
+- [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
+- [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:
   - [x] C11 atomics usage
   - [x] Ringbuffer pointer synchronisation
   - [x] Period boundary handling
@@ -208,7 +245,20 @@ Failure scenarios:
 - [x] Rust controller absent: plugin fails cleanly with meaningful ALSA error, no silent sample discard
 - [x] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
 - [x] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
+  <br>Fixed: `run_ioplug()`'s startup-check failure branch now classifies an
+  immediate CamillaDSP exit via `classify_early_exit_error()`, which inspects
+  the captured stderr tail (`StdinPipeProcess`/`StdinSupervisor::recent_stderr()`)
+  for CamillaDSP's `"Playback error: ..."` marker (see upstream `src/bin.rs`).
+  A playback-device failure now returns `ErrorCode::PlaybackDevice` and is
+  retried transiently (exponential backoff via `retry.record_attempt()`)
+  instead of being latched permanently under the config-fingerprint policy;
+  a genuine config/DSP-graph failure still returns `ErrorCode::Config` and
+  latches as before. See Step 5 of the correctness follow-up plan.
 - [x] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
+  <br>Fixed: the worker thread now blocks `SIGPIPE` for itself (`pthread_sigmask`,
+  thread-scoped) instead of relying on tests installing process-wide `SIG_IGN`;
+  see `pcdsp_worker_block_sigpipe()` in `pcm_worker.c` and the regression test
+  `worker_survives_default_sigpipe_disposition_via_thread_scoped_block`.
 - [x] Plugin/application disappears: Rust cleans up CamillaDSP (control socket close + PCM fd close)
 - [x] Rust daemon restarts mid-stream: active stream fails cleanly (reconnect not required for v1)
 
@@ -237,8 +287,14 @@ CI requirements:
 
 **Milestone M11: Run audio-integrity tests**
 
+> Note: these tests exercise `pcdsp_drain_period_to_pipe()` / the worker's
+> ring-buffer → pipe write path directly (`test_audio_integrity.c`), not the
+> full `application → ioplug → pipe → CamillaDSP → DAC` chain. The invariant
+> below is scoped accordingly: it proves the ioplug's own transport is
+> bit-transparent, not that CamillaDSP-side processing is transparent too.
+
 - [x] Known PCM pattern sent through plugin → output captured → binary comparison
-- [x] All intended sample formats tested: S16_LE, S24_3LE, S24_4LE, S32_LE, F32_LE
+- [x] All intended sample formats tested: S16_LE, S24_3_LE, S24_4LE, S32_LE, F32_LE
 - [x] All intended sample rates tested
 - [x] No accidental resampling
 - [x] No accidental channel swap
@@ -267,6 +323,16 @@ CI requirements:
 **Milestone M12: Run A/B latency and performance benchmarks**
 
 - [x] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
+  <br>Fixed (Step 6): `src/benchmark.rs` previously queried CamillaDSP over
+  WebSocket with `GetSamplerate`/`GetBuffersize`, neither of which exist in
+  CamillaDSP 4.1.3 (every measurement silently collapsed to `None`/default).
+  Replaced with `GetCaptureRate` (measured sample rate) and
+  `GetConfigValue`/`/devices/chunksize` (configured buffer size), extracted
+  into testable helpers (`buffer_latency_ms_from_client`,
+  `chunksize_from_client`) with unit tests pinning the exact command names
+  sent. Also fixed stale CamillaDSP format-string test fixtures
+  (`S24_3LE`→`S24_3_LE`, `FLOAT_LE`→`F32_LE`) in `src/backend.rs`,
+  `src/backend/aloop.rs`, `src/core/state_machine.rs`.
 - [x] Automated benchmark harness created and integrated into CI:
   - [x] C microbenchmark harness (`picoredsp-ioplug/bench/`) covering ring buffer, timing, PCM worker
   - [x] Rust benchmark runner (`benches/picoredsp_bench.rs`) covering YAML serialisation / plan validation
@@ -311,7 +377,7 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 **Milestone M13: Integrate both backends into installer**
 
-- [ ] Installer installs both binaries:
+- [x] Installer installs both binaries:
   - [x] `/usr/local/bin/picoredsp-controller`
   - [x] `/usr/local/lib/alsa-lib/libasound_module_pcm_picoredsp.so`
 - [x] User-facing backend selection in installer (snd-aloop recommended/stable vs. direct ioplug experimental)
@@ -321,48 +387,73 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 ## Phase 18 — Configuration migration
 
-- [ ] Controller normalises any existing baseline config into the correct runtime config for the active backend
-- [ ] Single `MySpeakers.yml` works with both backends (no separate copies needed)
-- [ ] Capture section injected at runtime based on the active backend
+> Checked off: implemented by `adapt_config_for_backend()` in
+> `src/core/adaptation.rs` (dispatches on `RuntimeBackend::Aloop` /
+> `RuntimeBackend::Ioplug` to inject the correct capture section) and
+> documented in `CONFIG_MIGRATION.md`. Verified by the
+> `same_portable_baseline_adapts_for_aloop_and_ioplug` test, which asserts a
+> single baseline config adapts correctly for both backends.
+
+- [x] Controller normalises any existing baseline config into the correct runtime config for the active backend
+- [x] Single `MySpeakers.yml` works with both backends (no separate copies needed)
+- [x] Capture section injected at runtime based on the active backend
 
 ---
 
 ## Phase 19 — BlueALSA upstream monitoring
 
-- [ ] Create `docs/BLUEALSA_TRACKING.md` (or `docs/bluealsa-upstream.yml`)
-- [ ] Record: repository, tracked source files, last reviewed commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant BlueALSA changes and opens a GitHub issue (never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → port concept/fix or mark reviewed
+> Closed out 2026-08-15 (Step 8 of the correctness follow-up plan):
+> `docs/upstream-tracking.yml` is the machine-readable manifest and
+> `.github/workflows/upstream-tracking.yml` + `scripts/check_upstream_tracking.py`
+> implement the detect → issue automation, scheduled weekly.
+
+- [x] Create `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md` and a `bluealsa` entry in `docs/upstream-tracking.yml`
+- [x] Record: repository, tracked source files, last reviewed commit, review date, relevant topic categories
+- [x] CI automation detects new relevant BlueALSA changes and opens a GitHub issue (never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → port concept/fix or mark reviewed
 
 ## Phase 20 — alsa-lib monitoring
 
-- [ ] alsa-lib version tracked separately from BlueALSA
-- [ ] New alsa-lib release triggers the plugin test suite automatically
-- [ ] Maintenance priority documented:
-  - [ ] HIGH: alsa-lib, CamillaDSP, piCorePlayer
-  - [ ] MEDIUM: Linux ALSA, BlueALSA reference changes
-  - [ ] LOW: unrelated BlueALSA Bluetooth functionality
+> Closed out 2026-08-15: `docs/ALSA_LIB_TRACKING.md` + the `alsa-lib` entry
+> in `docs/upstream-tracking.yml`.
+
+- [x] alsa-lib version tracked separately from BlueALSA
+- [x] New alsa-lib release triggers the plugin test suite automatically (see `docs/ALSA_LIB_TRACKING.md` Automation section)
+- [x] Maintenance priority documented:
+  - [x] HIGH: alsa-lib, CamillaDSP, piCorePlayer
+  - [x] MEDIUM: Linux ALSA, BlueALSA reference changes
+  - [x] LOW: unrelated BlueALSA Bluetooth functionality
 
 ## Phase 20a — CamillaDSP upstream monitoring
 
-- [ ] Create `docs/CAMILLADSP_TRACKING.md` (or `docs/camilladsp-upstream.yml`)
-- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLADSP_TRACKING.md` + the `camilladsp`
+> entry in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLADSP_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entry)
+- [x] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
 
 ## Phase 20b — camilladsp-controller upstream monitoring
 
-- [ ] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (or `docs/camilladsp-controller-upstream.yml`)
-- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLADSP_CONTROLLER_TRACKING.md` + the
+> `camilladsp-controller` entry in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entry)
+- [x] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
 
 ## Phase 20c — CamillaDSP GUI upstream monitoring
 
-- [ ] Create `docs/CAMILLAGUI_TRACKING.md` (or `docs/camillagui-upstream.yml`)
-- [ ] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
-- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+> Closed out 2026-08-15: `docs/CAMILLAGUI_TRACKING.md` + the
+> `camillagui-backend` / `camillagui` entries in `docs/upstream-tracking.yml`.
+
+- [x] Create `docs/CAMILLAGUI_TRACKING.md` (and `docs/upstream-tracking.yml` machine-readable entries)
+- [x] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
+- [x] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
+- [x] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+
 
 ---
 

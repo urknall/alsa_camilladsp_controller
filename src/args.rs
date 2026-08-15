@@ -1,5 +1,5 @@
-use crate::error::{app_error, AppResult};
-use crate::logging::LogLevel;
+use crate::core::errors::{app_error, AppResult};
+use crate::core::logging::LogLevel;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;

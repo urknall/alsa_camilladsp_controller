@@ -40,7 +40,6 @@
 
 #include <assert.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -398,7 +397,12 @@ TEST(large_transfer_multiple_chunks_bit_transparent)
 
 int main(void)
 {
-    signal(SIGPIPE, SIG_IGN);
+    /* This binary calls pcdsp_drain_period_to_pipe() directly from main()
+     * (single-threaded), the same helper the production worker thread uses.
+     * Block SIGPIPE the same way worker_thread() does in pcm.c rather than
+     * setting a process-wide SIG_IGN disposition, so this test exercises the
+     * real fix instead of masking the underlying issue. */
+    pcdsp_worker_block_sigpipe();
 
     printf("test_audio_integrity\n");
 

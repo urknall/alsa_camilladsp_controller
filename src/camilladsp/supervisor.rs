@@ -169,6 +169,17 @@ impl StdinSupervisor {
         }
     }
 
+    /// Return the most recently captured tail of the active CamillaDSP
+    /// process's stderr output (empty if no stream is active or nothing has
+    /// been captured yet). Used to classify an immediate exit as a config
+    /// error vs. a playback-device error.
+    pub fn recent_stderr(&self) -> String {
+        self.active
+            .as_ref()
+            .map(|proc| proc.recent_stderr())
+            .unwrap_or_default()
+    }
+
     // ── private ──────────────────────────────────────────────────────────
 
     fn stop_stream_inner(&mut self) {
@@ -385,5 +396,40 @@ mod tests {
 
         let alive = sup.startup_check(Duration::from_millis(500), Duration::from_millis(20));
         assert!(!alive, "process should have exited within the window");
+    }
+
+    #[test]
+    fn recent_stderr_surfaces_playback_device_failure_after_immediate_exit() {
+        // Simulate CamillaDSP logging a playback-device failure to stderr
+        // and exiting immediately, as it does when the DAC cannot be opened.
+        let script = std::env::temp_dir().join("picoredsp-sup-playback-err.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'Playback error: snd_pcm_open failed: No such device' 1>&2\nexit 1\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config = tmp_config("startup-playback-err");
+        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        sup.start_stream().unwrap();
+
+        let alive = sup.startup_check(Duration::from_millis(500), Duration::from_millis(20));
+        assert!(!alive, "process should have exited within the window");
+        assert!(
+            wait_until(Duration::from_secs(1), || sup
+                .recent_stderr()
+                .contains("Playback error")),
+            "expected recent_stderr() to surface the captured line, got: {:?}",
+            sup.recent_stderr()
+        );
+    }
+
+    #[test]
+    fn recent_stderr_is_empty_when_no_stream_has_started() {
+        let config = tmp_config("no-stream");
+        let sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        assert_eq!(sup.recent_stderr(), "");
     }
 }
