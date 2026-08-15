@@ -263,6 +263,7 @@ mod tests {
         std::fs::write(&path, "bbbb").unwrap();
         let fp2 = ConfigFingerprint::sample(&path);
         assert_ne!(fp1, fp2);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
