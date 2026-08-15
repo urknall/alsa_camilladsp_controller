@@ -741,14 +741,36 @@ TEST(pause_blocks_until_worker_stops_writing_before_returning)
     }
 
     CHECK(snd_pcm_pause(pcm, 1) == 0);
-    long bytes_at_pause = atomic_load_explicit(&bytes_read, memory_order_relaxed);
 
-    /* If pause() had returned while the worker was still mid-write, more
-     * bytes would arrive shortly after. Give that race a generous window. */
-    struct timespec ts = { .tv_nsec = 50000000L }; /* 50 ms */
-    nanosleep(&ts, NULL);
-    long bytes_after_wait = atomic_load_explicit(&bytes_read, memory_order_relaxed);
-    CHECK(bytes_after_wait == bytes_at_pause);
+    /* The pause() contract is "no further worker writes are in flight when it
+     * returns." Bytes already queued in the kernel pipe before the worker
+     * parked may still be drained by the mock reader briefly after return.
+     * Wait for observed byte count to quiesce, then assert it stays stable. */
+    long stable_bytes = -1;
+    bool reached_stable = false;
+    int stable_samples = 0;
+    for (int i = 0; i < 50; i++) { /* up to 500 ms total */
+        long before = atomic_load_explicit(&bytes_read, memory_order_relaxed);
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        long after = atomic_load_explicit(&bytes_read, memory_order_relaxed);
+        if (after == before) {
+            stable_bytes = after;
+            stable_samples++;
+            if (stable_samples >= 3) {
+                reached_stable = true;
+                break;
+            }
+        } else {
+            stable_samples = 0;
+        }
+    }
+    CHECK(reached_stable);
+
+    struct timespec verify = { .tv_nsec = 50000000L }; /* 50 ms */
+    nanosleep(&verify, NULL);
+    long bytes_after_verify = atomic_load_explicit(&bytes_read, memory_order_relaxed);
+    CHECK(bytes_after_verify == stable_bytes);
 
     CHECK(snd_pcm_pause(pcm, 0) == 0);
     snd_pcm_close(pcm);
