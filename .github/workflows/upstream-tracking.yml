@@ -92,8 +92,10 @@ jobs:
             gettext cmake
 
       - name: Build and install alsa-lib ${{ needs.check.outputs.alsa_lib_release_tag }} from source
+        env:
+          ALSA_LIB_TAG: ${{ needs.check.outputs.alsa_lib_release_tag }}
         run: |
-          git clone --branch "${{ needs.check.outputs.alsa_lib_release_tag }}" \
+          git clone --branch "$ALSA_LIB_TAG" \
             --depth 1 https://github.com/alsa-project/alsa-lib.git /tmp/alsa-lib
           cd /tmp/alsa-lib
           libtoolize --force --copy --automake
