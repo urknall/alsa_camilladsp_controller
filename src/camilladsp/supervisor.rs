@@ -206,6 +206,24 @@ impl Drop for StdinSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::io::RawFd;
+
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        predicate()
+    }
+
+    fn dup_fd(fd: RawFd) -> RawFd {
+        let duped = unsafe { libc::dup(fd) };
+        assert!(duped >= 0);
+        duped
+    }
 
     fn tmp_config(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("picoredsp-supervisor-{name}.txt"));
@@ -236,6 +254,30 @@ mod tests {
         // Write some bytes to confirm fd is usable.
         let n = unsafe { libc::write(fd, b"ping\n".as_ptr() as *const libc::c_void, 5) };
         assert_eq!(n, 5);
+        sup.stop_stream();
+    }
+
+    #[test]
+    fn supervisor_release_controller_write_end_allows_plugin_close_to_end_process() {
+        let config = tmp_config("release-write-end");
+        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let fd = sup.start_stream().unwrap();
+        let plugin_fd = dup_fd(fd);
+
+        sup.release_controller_write_end();
+        assert!(sup.is_running());
+
+        let n = unsafe { libc::write(plugin_fd, b"x".as_ptr() as *const libc::c_void, 1) };
+        assert_eq!(n, 1);
+        unsafe {
+            libc::close(plugin_fd);
+        }
+
+        assert!(
+            wait_until(Duration::from_secs(1), || !sup.is_running()),
+            "process should exit after the transferred write-end is closed"
+        );
+
         sup.stop_stream();
     }
 
