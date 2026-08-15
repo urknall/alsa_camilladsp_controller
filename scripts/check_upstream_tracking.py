@@ -90,6 +90,57 @@ def _api_request(url: str, token: Optional[str], method: str = "GET",
         return json.loads(resp.read().decode("utf-8"))
 
 
+def missing_tracked_paths(source: Source, token: Optional[str]) -> list[str]:
+    """Return the subset of ``source.tracked_paths`` that no longer exist upstream.
+
+    This catches the failure mode that let the BlueALSA tracking doc go
+    stale silently: an upstream rename/restructure (e.g. ``src/bluealsa-pcm.c``
+    -> ``src/asound/bluealsa-pcm.c``) makes the commit-history query for the
+    old path return zero results forever, which looks identical to "no new
+    changes" rather than "the tracked path is gone". Checking path existence
+    directly at the repository's default branch HEAD surfaces that case
+    explicitly instead of relying on a human noticing during an unrelated
+    review pass.
+    """
+    missing: list[str] = []
+    for path in source.tracked_paths:
+        url = f"{GITHUB_API}/repos/{source.repository}/contents/{urllib.parse.quote(path)}"
+        try:
+            _api_request(url, token)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                missing.append(path)
+            else:
+                print(f"warning: could not verify path {path!r} for "
+                      f"{source.repository}: {exc}", file=sys.stderr)
+    return missing
+
+
+def build_missing_path_issue_body(source: Source, missing: list[str]) -> str:
+    marker_paths = ",".join(sorted(missing))
+    paths = ", ".join(f"`{p}`" for p in missing)
+    return (
+        f"{MARKER_PREFIX}{source.id}:missing-paths:{marker_paths} -->\n\n"
+        f"Tracked path(s) for **{source.id}** (`{source.repository}`) no "
+        f"longer exist upstream (checked against the default branch):\n\n"
+        f"- Missing: {paths}\n"
+        f"- Last reviewed commit: `{source.last_reviewed_commit or '(none)'}` "
+        f"(reviewed {source.review_date or 'unknown'})\n"
+        f"- Tracking doc: `{source.doc}`\n\n"
+        "This usually means the upstream project renamed or restructured the "
+        "tracked file(s) (as happened previously with BlueALSA's "
+        "`src/bluealsa-pcm.c` -> `src/asound/bluealsa-pcm.c` move, which the "
+        "commit-diff check alone did not catch). Nothing has been changed in "
+        "this repository automatically. Please review manually:\n\n"
+        f"1. Find the tracked file's new location (if any) in "
+        f"`{source.repository}`.\n"
+        f"2. Update `tracked_paths` in `docs/upstream-tracking.yml` and the "
+        f"path references in `{source.doc}` to match.\n"
+        "3. Re-run this check (or wait for the next scheduled run) to confirm "
+        "the updated paths resolve.\n"
+    )
+
+
 def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[dict[str, Any]]:
     """Return the newest commit dict touching any of the source's tracked paths.
 
@@ -117,16 +168,34 @@ def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[d
     return newest
 
 
-def find_existing_issue(repo: str, source_id: str, sha: str, token: str) -> Optional[dict[str, Any]]:
-    marker = f"{MARKER_PREFIX}{source_id}:{sha} -->"
+def find_existing_issue_by_marker(repo: str, marker: str, token: str) -> Optional[dict[str, Any]]:
     url = f"{GITHUB_API}/search/issues?q={urllib.parse.quote(marker)}+repo:{repo}+in:body+type:issue"
     try:
         result = _api_request(url, token)
     except urllib.error.HTTPError as exc:
-        print(f"warning: issue search failed for {source_id}: {exc}", file=sys.stderr)
+        print(f"warning: issue search failed for marker {marker!r}: {exc}", file=sys.stderr)
         return None
     items = result.get("items", [])
     return items[0] if items else None
+
+
+def open_issue_if_new(repo: str, source: Source, marker: str, title: str, body: str,
+                       token: str) -> None:
+    existing = find_existing_issue_by_marker(repo, marker, token)
+    if existing:
+        print(f"[{source.id}] issue already open: {existing.get('html_url')}")
+        return
+    ensure_label(repo, source.label, token)
+    try:
+        issue = _api_request(
+            f"{GITHUB_API}/repos/{repo}/issues",
+            token,
+            method="POST",
+            body={"title": title, "body": body, "labels": [source.label] if source.label else []},
+        )
+        print(f"[{source.id}] opened issue: {issue.get('html_url')}")
+    except urllib.error.HTTPError as exc:
+        print(f"error: could not create issue for {source.id}: {exc}", file=sys.stderr)
 
 
 def ensure_label(repo: str, label: str, token: str) -> None:
@@ -187,41 +256,51 @@ def build_issue_body(source: Source, commit: dict[str, Any]) -> str:
 
 def process_source(source: Source, repo: str, token: Optional[str], dry_run: bool) -> bool:
     """Returns True if an update was found (issue created or would be created)."""
+    any_finding = False
+
+    # Path-existence check runs first and independently of the commit-diff
+    # check below: a renamed/removed tracked path can otherwise go unnoticed
+    # forever, since the commit-history query for a path that no longer
+    # exists simply returns no results (indistinguishable from "no changes").
+    if source.tracked_paths:
+        missing = missing_tracked_paths(source, token)
+        if missing:
+            any_finding = True
+            print(f"[{source.id}] tracked path(s) no longer exist upstream: "
+                  f"{', '.join(missing)}")
+            marker = f"{MARKER_PREFIX}{source.id}:missing-paths:{','.join(sorted(missing))} -->"
+            if dry_run or not token:
+                print(f"[{source.id}] dry-run: would ensure label {source.label!r} "
+                      "and open/skip missing-path issue")
+            else:
+                title = f"Upstream tracking stale: {source.id} tracked path(s) missing"
+                body = build_missing_path_issue_body(source, missing)
+                open_issue_if_new(repo, source, marker, title, body, token)
+        else:
+            print(f"[{source.id}] all tracked paths present upstream")
+
     commit = latest_commit_for_source(source, token)
     if commit is None:
         print(f"[{source.id}] could not determine latest commit, skipping")
-        return False
+        return any_finding
     sha = commit["sha"]
     if sha == source.last_reviewed_commit:
         print(f"[{source.id}] up to date ({sha[:7]})")
-        return False
+        return any_finding
 
     print(f"[{source.id}] new commit detected: {sha[:7]} "
           f"(last reviewed: {source.last_reviewed_commit[:7] if source.last_reviewed_commit else 'none'})")
+    any_finding = True
 
     if dry_run or not token:
         print(f"[{source.id}] dry-run: would ensure label {source.label!r} and open/skip issue")
-        return True
+        return any_finding
 
-    existing = find_existing_issue(repo, source.id, sha, token)
-    if existing:
-        print(f"[{source.id}] issue already open: {existing.get('html_url')}")
-        return True
-
-    ensure_label(repo, source.label, token)
-    body = build_issue_body(source, commit)
+    marker = f"{MARKER_PREFIX}{source.id}:{sha} -->"
     title = f"Upstream change detected: {source.id} ({sha[:7]})"
-    try:
-        issue = _api_request(
-            f"{GITHUB_API}/repos/{repo}/issues",
-            token,
-            method="POST",
-            body={"title": title, "body": body, "labels": [source.label] if source.label else []},
-        )
-        print(f"[{source.id}] opened issue: {issue.get('html_url')}")
-    except urllib.error.HTTPError as exc:
-        print(f"error: could not create issue for {source.id}: {exc}", file=sys.stderr)
-    return True
+    body = build_issue_body(source, commit)
+    open_issue_if_new(repo, source, marker, title, body, token)
+    return any_finding
 
 
 def main(argv: Optional[list[str]] = None) -> int:
