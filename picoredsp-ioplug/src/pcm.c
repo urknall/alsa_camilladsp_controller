@@ -948,6 +948,20 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
      * reports the pipe's current queued byte count; add the equivalent
      * frame count as a minimum additional delay.
      *
+     * BlueALSA avoids this syscall on every delay() call by snapshotting
+     * the FIFO occupancy from its IO thread and extrapolating with elapsed
+     * time in bluealsa_calculate_delay(). A direct (measured, not tried)
+     * port of that technique was evaluated here and reverted: it assumes
+     * the downstream peer keeps consuming at the nominal rate between
+     * snapshots, which silently under-reports delay once a wedged/stalled
+     * CamillaDSP stops reading stdin — exactly the scenario
+     * `delay_accounts_for_frames_queued_in_kernel_pipe` (below) exists to
+     * guard against, and unlike BlueALSA's Bluetooth transport, a stalled
+     * peer is a first-class, explicitly-tested case for this plugin (see
+     * also the Drain and Pause tests). Re-querying the kernel on every call
+     * keeps that guarantee exact rather than trading it for a syscall
+     * saving BlueALSA's own use case doesn't need us to make.
+     *
      * Known limitation: this still does not account for CamillaDSP's own
      * internal buffering (resampler/filter/pipeline latency) once bytes
      * leave the pipe — the plugin has no visibility into that from the

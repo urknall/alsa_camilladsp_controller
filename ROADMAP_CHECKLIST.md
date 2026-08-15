@@ -236,6 +236,18 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    a small vs. large period/buffer configuration and asserts the bound
 >    scales with backlog (>2× difference) rather than being fixed.
 >
+> 3. **Delay accounting — evaluated and reverted.** BlueALSA's
+>    snapshot+extrapolate delay technique (`io_thread_update_delay()` +
+>    `bluealsa_calculate_delay()`) was also ported verbatim and measured
+>    against the existing `delay_accounts_for_frames_queued_in_kernel_pipe`
+>    regression test. It broke that test: extrapolating elapsed time assumes
+>    continuous downstream consumption, which silently under-reports delay
+>    once CamillaDSP stalls — a first-class tested scenario for this plugin,
+>    unlike BlueALSA's Bluetooth transport. Reverted in favor of keeping the
+>    always-live `ioctl(FIONREAD)` per `delay()` call; recorded as a
+>    deliberate, measured divergence in `BLUEALSA_TRACKING.md`'s Delay
+>    accounting section, not an unexamined one.
+>
 > Full C suite re-run after both changes: 7/7 binaries, 0 failures
 > (`cmake --build . -j$(nproc) && ctest --output-on-failure`). `cargo test`
 > re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.

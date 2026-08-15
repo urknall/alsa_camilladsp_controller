@@ -145,7 +145,7 @@ rules out a tautological/mocked test giving a false sense of coverage.
 | Drain | ⚠️ unbounded wait | Bound is now **dynamic**, matching BlueALSA's own formula exactly: `pcdsp_drain_timeout_ns()` computes `100ms + periods_remaining * period_time` from the frames actually queued at drain-entry, instead of a flat constant (`PCDSP_DRAIN_TIMEOUT_NS` is now only a fallback for the unreachable `rate == 0`/`period_size == 0` case) | `pcm.c:675-700` (`pcdsp_drain_timeout_ns`), used by `pcdsp_drain()` at `pcm.c:702-751`. Test `drain_times_out_when_camilladsp_stops_reading_pipe` still proves the bounded-timeout property; new test **`drain_timeout_scales_with_backlog_not_flat_constant`** proves the *scaling* property directly by measuring wall-clock `-ETIMEDOUT` latency for a tiny (64-frame period) vs. large (8192-frame period) configuration and asserting the large one takes more than 2× as long as the small one, and that neither resembles the old flat 5 s constant |
 | `sw_params` | ❌ absent | `pcdsp_sw_params()` implemented and registered in the ioplug callback table, reads `avail_min` via `snd_pcm_sw_params_get_avail_min()` | `pcm.c:626-643`, registered at `pcm.c:951` |
 | `avail_min` | ❌ not captured | Captured by `pcdsp_sw_params()`, consulted by `pcdsp_poll_revents()` to gate `RUNNING`-state readiness (`avail >= avail_min`) | `pcm.c:142-146`, `pcm.c:859-863`. Test `poll_revents_respects_avail_min_from_sw_params` negotiates `avail_min=4096` against a scenario that can never reach it and asserts poll never reports ready |
-| Delay | ⚠️ ring only | `pcdsp_delay()` adds ring-buffer occupancy *and* bytes already queued in the kernel pipe (`ioctl(FIONREAD)`); documented residual gap is CamillaDSP's own post-pipe internal buffering, which is genuinely outside the plugin's visibility, not an oversight | `pcm.c:898-923` |
+| Delay | ⚠️ ring only | `pcdsp_delay()` adds ring-buffer occupancy *and* bytes already queued in the kernel pipe (`ioctl(FIONREAD)`); documented residual gap is CamillaDSP's own post-pipe internal buffering, which is genuinely outside the plugin's visibility, not an oversight. **Evaluated and reverted:** BlueALSA's exact "snapshot from the IO thread + extrapolate elapsed time" technique (avoiding a syscall on every `delay()` call) was implemented and measured against the existing wedged-peer regression test; it silently under-reports delay once CamillaDSP stalls, because it assumes continuous consumption between snapshots — exactly the scenario this plugin's own tests treat as a first-class case (unlike BlueALSA's Bluetooth transport, where a permanently stalled peer isn't the normal case it optimizes for). Kept the always-live `ioctl(FIONREAD)` per call instead, since correctness for a stalled peer matters more here than the syscall saving | `pcm.c:898-923` |
 | Device disconnect | Basic error | `pcdsp_hw_free()` closes the pipe fd and IPC connection on an unexpected hw_free (no stop/drain), so the controller is never left waiting on a STOP that never arrives; `pcdsp_poll_revents()` surfaces `POLLERR`/`POLLHUP`/`-ENODEV` on `SND_PCM_STATE_DISCONNECTED` | `pcm.c:609-624`, `pcm.c:874-878` |
 | alsa-lib quirks | Almost no tracked policy | `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA` used when available (monotone `hw_ptr`), with a `hw_ptr %= buffer_size` fallback for older alsa-lib — the same pattern BlueALSA uses | `pcm.c:427-445` (fallback), `pcm.c:1054-1056` (flag opt-in) |
 | Upstream review | ❌ stale | Tracked path corrected to `src/asound/bluealsa-pcm.c`, pinned to commit `84ad90d`, dated 2026-08-15; a machine-readable path-existence check (`scripts/check_upstream_tracking.py::missing_tracked_paths`, added 2026-08-15/16) now catches a future rename automatically instead of relying on a human noticing | This document's Repository Details table and Review Log |
@@ -329,10 +329,21 @@ via a pipe, not a Bluetooth transport via D-Bus/FIFO).
 - For capture, delay is *not* time-extrapolated at all — it simply reports
   `snd_pcm_ioplug_avail()` (frames available to read), because Bluetooth
   profiles don't expose true source-to-sink latency.
-- piCoreDSP's simpler ring-buffer-occupancy delay is adequate for its
-  single local pipe transport (no encode/BT leg to account for), but the
-  "snapshot + extrapolate rather than re-poll on every call" technique is
-  worth keeping in mind if `delay()` becomes a hot path.
+- **Evaluated (2026-08-15/16):** the snapshot+extrapolate technique was
+  ported to `pcdsp_delay()` verbatim (worker-side `ioctl(FIONREAD)` snapshot
+  + elapsed-time extrapolation, gated on `SND_PCM_STATE_RUNNING` exactly as
+  BlueALSA gates on its own running state) and measured against
+  `delay_accounts_for_frames_queued_in_kernel_pipe`. It broke that test:
+  extrapolation assumes the downstream peer keeps consuming at the nominal
+  rate between snapshots, so once CamillaDSP stalls/wedges (stops reading
+  stdin), the estimate silently decays toward zero instead of continuing to
+  reflect the true (unchanging) pipe occupancy. BlueALSA's own technique has
+  the same latent inaccuracy, but a permanently stalled Bluetooth sink isn't
+  the case it is designed/tested around; for piCoreDSP a stalled CamillaDSP
+  *is* an explicitly tested first-class scenario (see also the Drain and
+  Pause sections), so the always-live `ioctl(FIONREAD)`-per-call approach
+  was kept instead of adopting BlueALSA's mechanism here. This is recorded
+  as a deliberate, measured divergence rather than an unexamined one.
 
 ### alsa-lib compatibility workarounds
 
