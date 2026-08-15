@@ -7,6 +7,12 @@ pub mod camilladsp;
 pub mod core;
 pub mod ipc;
 
+use crate::core::adaptation::{
+    adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
+    get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
+};
+use crate::core::config::WaveFormat;
+use crate::core::errors::{app_error, AppResult};
 use args::{parse_args, Args, Backend, Mode};
 use benchmark::{
     make_benchmark_plan_template, make_benchmark_report, run_benchmark_both_backends,
@@ -15,12 +21,6 @@ use benchmark::{
 use camilladsp::alsa_capture::AlsaLoopbackListener;
 use camilladsp::websocket::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
-use crate::core::adaptation::{
-    adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
-    get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
-};
-use crate::core::config::WaveFormat;
-use crate::core::errors::{app_error, AppResult};
 use serde_json::Value as JsonValue;
 
 fn run_main() -> AppResult<()> {
