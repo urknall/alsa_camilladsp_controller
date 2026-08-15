@@ -36,11 +36,16 @@
  * Drain timeout / pause synchronisation:
  *   drain_times_out_when_camilladsp_stops_reading_pipe
  *   pause_blocks_until_worker_stops_writing_before_returning
+ *
+ * sw_params avail_min / delay() pipe accounting:
+ *   delay_accounts_for_frames_queued_in_kernel_pipe
+ *   poll_revents_respects_avail_min_from_sw_params
  */
 
 #define _GNU_SOURCE
 
 #include "ipc.h"
+#include "pcm_worker.h"
 
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
@@ -752,6 +757,146 @@ TEST(pause_blocks_until_worker_stops_writing_before_returning)
 }
 
 /* -----------------------------------------------------------------------
+ * sw_params avail_min / delay() pipe accounting (Step 4 correctness fixes)
+ * ---------------------------------------------------------------------- */
+
+TEST(delay_accounts_for_frames_queued_in_kernel_pipe)
+{
+    /*
+     * Regression: pcdsp_delay() previously only reported frames still
+     * sitting in the plugin's ring buffer, silently losing track of frames
+     * once the worker thread handed them off to the kernel pipe — real
+     * audio that has not yet reached CamillaDSP/the DAC, but was reported
+     * as if it had already arrived. Verify delay() now also counts
+     * pipe-queued bytes (via FIONREAD) on top of the ring buffer.
+     *
+     * Uses the same shrunk-pipe/wedged-consumer setup as the drain timeout
+     * test: the worker can hand at most ~1024 frames off to the 4 KiB pipe
+     * before it fills, so once settled, some previously-written frames
+     * live in the pipe rather than the ring buffer.
+     */
+    init_sock_path("delay-pipe");
+    _Atomic(bool) stop_holding = false;
+    server_args_t args = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0); /* period=1024, buffer_size=4096 frames */
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2] = { 0 };
+    snd_pcm_sframes_t total_written = 0;
+    while (total_written < 4096) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        total_written += rc;
+    }
+    CHECK(total_written > 0);
+
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    /* Let the worker hand off as many frames as the shrunk pipe can hold. */
+    struct timespec settle = { .tv_nsec = 300000000L }; /* 300 ms */
+    nanosleep(&settle, NULL);
+
+    snd_pcm_sframes_t delay = -1;
+    CHECK(snd_pcm_delay(pcm, &delay) == 0);
+    /* Every frame written so far must be accounted for — whether still in
+     * the ring buffer or already handed off to the pipe — proving frames
+     * are not silently dropped from the delay estimate once they leave the
+     * ring buffer. Prior to this fix, delay would fall roughly a whole
+     * pipe-capacity short of total_written. Allow slack of one
+     * PCDSP_PIPE_CHUNK_FRAMES: the worker pulls frames out of the ring
+     * buffer in that granularity before writing them to the pipe, so at
+     * most one in-flight chunk can transiently be counted by neither the
+     * ring buffer nor FIONREAD (analogous to a small hardware FIFO) when
+     * the peer stops reading mid-chunk. */
+    CHECK(delay >= total_written - (snd_pcm_sframes_t)PCDSP_PIPE_CHUNK_FRAMES);
+
+    atomic_store_explicit(&stop_holding, true, memory_order_release);
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+TEST(poll_revents_respects_avail_min_from_sw_params)
+{
+    /*
+     * Regression: poll_revents() previously reported readiness (POLLOUT) as
+     * soon as a single ring-buffer frame was free, ignoring avail_min
+     * negotiated via snd_pcm_sw_params(). Simulate a CamillaDSP that is
+     * alive but not reading stdin (wedged) behind a deliberately shrunk
+     * kernel pipe, so only a bounded amount of ring-buffer space can ever
+     * free up (~ the pipe's frame capacity). With an avail_min this
+     * scenario can never satisfy, snd_pcm_wait() must keep timing out
+     * instead of falsely reporting readiness.
+     */
+    init_sock_path("avail-min");
+    _Atomic(bool) stop_holding = false;
+    server_args_t args = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding,
+    };
+    pthread_t srv = start_mock_server(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0); /* period=1024, buffer_size=4096 frames */
+
+    /* Negotiate an avail_min the shrunk-pipe scenario can never reach: the
+     * worker can hand at most ~1024 frames off to the 4 KiB pipe before it
+     * fills, so ring-buffer space will plateau well below buffer_size. */
+    snd_pcm_sw_params_t *swparams;
+    snd_pcm_sw_params_alloca(&swparams);
+    CHECK(snd_pcm_sw_params_current(pcm, swparams) == 0);
+    CHECK(snd_pcm_sw_params_set_avail_min(pcm, swparams, 4096) == 0);
+    CHECK(snd_pcm_sw_params(pcm, swparams) == 0);
+
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+    int16_t frames[257 * 2] = { 0 };
+    snd_pcm_sframes_t total_written = 0;
+    while (total_written < 4096) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        total_written += rc;
+    }
+    CHECK(total_written > 0);
+
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    /* Let the worker hand off everything the shrunk pipe can absorb. */
+    struct timespec settle = { .tv_nsec = 300000000L }; /* 300 ms */
+    nanosleep(&settle, NULL);
+
+    /* Even though *some* space has freed up (the pipe's ~1024-frame
+     * capacity), it never reaches avail_min (4096): poll must never report
+     * readiness. */
+    for (int i = 0; i < 3; i++) {
+        int ready = snd_pcm_wait(pcm, 100);
+        CHECK(ready == 0); /* 0 == timed out, no revents */
+    }
+
+    atomic_store_explicit(&stop_holding, true, memory_order_release);
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    unlink(g_sock_path);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -785,6 +930,10 @@ int main(void)
     /* Drain timeout / pause synchronisation (Step 3) */
     RUN(drain_times_out_when_camilladsp_stops_reading_pipe);
     RUN(pause_blocks_until_worker_stops_writing_before_returning);
+
+    /* sw_params avail_min / delay() pipe accounting (Step 4) */
+    RUN(delay_accounts_for_frames_queued_in_kernel_pipe);
+    RUN(poll_revents_respects_avail_min_from_sw_params);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

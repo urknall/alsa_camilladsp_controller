@@ -50,6 +50,21 @@
  * the worker acknowledges via pause_mutex/pause_cond that it has reached a
  * safe point (parked, not mid-write) — so pause() cannot return while a
  * write to the pipe is still in flight.
+ *
+ * sw_params / avail_min and delay() accounting
+ * ---------------------------------------------
+ * pcdsp_sw_params() records the application's negotiated avail_min so
+ * pcdsp_poll_revents() only reports readiness once that many frames are
+ * free, instead of waking on any single available frame. pcdsp_delay()
+ * additionally counts frames already handed off to the kernel pipe (via
+ * FIONREAD) on top of the ring buffer, since those frames have left the
+ * ring buffer but have not yet reached CamillaDSP/the DAC. A small,
+ * documented gap remains: (a) the worker pulls frames out of the ring
+ * buffer in PCDSP_PIPE_CHUNK_FRAMES-sized chunks before writing them to
+ * the pipe, so at most one in-flight chunk can transiently be counted by
+ * neither the ring buffer nor FIONREAD; (b) CamillaDSP's own internal
+ * buffering (resampler/filter/pipeline latency) once bytes leave the pipe
+ * is not visible to the plugin and is not accounted for here.
  */
 
 #define _GNU_SOURCE
@@ -74,6 +89,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -122,6 +138,12 @@ typedef struct pcdsp_pcm {
     size_t              frame_bytes;
     snd_pcm_uframes_t   period_size;
     snd_pcm_uframes_t   buffer_size;
+
+    /* sw_params-negotiated avail_min (frames). Gates poll_revents() readiness
+     * so the application is only woken once at least this many frames are
+     * free, matching real ALSA driver semantics. Defaults to 1 (wake as soon
+     * as any space is free) until/unless ALSA calls pcdsp_sw_params(). */
+    snd_pcm_uframes_t   avail_min;
 
     /* Ring buffer */
     pcdsp_ringbuffer_t  rb;
@@ -473,6 +495,10 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
 
     pcdsp->period_size = io->period_size;
     pcdsp->buffer_size = io->buffer_size;
+    /* Reset to the wake-on-any-space default; pcdsp_sw_params() (called
+     * after hw_params, if the application configures sw_params) will raise
+     * this to the negotiated avail_min. */
+    pcdsp->avail_min    = 1;
 
     /* Defensive renegotiation path: no worker may reference the old ring
      * buffer or pipe while hw_params replaces stream resources. */
@@ -595,6 +621,27 @@ static int pcdsp_hw_free(snd_pcm_ioplug_t *io)
         pcdsp->pipe_fd = -1;
     }
     pcdsp_ipc_close(&pcdsp->conn);
+    return 0;
+}
+
+/*
+ * sw_params — capture avail_min (and validate boundary) so poll_revents()
+ * gates readiness the same way a real ALSA driver does: the application is
+ * only woken once at least avail_min frames are free, not as soon as any
+ * single frame is. Called by alsa-lib whenever the application configures
+ * (or reconfigures) software parameters via snd_pcm_sw_params(); optional,
+ * so applications that never call it keep the wake-on-any-space default set
+ * in pcdsp_hw_params()/plugin open.
+ */
+static int pcdsp_sw_params(snd_pcm_ioplug_t *io, snd_pcm_sw_params_t *params)
+{
+    pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    snd_pcm_uframes_t avail_min = 0;
+    int rc = snd_pcm_sw_params_get_avail_min(params, &avail_min);
+    if (rc == 0 && avail_min > 0)
+        pcdsp->avail_min = avail_min;
+
     return 0;
 }
 
@@ -801,8 +848,11 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
                 ready = io->stream == SND_PCM_STREAM_PLAYBACK;
                 break;
             case SND_PCM_STATE_RUNNING:
+                /* Gate readiness on avail_min (sw_params), matching real
+                 * ALSA driver semantics, instead of waking as soon as a
+                 * single frame is free. */
                 if (io->stream == SND_PCM_STREAM_PLAYBACK)
-                    ready = (snd_pcm_uframes_t)avail > 0;
+                    ready = (snd_pcm_uframes_t)avail >= pcdsp->avail_min;
                 break;
             case SND_PCM_STATE_DRAINING:
                 /* Keep playback wakeups level-triggered until the last
@@ -843,8 +893,26 @@ static int pcdsp_delay(snd_pcm_ioplug_t *io, snd_pcm_sframes_t *delayp)
     int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
     if (serr != 0)
         return serr;
-    /* Delay = frames currently in the ring buffer awaiting consumption. */
-    *delayp = (snd_pcm_sframes_t)pcdsp_rb_read_avail(&pcdsp->rb);
+
+    /* Frames written by the application but not yet consumed by the worker. */
+    snd_pcm_sframes_t delay = (snd_pcm_sframes_t)pcdsp_rb_read_avail(&pcdsp->rb);
+
+    /* Frames already handed to the kernel pipe but not yet read by
+     * CamillaDSP are also audio that hasn't reached the DAC yet. FIONREAD
+     * reports the pipe's current queued byte count; add the equivalent
+     * frame count as a minimum additional delay.
+     *
+     * Known limitation: this still does not account for CamillaDSP's own
+     * internal buffering (resampler/filter/pipeline latency) once bytes
+     * leave the pipe — the plugin has no visibility into that from the
+     * transport side. See docs/BLUEALSA_TRACKING.md "Delay accounting". */
+    if (pcdsp->pipe_fd >= 0 && pcdsp->frame_bytes > 0) {
+        int queued_bytes = 0;
+        if (ioctl(pcdsp->pipe_fd, FIONREAD, &queued_bytes) == 0 && queued_bytes > 0)
+            delay += (snd_pcm_sframes_t)((size_t)queued_bytes / pcdsp->frame_bytes);
+    }
+
+    *delayp = delay;
     return 0;
 }
 
@@ -872,6 +940,7 @@ static const snd_pcm_ioplug_callback_t pcdsp_callbacks = {
     .close                  = pcdsp_close,
     .hw_params              = pcdsp_hw_params,
     .hw_free                = pcdsp_hw_free,
+    .sw_params              = pcdsp_sw_params,
     .prepare                = pcdsp_prepare,
     .drain                  = pcdsp_drain,
     .pause                  = pcdsp_pause,
@@ -913,6 +982,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
     pcdsp->conn.fd                 = -1;
     pcdsp->conn.negotiated_version = 0;
     pcdsp->pipe_fd                 = -1;
+    pcdsp->avail_min                = 1;
 
     atomic_init(&pcdsp->worker_running, false);
     pcdsp->worker_joinable = false;
