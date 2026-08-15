@@ -24,7 +24,6 @@ use benchmark::{
 use camilladsp::alsa_capture::AlsaLoopbackListener;
 use camilladsp::websocket::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
-use serde_json::Value as JsonValue;
 
 fn run_main() -> AppResult<()> {
     let Some(args) = parse_args()? else {
@@ -55,13 +54,8 @@ fn run_main() -> AppResult<()> {
 
         Mode::WsCheck => {
             let mut client = CamillaWs::connect(&args.host, args.port)?;
-            let version = client.query("GetVersion", None)?;
-            println!(
-                "CamillaDSP websocket OK, version={}",
-                version
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "unknown".to_owned())
-            );
+            let version = client.get_version()?;
+            println!("CamillaDSP websocket OK, version={version}");
             client.close();
             Ok(())
         }
@@ -70,7 +64,7 @@ fn run_main() -> AppResult<()> {
             let wave = wave_from_args(&args);
             let adapted = adapt_config(args.adapt.as_deref().expect("validated"), &wave)?;
             let mut client = CamillaWs::connect(&args.host, args.port)?;
-            let _ = client.query("ValidateConfig", Some(JsonValue::String(adapted)))?;
+            client.validate_config(&adapted)?;
             println!("CamillaDSP websocket ValidateConfig OK");
             client.close();
             Ok(())
@@ -124,9 +118,8 @@ fn run_main() -> AppResult<()> {
 
         Mode::WsGetConfigPath => {
             let mut client = CamillaWs::connect(&args.host, args.port)?;
-            let value = client.query("GetConfigFilePath", None)?;
-            let path = value
-                .and_then(|v| v.as_str().map(str::to_owned))
+            let path = client
+                .get_config_file_path()?
                 .ok_or_else(|| app_error("CamillaDSP returned no config file path"))?;
             client.close();
             println!("{path}");

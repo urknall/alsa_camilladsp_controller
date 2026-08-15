@@ -7,7 +7,6 @@ use super::parsing::{
 };
 use super::report::{BenchmarkEnvironment, REQUIRED_SAMPLE_RATES_HZ};
 use crate::camilladsp::websocket::{CamillaClient, CamillaWs};
-use serde_json::Value as JsonValue;
 use std::time::{Duration, Instant};
 
 /// Scan `/proc/*/cmdline` for a running `picoredsp-controller --run` (daemon)
@@ -158,10 +157,7 @@ fn collect_pcm_transport_latency_ms_from(card_num: u32, base: &str) -> Option<f6
 /// and a [JSON Pointer](https://datatracker.ietf.org/doc/html/rfc6901).
 fn chunksize_from_client(client: &mut impl CamillaClient) -> Option<u64> {
     client
-        .query(
-            "GetConfigValue",
-            Some(JsonValue::String("/devices/chunksize".to_owned())),
-        )
+        .get_config_value("/devices/chunksize")
         .ok()?
         .and_then(|v| v.as_u64())
 }
@@ -173,8 +169,7 @@ fn chunksize_from_client(client: &mut impl CamillaClient) -> Option<u64> {
 /// returns the measured sample rate of the capture device (0 if processing
 /// is not currently running).
 fn buffer_latency_ms_from_client(client: &mut impl CamillaClient) -> Option<f64> {
-    let rate_val = client.query("GetCaptureRate", None).ok()??;
-    let rate = rate_val.as_u64()?;
+    let rate = client.get_capture_rate().ok()?;
     let chunksize = chunksize_from_client(client)?;
     if rate == 0 {
         return None;
@@ -198,8 +193,7 @@ pub(crate) fn collect_cdsp_buffer_latency_ms(host: &str, port: u16) -> Option<f6
 /// not yet measured, e.g. processing hasn't started) as "unknown".
 pub(crate) fn collect_cdsp_rate(host: &str, port: u16) -> Option<u64> {
     let mut client = CamillaWs::connect(host, port).ok()?;
-    let val = client.query("GetCaptureRate", None).ok()??;
-    let rate = val.as_u64();
+    let rate = client.get_capture_rate().ok();
     client.close();
     rate
 }
@@ -209,10 +203,9 @@ fn collect_cdsp_version(host: &str, port: u16) -> String {
     CamillaWs::connect(host, port)
         .ok()
         .and_then(|mut c| {
-            let v = c.query("GetVersion", None).ok()??;
-            let s = v.as_str().map(str::to_owned);
+            let v = c.get_version().ok();
             c.close();
-            s
+            v
         })
         .unwrap_or_else(|| "unknown".to_owned())
 }
@@ -394,6 +387,7 @@ fn detect_dac_from_cards(cards_text: &str, aloop_device: &str) -> String {
 mod tests {
     use super::*;
     use crate::camilladsp::websocket::WsError;
+    use serde_json::Value as JsonValue;
     use std::collections::VecDeque;
 
     /// Minimal scripted [`CamillaClient`] for testing the `collect_cdsp_*`
