@@ -298,7 +298,7 @@ mod tests {
 // Behavioural invariants verified by this suite:
 //   Started(44100, S16_LE, 2) -> aloop config has Alsa capture, rate 44100
 //   Started(44100, S16_LE, 2) -> ioplug config has Stdin capture, rate 44100
-//   Changed(48000, S24_3LE, 2) -> both backends update samplerate to 48000
+//   Changed(48000, S24_3_LE, 2) -> both backends update samplerate to 48000
 //   Stopped -> does not trigger adaptation (no config change)
 //   Same result regardless of backend that emitted the event
 #[cfg(test)]
@@ -479,7 +479,7 @@ mod cross_backend_tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Changed(48000, S24_3LE, 2) -> both backends update samplerate to 48000
+    /// Changed(48000, S24_3_LE, 2) -> both backends update samplerate to 48000
     /// and the appropriate capture section.
     #[test]
     fn changed_48000_s24_3le_2_updates_samplerate_for_both_backends() {
@@ -495,7 +495,7 @@ mod cross_backend_tests {
             }),
             StreamEvent::Changed(StreamParams {
                 rate: 48_000,
-                format: "S24_3LE".to_owned(),
+                format: "S24_3_LE".to_owned(),
                 channels: 2,
             }),
         ]);
@@ -521,7 +521,10 @@ mod cross_backend_tests {
 
         assert_eq!(al["devices"]["capture"]["type"].as_str(), Some("Alsa"));
         assert_eq!(io["devices"]["capture"]["type"].as_str(), Some("Stdin"));
-        assert_eq!(io["devices"]["capture"]["format"].as_str(), Some("S24_3LE"));
+        assert_eq!(
+            io["devices"]["capture"]["format"].as_str(),
+            Some("S24_3_LE")
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -600,7 +603,7 @@ mod cross_backend_tests {
         fs::write(&config_path, portable_config("hw:X,0")).unwrap();
 
         let rates = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
-        let formats = ["S16_LE", "S24_3LE", "S24_4_LE", "S32_LE", "FLOAT_LE"];
+        let formats = ["S16_LE", "S24_3_LE", "S24_4_LE", "S32_LE", "F32_LE"];
 
         for &rate in &rates {
             let wave = WaveFormat {
@@ -664,7 +667,7 @@ mod cross_backend_tests {
             active: true,
             wave: WaveFormat {
                 sample_rate: Some(48_000),
-                sample_format: Some("S24_3LE".to_owned()),
+                sample_format: Some("S24_3_LE".to_owned()),
                 channels: Some(2),
             },
         };
@@ -685,7 +688,7 @@ mod cross_backend_tests {
             detect_stream_event(&active_44, &active_48, &fallback).unwrap(),
             Some(StreamEvent::Changed(StreamParams {
                 rate: 48_000,
-                format: "S24_3LE".to_owned(),
+                format: "S24_3_LE".to_owned(),
                 channels: 2,
             }))
         );

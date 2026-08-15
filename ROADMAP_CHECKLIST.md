@@ -302,6 +302,16 @@ CI requirements:
 **Milestone M12: Run A/B latency and performance benchmarks**
 
 - [x] Benchmark framework established (same Pi / DAC / track / chunksize, only backend differs)
+  <br>Fixed (Step 6): `src/benchmark.rs` previously queried CamillaDSP over
+  WebSocket with `GetSamplerate`/`GetBuffersize`, neither of which exist in
+  CamillaDSP 4.1.3 (every measurement silently collapsed to `None`/default).
+  Replaced with `GetCaptureRate` (measured sample rate) and
+  `GetConfigValue`/`/devices/chunksize` (configured buffer size), extracted
+  into testable helpers (`buffer_latency_ms_from_client`,
+  `chunksize_from_client`) with unit tests pinning the exact command names
+  sent. Also fixed stale CamillaDSP format-string test fixtures
+  (`S24_3LE`→`S24_3_LE`, `FLOAT_LE`→`F32_LE`) in `src/backend.rs`,
+  `src/backend/aloop.rs`, `src/core/state_machine.rs`.
 - [x] Automated benchmark harness created and integrated into CI:
   - [x] C microbenchmark harness (`picoredsp-ioplug/bench/`) covering ring buffer, timing, PCM worker
   - [x] Rust benchmark runner (`benches/picoredsp_bench.rs`) covering YAML serialisation / plan validation

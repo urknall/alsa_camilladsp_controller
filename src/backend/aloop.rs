@@ -214,7 +214,7 @@ mod tests {
             vec![false, false, false],
             vec![
                 MockListener::active(44_100, "S16_LE", 2),
-                MockListener::active(48_000, "S24_3LE", 2),
+                MockListener::active(48_000, "S24_3_LE", 2),
                 MockListener::inactive(),
             ],
         );
@@ -236,7 +236,7 @@ mod tests {
             changed,
             Some(StreamEvent::Changed(crate::backend::StreamParams {
                 rate: 48_000,
-                format: "S24_3LE".to_owned(),
+                format: "S24_3_LE".to_owned(),
                 channels: 2,
             }))
         );

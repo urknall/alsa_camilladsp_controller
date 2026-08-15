@@ -2,6 +2,7 @@ use crate::args::Backend;
 use crate::camilladsp::websocket::{CamillaClient, CamillaWs};
 use crate::error::{app_error, AppResult};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
@@ -953,27 +954,55 @@ fn collect_pcm_transport_latency_ms_from(card_num: u32, base: &str) -> Option<f6
     None
 }
 
+/// Read the configured pipeline chunk size (in frames) from CamillaDSP's
+/// active config via `GetConfigValue`.
+///
+/// CamillaDSP 4.x has no `GetBuffersize` command; the chunk size lives in the
+/// config under `devices.chunksize` and must be read with `GetConfigValue`
+/// and a [JSON Pointer](https://datatracker.ietf.org/doc/html/rfc6901).
+fn chunksize_from_client(client: &mut impl CamillaClient) -> Option<u64> {
+    client
+        .query(
+            "GetConfigValue",
+            Some(JsonValue::String("/devices/chunksize".to_owned())),
+        )
+        .ok()?
+        .and_then(|v| v.as_u64())
+}
+
+/// Compute the active pipeline buffer latency in milliseconds
+/// (`chunksize / GetCaptureRate * 1000`) from an already-connected client.
+///
+/// CamillaDSP 4.x has no `GetSamplerate` command either; `GetCaptureRate`
+/// returns the measured sample rate of the capture device (0 if processing
+/// is not currently running).
+fn buffer_latency_ms_from_client(client: &mut impl CamillaClient) -> Option<f64> {
+    let rate_val = client.query("GetCaptureRate", None).ok()??;
+    let rate = rate_val.as_u64()?;
+    let chunksize = chunksize_from_client(client)?;
+    if rate == 0 {
+        return None;
+    }
+    Some(chunksize as f64 / rate as f64 * 1000.0)
+}
+
 /// Query CamillaDSP over WebSocket for the active pipeline buffer latency in
-/// milliseconds (`GetBuffersize / GetSamplerate * 1000`).
+/// milliseconds (`GetConfigValue("/devices/chunksize") / GetCaptureRate * 1000`).
 ///
 /// Returns `None` if CamillaDSP is unreachable or not currently processing.
 pub fn collect_cdsp_buffer_latency_ms(host: &str, port: u16) -> Option<f64> {
     let mut client = CamillaWs::connect(host, port).ok()?;
-    let rate_val = client.query("GetSamplerate", None).ok()??;
-    let bufsize_val = client.query("GetBuffersize", None).ok()??;
-    let rate = rate_val.as_u64()?;
-    let bufsize = bufsize_val.as_u64()?;
+    let result = buffer_latency_ms_from_client(&mut client);
     client.close();
-    if rate == 0 {
-        return None;
-    }
-    Some(bufsize as f64 / rate as f64 * 1000.0)
+    result
 }
 
-/// Query CamillaDSP for its active sample rate.  Returns `None` on failure.
+/// Query CamillaDSP for its measured capture sample rate via `GetCaptureRate`.
+/// Returns `None` on failure; callers should also treat a returned `0` (rate
+/// not yet measured, e.g. processing hasn't started) as "unknown".
 fn collect_cdsp_rate(host: &str, port: u16) -> Option<u64> {
     let mut client = CamillaWs::connect(host, port).ok()?;
-    let val = client.query("GetSamplerate", None).ok()??;
+    let val = client.query("GetCaptureRate", None).ok()??;
     let rate = val.as_u64();
     client.close();
     rate
@@ -1110,9 +1139,9 @@ pub fn detect_environment(host: &str, port: u16, aloop_device: &str) -> Benchmar
     // Read chunksize from CamillaDSP if available; default to 1024.
     let chunksize = {
         let chunksize_val = CamillaWs::connect(host, port).ok().and_then(|mut c| {
-            let v = c.query("GetBuffersize", None).ok()?;
+            let v = chunksize_from_client(&mut c);
             c.close();
-            v.and_then(|j| j.as_u64())
+            v
         });
         chunksize_val.map(|n| n as u32).unwrap_or(1024)
     };
@@ -1279,6 +1308,39 @@ fn add_optional(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camilladsp::websocket::WsError;
+    use std::collections::VecDeque;
+
+    /// Minimal scripted [`CamillaClient`] for testing the `collect_cdsp_*`
+    /// helper functions without a live CamillaDSP process.  Verifies the
+    /// exact command names sent, guarding against regressions back to the
+    /// invalid `GetSamplerate`/`GetBuffersize` calls CamillaDSP 4.x rejects.
+    struct MockClient {
+        responses: VecDeque<Result<Option<JsonValue>, WsError>>,
+        commands_sent: Vec<String>,
+    }
+
+    impl MockClient {
+        fn new(responses: Vec<Result<Option<JsonValue>, WsError>>) -> Self {
+            Self {
+                responses: responses.into(),
+                commands_sent: Vec::new(),
+            }
+        }
+    }
+
+    impl CamillaClient for MockClient {
+        fn query(
+            &mut self,
+            command: &str,
+            _argument: Option<JsonValue>,
+        ) -> Result<Option<JsonValue>, WsError> {
+            self.commands_sent.push(command.to_owned());
+            self.responses
+                .pop_front()
+                .unwrap_or_else(|| Err(WsError::Transport("no more responses".to_owned())))
+        }
+    }
 
     fn parse_template() -> BenchmarkPlan {
         let yaml = make_benchmark_plan_template().expect("template");
@@ -1603,5 +1665,64 @@ mod tests {
                       aplay: xrun.c:380: read/write error, state = RUNNING\n\
                       Aborted by signal Kill...\n";
         assert_eq!(count_xruns_in_aplay_output(output), 2);
+    }
+
+    // ── CamillaDSP WebSocket API drift regression tests (Step 6) ────────
+    //
+    // CamillaDSP 4.x has no `GetSamplerate` or `GetBuffersize` command; using
+    // them causes every benchmark measurement to silently collapse to `None`.
+    // These tests pin the commands actually sent to the client and their
+    // response parsing to the CamillaDSP 4.1.3 API (`GetCaptureRate`,
+    // `GetConfigValue`).
+
+    #[test]
+    fn chunksize_from_client_sends_get_config_value_with_chunksize_pointer() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(2048u64)))]);
+        let chunksize = chunksize_from_client(&mut client);
+        assert_eq!(chunksize, Some(2048));
+        assert_eq!(client.commands_sent, vec!["GetConfigValue".to_owned()]);
+    }
+
+    #[test]
+    fn chunksize_from_client_returns_none_on_transport_error() {
+        let mut client = MockClient::new(vec![Err(WsError::Transport("down".to_owned()))]);
+        assert_eq!(chunksize_from_client(&mut client), None);
+    }
+
+    #[test]
+    fn buffer_latency_ms_from_client_uses_get_capture_rate_and_chunksize() {
+        let mut client = MockClient::new(vec![
+            Ok(Some(JsonValue::from(48_000u64))), // GetCaptureRate
+            Ok(Some(JsonValue::from(1024u64))),   // GetConfigValue chunksize
+        ]);
+        let ms = buffer_latency_ms_from_client(&mut client).expect("should compute latency");
+        // 1024 / 48000 * 1000 ≈ 21.33 ms
+        assert!((ms - 21.333).abs() < 0.01, "got {ms}");
+        assert_eq!(
+            client.commands_sent,
+            vec!["GetCaptureRate".to_owned(), "GetConfigValue".to_owned()]
+        );
+    }
+
+    #[test]
+    fn buffer_latency_ms_from_client_returns_none_when_rate_is_zero() {
+        // CamillaDSP reports rate 0 when processing hasn't started yet.
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(0u64)))]);
+        assert_eq!(buffer_latency_ms_from_client(&mut client), None);
+    }
+
+    #[test]
+    fn buffer_latency_ms_from_client_returns_none_when_get_capture_rate_errors() {
+        let mut client = MockClient::new(vec![Err(WsError::Transport("down".to_owned()))]);
+        assert_eq!(buffer_latency_ms_from_client(&mut client), None);
+    }
+
+    #[test]
+    fn buffer_latency_ms_from_client_returns_none_when_chunksize_query_fails() {
+        let mut client = MockClient::new(vec![
+            Ok(Some(JsonValue::from(48_000u64))),       // GetCaptureRate
+            Err(WsError::Transport("down".to_owned())), // GetConfigValue fails
+        ]);
+        assert_eq!(buffer_latency_ms_from_client(&mut client), None);
     }
 }
