@@ -223,7 +223,7 @@ jobs:
         run: |
           set -euo pipefail
           latest_tag=$(curl -fsSL https://api.github.com/repos/HEnquist/camilladsp/releases/latest \
-            | grep -m1 '"tag_name"' | cut -d'"' -f4)
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
           echo "Latest upstream CamillaDSP version: ${latest_tag}"
           mkdir -p /tmp/camilladsp-latest
           curl -fsSL -o /tmp/camilladsp-latest/camilladsp.tar.gz \
