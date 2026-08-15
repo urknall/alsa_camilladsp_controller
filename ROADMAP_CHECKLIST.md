@@ -24,6 +24,10 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > files by concern. No architectural checklist gate covered this cleanup;
 > it is recorded here for traceability. All 213 tests continued to pass
 > throughout, and `cargo fmt`/`cargo clippy --all-targets` are clean.
+> Step 10 (2026-08-15, hygiene): added a top-level `LICENSE` file (MIT,
+> matching `Cargo.toml`'s existing `license = "MIT"`) and refreshed
+> `Cargo.toml`'s `description` to name both backends instead of only
+> `snd-aloop`.
 
 ---
 

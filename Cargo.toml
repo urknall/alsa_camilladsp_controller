@@ -3,7 +3,7 @@ name = "picoredsp-controller"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.71"
-description = "ALSA snd-aloop to CamillaDSP controller for piCorePlayer"
+description = "Dual-backend (ALSA snd-aloop and native ioplug) CamillaDSP controller for piCorePlayer"
 license = "MIT"
 repository = "https://github.com/urknall/alsa_camilladsp_controller"
 
