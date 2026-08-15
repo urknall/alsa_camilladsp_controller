@@ -748,6 +748,7 @@ TEST(pause_blocks_until_worker_stops_writing_before_returning)
      * Wait for observed byte count to quiesce, then assert it stays stable. */
     long stable_bytes = -1;
     bool reached_stable = false;
+    int stable_samples = 0;
     for (int i = 0; i < 50; i++) { /* up to 500 ms total */
         long before = atomic_load_explicit(&bytes_read, memory_order_relaxed);
         struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
@@ -755,8 +756,13 @@ TEST(pause_blocks_until_worker_stops_writing_before_returning)
         long after = atomic_load_explicit(&bytes_read, memory_order_relaxed);
         if (after == before) {
             stable_bytes = after;
-            reached_stable = true;
-            break;
+            stable_samples++;
+            if (stable_samples >= 3) {
+                reached_stable = true;
+                break;
+            }
+        } else {
+            stable_samples = 0;
         }
     }
     CHECK(reached_stable);
