@@ -100,10 +100,10 @@ size_t pcdsp_rb_write(pcdsp_ringbuffer_t *rb, const void *src, size_t frames)
     size_t cont = rb->capacity - idx1;   /* contiguous frames to end of buffer */
 
     if (frames <= cont) {
-        memcpy(rb->buf + idx1 * rb->frame_bytes, src, frames * rb->frame_bytes);
+        memcpy(rb->buf + idx1 * rb->frame_bytes, src, frames * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     } else {
-        memcpy(rb->buf + idx1 * rb->frame_bytes, src,                  cont * rb->frame_bytes);
-        memcpy(rb->buf,                           (const uint8_t *)src + cont * rb->frame_bytes,
+        memcpy(rb->buf + idx1 * rb->frame_bytes, src,                  cont * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+        memcpy(rb->buf,                           (const uint8_t *)src + cont * rb->frame_bytes, /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
                (frames - cont) * rb->frame_bytes);
     }
 
@@ -126,10 +126,10 @@ size_t pcdsp_rb_read(pcdsp_ringbuffer_t *rb, void *dst, size_t frames)
     size_t cont = rb->capacity - idx1;
 
     if (frames <= cont) {
-        memcpy(dst, rb->buf + idx1 * rb->frame_bytes, frames * rb->frame_bytes);
+        memcpy(dst, rb->buf + idx1 * rb->frame_bytes, frames * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     } else {
-        memcpy(dst,                                   rb->buf + idx1 * rb->frame_bytes, cont * rb->frame_bytes);
-        memcpy((uint8_t *)dst + cont * rb->frame_bytes, rb->buf,                        (frames - cont) * rb->frame_bytes);
+        memcpy(dst,                                   rb->buf + idx1 * rb->frame_bytes, cont * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
+        memcpy((uint8_t *)dst + cont * rb->frame_bytes, rb->buf,                        (frames - cont) * rb->frame_bytes); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     }
 
     atomic_store_explicit(&rb->read_pos, rp + frames, memory_order_release);

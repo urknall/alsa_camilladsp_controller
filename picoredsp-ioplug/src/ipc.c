@@ -102,7 +102,7 @@ int pcdsp_ipc_connect(pcdsp_ipc_conn_t *conn, const char *socket_path)
         close(sfd);
         return -ENAMETOOLONG;
     }
-    memcpy(addr.sun_path, socket_path, socket_path_len + 1);
+    memcpy(addr.sun_path, socket_path, socket_path_len + 1); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
 
     int rc = connect(sfd, (struct sockaddr *)&addr, sizeof(addr));
     if (rc < 0) {
@@ -323,7 +323,7 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
 
     for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
         if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS) {
-            memcpy(&rfd, CMSG_DATA(cm), sizeof(int));
+            memcpy(&rfd, CMSG_DATA(cm), sizeof(int)); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
             break;
         }
     }
