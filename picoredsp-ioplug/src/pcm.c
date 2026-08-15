@@ -814,7 +814,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(picoredsp)
             free(pcdsp);
             return -ENAMETOOLONG;
         }
-        memcpy(pcdsp->socket_path, socket_path, socket_path_len + 1);
+        memcpy(pcdsp->socket_path, socket_path, socket_path_len + 1); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
     }
     /* else socket_path[0] == '\0' (zero-initialised by calloc) → use default */
 
