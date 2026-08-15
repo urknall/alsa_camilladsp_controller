@@ -535,4 +535,106 @@ mod tests {
         ]);
         assert_eq!(buffer_latency_ms_from_client(&mut client), None);
     }
+
+    /// Regression test for the benchmark WebSocket API drift this module's
+    /// doc comments warn about: `GetSamplerate`/`GetBuffersize` do not exist
+    /// in CamillaDSP 4.x and would silently return errors/`None`. Unlike the
+    /// `MockClient` tests above (which only prove *which commands* are
+    /// sent), this test exercises `collect_cdsp_rate`,
+    /// `collect_cdsp_buffer_latency_ms`, and `collect_cdsp_version` against
+    /// a real, running CamillaDSP process to prove the currently-used
+    /// `GetCaptureRate`/`GetConfigValue`/`GetVersion` commands actually work
+    /// against the pinned upstream binary.
+    #[test]
+    #[ignore = "requires PICOREDSP_TEST_CAMILLADSP_BIN pointing at a real CamillaDSP binary"]
+    fn live_collectors_work_against_real_camilladsp() {
+        use crate::test_support::live_camilladsp_binary;
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let Some(cdsp) = live_camilladsp_binary() else {
+            return;
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("picoredsp-live-collectors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.yml");
+        let out_path = dir.join("out.raw");
+        std::fs::write(
+            &config_path,
+            format!(
+                "devices:\n  samplerate: 44100\n  chunksize: 1024\n  \
+                 capture:\n    type: Stdin\n    channels: 2\n    format: S16_LE\n  \
+                 playback:\n    type: File\n    channels: 2\n    filename: \"{}\"\n    \
+                 format: S16_LE\nfilters: {{}}\nmixers: {{}}\npipeline: []\nprocessors: {{}}\n",
+                out_path.display()
+            ),
+        )
+        .unwrap();
+
+        let port = 15551u16;
+        let mut child = Command::new(&cdsp)
+            .arg("-p")
+            .arg(port.to_string())
+            .arg("-a")
+            .arg("127.0.0.1")
+            .arg(&config_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn real CamillaDSP binary");
+
+        let mut stdin = child.stdin.take().unwrap();
+        let feeder = std::thread::spawn(move || {
+            let silence = vec![0u8; 4096];
+            for _ in 0..700 {
+                if stdin.write_all(&silence).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+
+        // Give CamillaDSP time to accept the WebSocket connection, then poll
+        // GetCaptureRate until it reports a measured rate rather than 0
+        // ("not currently processing") — CamillaDSP's rate estimator needs a
+        // few chunks to settle, and a single fixed sleep is flaky under CI
+        // load.
+        std::thread::sleep(Duration::from_millis(300));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut rate = None;
+        while Instant::now() < deadline {
+            rate = collect_cdsp_rate("127.0.0.1", port);
+            if rate.is_some_and(|r| r > 0) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let latency_ms = collect_cdsp_buffer_latency_ms("127.0.0.1", port);
+        let version = collect_cdsp_version("127.0.0.1", port);
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = feeder.join();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            rate.is_some_and(|r| r > 0),
+            "collect_cdsp_rate returned {rate:?} against a live CamillaDSP \
+             process — GetCaptureRate may have drifted from the real \
+             CamillaDSP 4.x API"
+        );
+        assert!(
+            latency_ms.is_some(),
+            "collect_cdsp_buffer_latency_ms returned None against a live \
+             CamillaDSP process — GetConfigValue or GetCaptureRate may have \
+             drifted from the real CamillaDSP 4.x API"
+        );
+        assert_ne!(
+            version, "unknown",
+            "collect_cdsp_version returned 'unknown' against a live CamillaDSP process"
+        );
+    }
 }

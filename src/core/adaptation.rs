@@ -1,3 +1,4 @@
+use crate::camilladsp::alsa_capture::alsa_only_format_to_generic;
 use crate::core::config::WaveFormat;
 use crate::core::errors::{app_error, AppResult};
 use serde::{Deserialize, Serialize};
@@ -331,6 +332,14 @@ fn build_runtime_capture(
                         "ioplug runtime capture format is missing and no fallback is configured",
                     )
                 })?;
+            // `wave.sample_format` (and any `Alsa`-block fallback carried
+            // over from the baseline config) uses CamillaDSP's `Alsa`-device
+            // format names (e.g. `S24_4_LE`). The `Stdin` device this
+            // backend targets is a *generic* device type with a different
+            // enum for the 24-bit-in-4-byte format — translate before
+            // writing it out, or CamillaDSP rejects the config outright for
+            // any 24-bit stream. See `alsa_only_format_to_generic`.
+            let format = alsa_only_format_to_generic(&format).to_owned();
             capture.insert(yaml_key("type"), YamlValue::String("Stdin".to_owned()));
             capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
             capture.insert(yaml_key("format"), YamlValue::String(format));
@@ -672,7 +681,7 @@ mod tests {
              capture:\n    labels:\n      - Input_L\n      - Input_R\n  \
              playback:\n    type: Alsa\n    channels: 2\n    \
              device: \"{playback}\"\nfilters:\n  Gain:\n    type: Gain\n    parameters:\n      gain: -3.0\nmixers: {{}}\n\
-             pipeline:\n  - type: Filter\n    channel: 0\n    names:\n      - Gain\nprocessors: {{}}\n"
+             pipeline:\n  - type: Filter\n    channels:\n      - 0\n    names:\n      - Gain\nprocessors: {{}}\n"
         )
     }
 
@@ -863,9 +872,15 @@ mod tests {
             ioplug_parsed["devices"]["capture"]["type"].as_str(),
             Some("Stdin")
         );
+        // The baseline/wave format is the `Alsa`-schema name `S24_4_LE`, but
+        // the `Stdin` device CamillaDSP validates for the ioplug backend
+        // uses the generic-schema name for the same wire format: verified
+        // against CamillaDSP 4.1.3, `Stdin`+`S24_4_LE` fails validation
+        // while `Stdin`+`S24_4_RJ_LE` succeeds (see
+        // `alsa_only_format_to_generic`).
         assert_eq!(
             ioplug_parsed["devices"]["capture"]["format"].as_str(),
-            Some("S24_4_LE")
+            Some("S24_4_RJ_LE")
         );
         assert!(ioplug_parsed["devices"]["capture"].get("device").is_none());
         assert!(ioplug_parsed["devices"]["capture"]
@@ -1524,6 +1539,55 @@ mod tests {
             result.is_err(),
             "statefile with unknown field must be rejected"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Regression test for the `S24_4_LE`/`S24_4_RJ_LE` schema mismatch
+    /// between CamillaDSP's `Alsa` and generic device types (see
+    /// `alsa_only_format_to_generic`'s doc comment): every sample format the
+    /// ioplug backend's `Stdin` capture device can produce must be
+    /// *accepted* by a real CamillaDSP binary (`--check`), not merely by our
+    /// own YAML field assertions — those would not have caught this bug,
+    /// since they only check that a string was written, not that CamillaDSP
+    /// considers it valid.
+    #[test]
+    #[ignore = "requires PICOREDSP_TEST_CAMILLADSP_BIN pointing at a real CamillaDSP binary"]
+    fn ioplug_adapted_config_validates_against_real_camilladsp_for_all_formats() {
+        use crate::test_support::live_camilladsp_binary;
+
+        let Some(cdsp) = live_camilladsp_binary() else {
+            return;
+        };
+
+        let dir = test_dir("live-cdsp-ioplug-formats");
+        let config = dir.join("config.yml");
+        fs::write(&config, portable_base_config("hw:DAC,0")).unwrap();
+
+        for fmt in [
+            "S16_LE", "S24_3_LE", "S24_4_LE", "S32_LE", "F32_LE", "F64_LE",
+        ] {
+            let wave = WaveFormat {
+                sample_rate: Some(48_000),
+                sample_format: Some(fmt.to_owned()),
+                channels: Some(2),
+            };
+            let adapted = adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).unwrap();
+            let runtime_config = dir.join(format!("runtime-{fmt}.yml"));
+            fs::write(&runtime_config, &adapted).unwrap();
+
+            let output = std::process::Command::new(&cdsp)
+                .arg("--check")
+                .arg(&runtime_config)
+                .output()
+                .expect("failed to spawn real CamillaDSP binary");
+            assert!(
+                output.status.success(),
+                "CamillaDSP rejected the ioplug-adapted config for format \
+                 {fmt}: {}\nconfig:\n{adapted}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
         fs::remove_dir_all(dir).unwrap();
     }
 }

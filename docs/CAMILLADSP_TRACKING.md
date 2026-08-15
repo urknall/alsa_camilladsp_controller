@@ -61,6 +61,29 @@ that don't touch `socketserver.rs`'s command surface).
 
 ---
 
+## Known Schema Notes
+
+- **Device-type-dependent format enum (found 2026-08-15, verified against
+  the real `v4.1.3` binary via `camilladsp --check`):** CamillaDSP does not
+  use one universal PCM format enum. `Alsa`-type device blocks accept
+  `S16_LE, S24_3_LE, S24_4_LE, S32_LE, F32_LE, F64_LE` (and reject
+  `S24_4_RJ_LE`/`S24_4_LJ_LE`), while generic device types (`Stdin`, `File`,
+  `RawFile`, `WavFile`) accept `S16_LE, S24_3_LE, S24_4_RJ_LE,
+  S24_4_LJ_LE, S32_LE, F32_LE, F64_LE` (and reject `S24_4_LE`). Only the
+  24-bit-in-32-bit-container name differs between the two schemas; ALSA's
+  right-justified `SND_PCM_FORMAT_S24_LE` maps to `S24_4_RJ_LE` in the
+  generic schema. This project's aloop backend uses `Alsa` device blocks
+  (so `S24_4_LE` is correct there), while the ioplug backend uses a
+  `Stdin` capture block and therefore needs `S24_4_RJ_LE` — handled by
+  `alsa_only_format_to_generic()` in `src/camilladsp/alsa_capture.rs`. Any
+  future CamillaDSP config-schema review should re-check this distinction
+  still holds.
+- **`Filter` pipeline steps address channels as a list:** the schema field
+  is `channels: [0]` (plural), not `channel: 0` (singular). Confirmed via
+  `camilladsp --check`.
+
+---
+
 ## Review Process
 
 Identical to the BlueALSA process (see
@@ -94,3 +117,4 @@ reviewed  + add or update regression test
 | Date | CamillaDSP commit/tag | Topic | Decision | Notes |
 |------|------------------------|-------|----------|-------|
 | 2026-08-15 | `05e9cfc` / `v4.1.3` | Initial tracking baseline | Reviewed | Baseline established: `v4.1.3` is the version this project's WebSocket client (`src/camilladsp/websocket.rs`) and recovery classification (`src/core/recovery.rs`) were last validated against. Notable recent upstream change: `v4.1.3` adjusted internal ringbuffer sizing when resampling is active (PR #456) — an internal DSP-path change with no observable WebSocket/config/lifecycle impact, so no action required here. |
+| 2026-08-15 | `05e9cfc` / `v4.1.3` | Config schema (device-type format enum) | Fixed | Independent verification pass ran generated configs through the real pinned binary (`camilladsp --check`) rather than relying on this document alone, and found the ioplug capture path was emitting the `Alsa`-schema format name into a `Stdin` block, which `v4.1.3` rejects for 24-bit-in-32-bit formats. See "Known Schema Notes" above. Fixed in `src/camilladsp/alsa_capture.rs`/`src/core/adaptation.rs`, covered by new live `#[ignore]`-gated test wired into CI (`camilladsp_compat_pinned`/`camilladsp_compat_latest` jobs in `build.yml`). |
