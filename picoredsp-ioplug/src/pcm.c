@@ -943,9 +943,7 @@ static int pcdsp_poll_revents(snd_pcm_ioplug_t *io,
      * application wakes from poll() and immediately sees a definitive,
      * non-recoverable error instead of one that could be mistaken for a
      * transient XRUN. */
-    int serr = atomic_load_explicit(&pcdsp->stream_error, memory_order_acquire);
-    if (serr != 0) {
-        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_DISCONNECTED);
+    if (pcdsp_disconnect_on_stream_error(io, pcdsp) != 0) {
         *revents = POLLERR | POLLHUP;
         return -ENODEV;
     }

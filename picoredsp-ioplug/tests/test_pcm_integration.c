@@ -96,18 +96,6 @@ static int g_fail = 0;
         } \
     } while (0)
 
-/* Like CHECK, but for helpers that return a value instead of void (e.g.
- * measure_drain_timeout(), which is not itself a TEST() body). */
-#define CHECK_RET(expr, retval) \
-    do { \
-        if (!(expr)) { \
-            printf("FAIL\n  assertion failed: %s  (%s:%d)\n", \
-                   #expr, __FILE__, __LINE__); \
-            g_fail++; \
-            return (retval); \
-        } \
-    } while (0)
-
 /* -----------------------------------------------------------------------
  * ALSA config helpers
  * ---------------------------------------------------------------------- */
@@ -802,6 +790,21 @@ TEST(drain_timeout_stops_worker_and_resets_state_to_setup)
  * end open without reading, and return how long snd_pcm_drain() took to
  * give up with -ETIMEDOUT.
  */
+/* Like CHECK, but records the failure and jumps to `cleanup` instead of
+ * returning directly — for measure_drain_timeout(), which must always run
+ * its cleanup (stop the mock server, close the pcm, join the thread, unlink
+ * the socket) even on an early failure, unlike a TEST() body where CHECK's
+ * bare `return` is fine. */
+#define CHECK_OR_CLEANUP(expr) \
+    do { \
+        if (!(expr)) { \
+            printf("FAIL\n  assertion failed: %s  (%s:%d)\n", \
+                   #expr, __FILE__, __LINE__); \
+            g_fail++; \
+            goto cleanup; \
+        } \
+    } while (0)
+
 static double measure_drain_timeout(const char *sock_suffix,
                                      snd_pcm_uframes_t period_hint,
                                      unsigned int rate)
@@ -816,34 +819,48 @@ static double measure_drain_timeout(const char *sock_suffix,
     };
     pthread_t srv = start_mock_server(&args);
 
-    snd_pcm_t *pcm = NULL;
-    CHECK_RET(open_plugin(&pcm, g_sock_path) == 0, -1.0);
-    CHECK_RET(set_hw_params_ex(pcm, period_hint, rate) == 0, -1.0);
-    CHECK_RET(snd_pcm_nonblock(pcm, 1) == 0, -1.0);
+    /* Every failure path below jumps to `cleanup` rather than returning
+     * directly, so the mock server thread is always stopped and joined and
+     * the socket path is always unlinked — an early bare `return` here
+     * would leave `srv` running against this function's about-to-be-freed
+     * stack locals (`args`, `stop_holding`), and leak the thread/socket for
+     * the caller's second measure_drain_timeout() call. */
+    double     result = -1.0;
+    snd_pcm_t *pcm     = NULL;
 
-    int16_t frames[257 * 2] = { 0 };
-    for (int i = 0; i < 256; i++) {
-        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
-        if (rc == -EAGAIN)
-            break;
-        CHECK_RET(rc >= 0 || rc == -EAGAIN, -1.0);
+    CHECK_OR_CLEANUP(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK_OR_CLEANUP(set_hw_params_ex(pcm, period_hint, rate) == 0);
+    CHECK_OR_CLEANUP(snd_pcm_nonblock(pcm, 1) == 0);
+
+    {
+        int16_t frames[257 * 2] = { 0 };
+        for (int i = 0; i < 256; i++) {
+            snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+            if (rc == -EAGAIN)
+                break;
+            CHECK_OR_CLEANUP(rc >= 0);
+        }
     }
 
     struct timespec drain_start, drain_end;
     clock_gettime(CLOCK_MONOTONIC, &drain_start);
-    CHECK_RET(snd_pcm_nonblock(pcm, 0) == 0, -1.0);
+    CHECK_OR_CLEANUP(snd_pcm_nonblock(pcm, 0) == 0);
     int drain_rc = snd_pcm_drain(pcm);
     clock_gettime(CLOCK_MONOTONIC, &drain_end);
 
-    CHECK_RET(drain_rc == -ETIMEDOUT, -1.0);
+    CHECK_OR_CLEANUP(drain_rc == -ETIMEDOUT);
 
+    result = (double)(drain_end.tv_sec - drain_start.tv_sec) +
+             (double)(drain_end.tv_nsec - drain_start.tv_nsec) / 1e9;
+
+cleanup:
     atomic_store_explicit(&stop_holding, true, memory_order_release);
-    snd_pcm_close(pcm);
+    if (pcm)
+        snd_pcm_close(pcm);
     pthread_join(srv, NULL);
     unlink(g_sock_path);
 
-    return (double)(drain_end.tv_sec - drain_start.tv_sec) +
-           (double)(drain_end.tv_nsec - drain_start.tv_nsec) / 1e9;
+    return result;
 }
 
 TEST(drain_timeout_scales_with_backlog_not_flat_constant)
