@@ -14,11 +14,13 @@
 
 #include "ringbuffer.h"
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -112,6 +114,37 @@ void pcdsp_worker_block_sigpipe(void);
 size_t pcdsp_drain_period_null_sink(pcdsp_ringbuffer_t *rb,
                                      size_t              period_frames,
                                      unsigned long       rate);
+
+/*
+ * pcdsp_wait_pause_ack — block until the worker acknowledges a pause
+ * request, or until it stops running, or until `deadline` passes.
+ *
+ * The caller must hold `mutex` locked on entry; it is left locked on
+ * return (both on success and on timeout) so the caller can continue
+ * inspecting/mutating the shared pause state before unlocking.
+ *
+ * @mutex     Lock guarding `*ack` and `pause_cond`'s predicate. Must
+ *            already be held by the caller.
+ * @cond      Condition variable the worker broadcasts on after setting
+ *            `*ack` (see worker_thread() in pcm.c).
+ * @ack       Set to true by the worker once it has reached a safe point
+ *            (parked, not mid-write to the pipe).
+ * @running   Worker-running flag. If it becomes false while waiting, the
+ *            worker cannot be mid-write (it has exited), so the "no write
+ *            in flight" invariant already holds without an explicit ack.
+ * @deadline  Absolute CLOCK_REALTIME deadline for pthread_cond_timedwait().
+ *
+ * Returns 0 if the invariant "no write is in flight" is confirmed (either
+ * `*ack` became true, or the worker stopped running), or -ETIMEDOUT if
+ * `deadline` was reached while the worker was still running and had not
+ * acknowledged the pause — i.e. the invariant could NOT be confirmed and
+ * the caller must not treat the pause as having taken effect.
+ */
+int pcdsp_wait_pause_ack(pthread_mutex_t      *mutex,
+                          pthread_cond_t       *cond,
+                          const bool           *ack,
+                          const _Atomic(bool)  *running,
+                          const struct timespec *deadline);
 
 #ifdef __cplusplus
 }
