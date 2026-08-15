@@ -129,6 +129,33 @@ fn latch_on_config_error(
     retry.latch();
 }
 
+/// Classify an immediate CamillaDSP exit as a playback-device failure or a
+/// config failure, based on the captured tail of its stderr output.
+///
+/// Upstream CamillaDSP (see `HEnquist/camilladsp`'s `src/bin.rs`) logs
+/// `error!("Playback error: {message}")` specifically when the playback
+/// backend fails at runtime (e.g. `snd_pcm_open` cannot find/lock the ALSA
+/// device), which is distinct from a config-validation failure at startup
+/// (`error!("{err}")` with no fixed prefix, from `load_validate_config`).
+///
+/// Distinguishing the two matters because they call for different recovery
+/// policies: a broken DSP graph will never succeed by simply retrying (so it
+/// is latched permanently until the config changes), whereas a DAC that is
+/// temporarily busy or not yet powered up at boot is transient and should be
+/// retried with exponential backoff instead.
+///
+/// Falls back to `ErrorCode::Config` (the conservative, previously-only
+/// behaviour) whenever the marker is absent — including when stderr capture
+/// produced nothing (e.g. capture failed to start, or the process was killed
+/// before it could log anything).
+fn classify_early_exit_error(stderr_tail: &str) -> ErrorCode {
+    if stderr_tail.contains("Playback error") {
+        ErrorCode::PlaybackDevice
+    } else {
+        ErrorCode::Config
+    }
+}
+
 /// Run the ioplug controller loop (Gate 8 + M9 recovery).
 ///
 /// For each stream:
@@ -138,8 +165,10 @@ fn latch_on_config_error(
 ///    — Validation failure latches the retry state until the config changes.
 /// 4. Spawn CamillaDSP with the pipe read-end as stdin.
 /// 5. Startup timeout check: verify the process is still alive after a short
-///    delay; the current policy latches an immediate exit as a config/device
-///    failure until the baseline config changes.
+///    delay; an immediate exit is classified via the captured stderr tail
+///    (`classify_early_exit_error`) — a config/DSP-graph failure latches
+///    until the baseline config changes, while a playback-device failure is
+///    treated as transient and retried with exponential backoff.
 /// 6. Send READY to the plugin, delivering the pipe write-end via SCM_RIGHTS.
 /// 7. Monitor the stream; wait for STOP or plugin disconnect.
 ///    — Unexpected CamillaDSP exit is recorded as a transient failure.
@@ -335,23 +364,46 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
         // device unavailable, wrong binary, etc.).  A genuine startup takes
         // milliseconds; if the process exits within the window it failed.
         //
-        // An immediate CamillaDSP exit almost always indicates a config or
-        // device problem (bad DSP graph, DAC unavailable).  Treat it as a
-        // permanent failure and latch until the config changes, rather than
-        // as a transient failure that retries with exponential backoff.
+        // An immediate exit is classified via the captured stderr tail
+        // (see `classify_early_exit_error`): a config/DSP-graph problem is
+        // latched permanently until the config changes, since retrying with
+        // the same config will always fail the same way. A playback-device
+        // problem (DAC unavailable/busy) is transient and instead retried
+        // with exponential backoff, since the device may become available
+        // again without any config change (e.g. still initialising at boot).
         if !supervisor.startup_check(STARTUP_CHECK_TIMEOUT, STARTUP_CHECK_POLL) {
-            log(
-                LogLevel::Error,
-                log_level,
-                "ioplug: CamillaDSP exited immediately after spawn — \
-                 treating as config/device error (latching until config change)",
-            );
-            // Latch (not transient retry): CamillaDSP rejected the config or
-            // could not open the playback device.  Retrying with the same
-            // config will always fail.
-            latch_on_config_error(&mut retry, &mut last_fingerprint, &adapt_path);
+            let stderr_tail = supervisor.recent_stderr();
+            let error_code = classify_early_exit_error(&stderr_tail);
+            match error_code {
+                ErrorCode::PlaybackDevice => {
+                    log(
+                        LogLevel::Error,
+                        log_level,
+                        format!(
+                            "ioplug: CamillaDSP exited immediately after spawn — \
+                             playback device unavailable (transient, will retry \
+                             with backoff); stderr: {stderr_tail}"
+                        ),
+                    );
+                    retry.record_attempt();
+                }
+                _ => {
+                    log(
+                        LogLevel::Error,
+                        log_level,
+                        format!(
+                            "ioplug: CamillaDSP exited immediately after spawn — \
+                             treating as config error (latching until config \
+                             change); stderr: {stderr_tail}"
+                        ),
+                    );
+                    // Latch (not transient retry): CamillaDSP rejected the
+                    // config. Retrying with the same config will always fail.
+                    latch_on_config_error(&mut retry, &mut last_fingerprint, &adapt_path);
+                }
+            }
             supervisor.stop_stream();
-            backend.send_error_to_plugin(ErrorCode::Config);
+            backend.send_error_to_plugin(error_code);
             continue;
         }
 
@@ -514,6 +566,38 @@ mod tests {
     }
 
     // ── latch_on_config_error / fingerprint interaction ────────────────────
+
+    // ── classify_early_exit_error ───────────────────────────────────────
+
+    #[test]
+    fn classify_early_exit_error_detects_playback_device_marker() {
+        let stderr = "some preamble\nPlayback error: snd_pcm_open failed: No such device\n";
+        assert_eq!(classify_early_exit_error(stderr), ErrorCode::PlaybackDevice);
+    }
+
+    #[test]
+    fn classify_early_exit_error_falls_back_to_config_for_validation_errors() {
+        // Upstream logs a raw error!("{err}") with no fixed prefix for a
+        // config-validation failure at startup.
+        let stderr = "invalid value for samplerate: not a number\n";
+        assert_eq!(classify_early_exit_error(stderr), ErrorCode::Config);
+    }
+
+    #[test]
+    fn classify_early_exit_error_falls_back_to_config_for_empty_stderr() {
+        // No stderr captured (e.g. capture failed, or the process was killed
+        // before logging anything) must not be misclassified as a device
+        // failure — the conservative default is the permanent config latch.
+        assert_eq!(classify_early_exit_error(""), ErrorCode::Config);
+    }
+
+    #[test]
+    fn classify_early_exit_error_does_not_match_unrelated_capture_error() {
+        // "Capture error" is a distinct upstream marker (capture-side
+        // failure) that must not be conflated with a playback-device error.
+        let stderr = "Capture error: device or resource busy\n";
+        assert_eq!(classify_early_exit_error(stderr), ErrorCode::Config);
+    }
 
     #[test]
     fn latch_on_config_error_latches_retry_state() {

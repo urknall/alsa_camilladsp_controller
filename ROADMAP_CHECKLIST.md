@@ -223,11 +223,16 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 Failure scenarios:
 - [x] Rust controller absent: plugin fails cleanly with meaningful ALSA error, no silent sample discard
 - [x] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
-- [ ] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
-  <br>Reopened: `run_ioplug()` in `src/controller.rs` always sent `ErrorCode::Config`
-  (with a permanent config-fingerprint latch) whenever CamillaDSP exited immediately
-  after spawn, regardless of whether the cause was an invalid config or an
-  unavailable/disconnected playback device — see Step 5 of the correctness follow-up.
+- [x] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
+  <br>Fixed: `run_ioplug()`'s startup-check failure branch now classifies an
+  immediate CamillaDSP exit via `classify_early_exit_error()`, which inspects
+  the captured stderr tail (`StdinPipeProcess`/`StdinSupervisor::recent_stderr()`)
+  for CamillaDSP's `"Playback error: ..."` marker (see upstream `src/bin.rs`).
+  A playback-device failure now returns `ErrorCode::PlaybackDevice` and is
+  retried transiently (exponential backoff via `retry.record_attempt()`)
+  instead of being latched permanently under the config-fingerprint policy;
+  a genuine config/DSP-graph failure still returns `ErrorCode::Config` and
+  latches as before. See Step 5 of the correctness follow-up plan.
 - [x] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
   <br>Fixed: the worker thread now blocks `SIGPIPE` for itself (`pthread_sigmask`,
   thread-scoped) instead of relying on tests installing process-wide `SIG_IGN`;
