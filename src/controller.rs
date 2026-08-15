@@ -104,6 +104,31 @@ fn write_runtime_config(path: &Path, yaml: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Latch the retry state after a permanent (config/device) failure, and
+/// re-sample the config fingerprint so the *failing* config becomes the new
+/// baseline for change detection.
+///
+/// Without this, `last_fingerprint` would remain whatever it was the last
+/// time a change was detected (which may be long before the failure — e.g.
+/// the fingerprint recorded at controller startup). If the active config is
+/// then switched away from the failing one and back to it (or to any other
+/// config whose fingerprint happens to match that stale value), the
+/// latch-clearing checks in the main loop would see no change and the
+/// permanent latch would never clear — leaving CamillaDSP stuck offline even
+/// after the user reselects a config that is known to work.
+///
+/// By re-sampling here, the latch is guaranteed to clear as soon as
+/// `adapt_path` differs from the config that just failed, regardless of what
+/// it looked like before the failure.
+fn latch_on_config_error(
+    retry: &mut RetryState,
+    last_fingerprint: &mut ConfigFingerprint,
+    adapt_path: &PathBuf,
+) {
+    *last_fingerprint = ConfigFingerprint::sample(adapt_path);
+    retry.latch();
+}
+
 /// Run the ioplug controller loop (Gate 8 + M9 recovery).
 ///
 /// For each stream:
@@ -271,7 +296,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                             runtime_config_path.display()
                         ),
                     );
-                    retry.latch();
+                    latch_on_config_error(&mut retry, &mut last_fingerprint, &adapt_path);
                     backend.send_error_to_plugin(ErrorCode::Config);
                     continue;
                 }
@@ -283,7 +308,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                     format!("ioplug: config adaptation failed: {err}"),
                 );
                 // Permanent latch — do not retry until the config changes.
-                retry.latch();
+                latch_on_config_error(&mut retry, &mut last_fingerprint, &adapt_path);
                 backend.send_error_to_plugin(ErrorCode::Config);
                 continue;
             }
@@ -324,7 +349,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             // Latch (not transient retry): CamillaDSP rejected the config or
             // could not open the playback device.  Retrying with the same
             // config will always fail.
-            retry.latch();
+            latch_on_config_error(&mut retry, &mut last_fingerprint, &adapt_path);
             supervisor.stop_stream();
             backend.send_error_to_plugin(ErrorCode::Config);
             continue;
@@ -475,6 +500,123 @@ mod tests {
             fs::read_to_string(&runtime).unwrap(),
             "devices:\n  samplerate: 96000\n"
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Atomically retarget a symlink, mirroring how CamillaGUI switches the
+    /// active config (`ln -sfn` via a temp symlink + rename in production).
+    fn retarget_symlink(link: &Path, target: &Path) {
+        let tmp = link.with_extension("tmp-retarget");
+        let _ = fs::remove_file(&tmp);
+        symlink(target, &tmp).unwrap();
+        fs::rename(&tmp, link).unwrap();
+    }
+
+    // ── latch_on_config_error / fingerprint interaction ────────────────────
+
+    #[test]
+    fn latch_on_config_error_latches_retry_state() {
+        let dir = test_dir("latch-basic");
+        let config = dir.join("MyDSP.yml");
+        fs::write(&config, "devices:\n  samplerate: 44100\n").unwrap();
+
+        let mut retry = RetryState::new();
+        let mut last_fingerprint = ConfigFingerprint::absent();
+
+        latch_on_config_error(&mut retry, &mut last_fingerprint, &config);
+
+        assert!(retry.latch_until_change);
+        assert!(!retry.should_attempt());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn latch_on_config_error_captures_the_failing_configs_fingerprint() {
+        let dir = test_dir("latch-fingerprint");
+        let config = dir.join("Bad.yml");
+        fs::write(&config, "devices:\n  samplerate: 44100\n").unwrap();
+
+        let mut retry = RetryState::new();
+        // Simulate a stale fingerprint left over from controller startup,
+        // sampled long before the failing config became active.
+        let mut last_fingerprint = ConfigFingerprint::absent();
+
+        latch_on_config_error(&mut retry, &mut last_fingerprint, &config);
+
+        // The fingerprint must now reflect the config that just failed, not
+        // the stale startup value.
+        assert_eq!(last_fingerprint, ConfigFingerprint::sample(&config));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn latch_persists_while_the_failing_config_remains_active() {
+        let dir = test_dir("latch-persists");
+        let bad = dir.join("Bad.yml");
+        let active = dir.join("active_config.yml");
+        fs::write(&bad, "devices:\n  samplerate: 44100\n").unwrap();
+        symlink(&bad, &active).unwrap();
+
+        let mut retry = RetryState::new();
+        let mut last_fingerprint = ConfigFingerprint::sample(&active);
+
+        latch_on_config_error(&mut retry, &mut last_fingerprint, &active);
+        assert!(!retry.should_attempt());
+
+        // No config switch happened: the fingerprint must still match, so a
+        // latch-clearing check would (correctly) leave the latch in place.
+        let new_fp = ConfigFingerprint::sample(&active);
+        assert_eq!(new_fp, last_fingerprint);
+        assert!(!retry.should_attempt());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reselecting_a_previously_working_config_clears_the_latch() {
+        // Regression test for the "CamillaGUI status stuck offline" bug:
+        // switching to a bad config latches the retry state, and switching
+        // back to a config that worked earlier (e.g. right after reboot)
+        // must clear the latch rather than being mistaken for "no change"
+        // against a stale fingerprint.
+        let dir = test_dir("latch-reselect");
+        let good = dir.join("Good.yml");
+        let bad = dir.join("Bad.yml");
+        let active = dir.join("active_config.yml");
+        fs::write(&good, "devices:\n  samplerate: 44100\n").unwrap();
+        fs::write(&bad, "devices:\n  samplerate: 48000\n").unwrap();
+        symlink(&good, &active).unwrap();
+
+        // Controller startup: baseline fingerprint captured once, well before
+        // any failure occurs.
+        let mut retry = RetryState::new();
+        let mut last_fingerprint = ConfigFingerprint::sample(&active);
+
+        // CamillaGUI switches to the bad config; the switch attempt fails
+        // (adapt/startup error) and the controller latches.
+        retarget_symlink(&active, &bad);
+        latch_on_config_error(&mut retry, &mut last_fingerprint, &active);
+        assert!(!retry.should_attempt(), "latch must be set after failure");
+
+        // User reselects the config that worked after reboot.
+        retarget_symlink(&active, &good);
+
+        // The main-loop latch-clearing check: sample the current fingerprint
+        // and compare against the one captured at latch time.
+        let new_fp = ConfigFingerprint::sample(&active);
+        assert_ne!(
+            new_fp, last_fingerprint,
+            "reselecting a working config must be detected as a change"
+        );
+
+        // Apply the same reset the controller loop performs on a detected
+        // change, and confirm the latch is cleared.
+        last_fingerprint = new_fp;
+        retry.reset();
+        assert!(retry.should_attempt(), "latch must clear once cleared");
+        assert!(!retry.latch_until_change);
+        assert_eq!(last_fingerprint, ConfigFingerprint::sample(&active));
 
         fs::remove_dir_all(dir).unwrap();
     }
