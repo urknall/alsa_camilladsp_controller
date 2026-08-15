@@ -220,6 +220,17 @@ mod tests {
     use super::*;
     use std::os::unix::io::AsRawFd;
 
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        predicate()
+    }
+
     #[test]
     fn create_cloexec_pipe_returns_valid_fds() {
         let (read_fd, write_fd) = create_cloexec_pipe().unwrap();
@@ -272,6 +283,31 @@ mod tests {
         let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         proc.shutdown(Duration::from_secs(5)).unwrap();
         // If shutdown returned Ok, the child exited cleanly.
+    }
+
+    #[test]
+    fn release_write_end_allows_plugin_copy_closure_to_end_process() {
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        let plugin_fd = unsafe { libc::dup(proc.write_fd_raw()) };
+        assert!(plugin_fd >= 0);
+
+        proc.release_write_end();
+        assert_eq!(proc.write_fd_raw(), -1);
+
+        let n = unsafe { libc::write(plugin_fd, b"x".as_ptr() as *const libc::c_void, 1) };
+        assert_eq!(n, 1);
+        assert!(proc.is_running());
+
+        unsafe {
+            libc::close(plugin_fd);
+        }
+
+        assert!(
+            wait_until(Duration::from_secs(1), || !proc.is_running()),
+            "process should exit after the transferred write-end is closed"
+        );
+
+        proc.shutdown(Duration::from_secs(1)).unwrap();
     }
 
     #[test]
