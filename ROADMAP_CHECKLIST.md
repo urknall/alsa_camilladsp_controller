@@ -28,6 +28,59 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > matching `Cargo.toml`'s existing `license = "MIT"`) and refreshed
 > `Cargo.toml`'s `description` to name both backends instead of only
 > `snd-aloop`.
+>
+> **Second honesty pass (2026-08-15, "verify against real code, not the
+> checklist"):** a follow-up review was re-run against current source with a
+> full toolchain available (cargo/rustc/clippy, gcc/clang/cmake/ctest, and a
+> downloaded real CamillaDSP 4.1.3 release binary) rather than trusting this
+> file's prior notes. Most of the re-raised correctness claims (SIGPIPE
+> handling, STOP ordering, drain timeout, pause/resume sync, `sw_params`
+> /`avail_min`, DAC-open error classification, benchmark WebSocket command
+> names, BlueALSA tracking currency, upstream-tracking automation, LICENSE/
+> `Cargo.toml` hygiene) were confirmed **already fixed** by reading the
+> current code directly. Two genuinely new, previously-unverified bugs were
+> found by validating generated configs against the real CamillaDSP binary
+> (something no prior pass had done) and fixed:
+> 1. `build_runtime_capture()` in `src/core/adaptation.rs` wrote the
+>    `Alsa`-schema format name `S24_4_LE` into the `ioplug` backend's
+>    generic `Stdin` capture block. CamillaDSP 4.1.3 uses two different
+>    format enums depending on device type — `Alsa` devices accept
+>    `S24_4_LE` but reject `S24_4_RJ_LE`/`S24_4_LJ_LE`, while generic
+>    devices (`Stdin`, `File`, ...) accept `S24_4_RJ_LE`/`S24_4_LJ_LE` but
+>    reject `S24_4_LE` — confirmed with `camilladsp --check` against real
+>    4.1.3. Every ioplug stream using a 24-bit-in-32-bit container format
+>    would have been rejected by CamillaDSP at startup. Fixed by adding
+>    `alsa_only_format_to_generic()` (`src/camilladsp/alsa_capture.rs`),
+>    applied only to the ioplug `Stdin` capture path.
+> 2. The `portable_base_config()` Rust test fixture used the obsolete
+>    CamillaDSP pipeline field `channel: 0` (singular) instead of the v4.1.3
+>    schema's `channels: [0]` (list) — only caught because this pass
+>    actually validated the fixture against the real binary instead of only
+>    round-tripping it through serde.
+>
+> Two `#[ignore]`-gated tests were added, opt-in via
+> `PICOREDSP_TEST_CAMILLADSP_BIN`, that validate generated configs and
+> WebSocket queries against a real CamillaDSP binary and would have caught
+> both regressions:
+> `core::adaptation::tests::ioplug_adapted_config_validates_against_real_camilladsp_for_all_formats`
+> and
+> `benchmark::collectors::tests::live_collectors_work_against_real_camilladsp`.
+> CI now runs these in two new `build.yml` jobs: `camilladsp_compat_pinned`
+> (blocking, tests the exact pinned `CDSP_VERSION`) and
+> `camilladsp_compat_latest` (non-blocking, tests upstream's current
+> `latest` release as an early-warning signal ahead of intentionally
+> bumping the pin).
+>
+> Claims from the same review that remain genuinely open (not addressed in
+> this pass, scoped out as separate, higher-risk mechanical refactors rather
+> than attempted under time pressure): `src/core/persistence.rs` is still a
+> placeholder (statefile logic remains in `core::adaptation`), and
+> `state_machine.rs` (1840 lines), `core/adaptation.rs` (1613 lines) and
+> `backend/ioplug.rs` (1022 lines) have not been split into submodules the
+> way `benchmark.rs` was in Step 9. `test_audio_integrity.c` still exercises
+> the transport path directly rather than through a live CamillaDSP process
+> end-to-end (the M11/Phase-13 critique). These are recorded here rather
+> than silently dropped.
 
 ---
 
@@ -339,6 +392,10 @@ CI requirements:
   - [x] Rust benchmark runner covers both `aloop` and `ioplug` control-path microbenchmarks
   - [x] Benchmark report generator creates automated Gate 12 coverage and comparison reports
   - [x] CI jobs `ioplug_bench` and `rust_bench` build and run benchmarks on every push
+  - [x] CI jobs `camilladsp_compat_pinned` (blocking) and `camilladsp_compat_latest`
+    (non-blocking) run the live-CamillaDSP `#[ignore]`d tests against the
+    exact pinned `CDSP_VERSION` and against upstream's current `latest`
+    release respectively (added 2026-08-15, second honesty pass)
 - [ ] All metrics measured for both `aloop` and `ioplug`:
   - [x] Playback start latency (auto-collected for aloop via HCTL polling)
   - [ ] 44.1 → 48 kHz transition time (requires manual rate-switch test)
@@ -393,6 +450,12 @@ Sequence: correctness → stability → measurement → latency optimisation
 > documented in `CONFIG_MIGRATION.md`. Verified by the
 > `same_portable_baseline_adapts_for_aloop_and_ioplug` test, which asserts a
 > single baseline config adapts correctly for both backends.
+>
+> **2026-08-15 fix:** the ioplug capture section was writing the
+> `Alsa`-schema format name (`S24_4_LE`) into the generic `Stdin` capture
+> block, which real CamillaDSP 4.1.3 rejects (see honesty-pass note above).
+> Fixed via `alsa_only_format_to_generic()`; now covered by a live-binary
+> test (`ioplug_adapted_config_validates_against_real_camilladsp_for_all_formats`).
 
 - [x] Controller normalises any existing baseline config into the correct runtime config for the active backend
 - [x] Single `MySpeakers.yml` works with both backends (no separate copies needed)

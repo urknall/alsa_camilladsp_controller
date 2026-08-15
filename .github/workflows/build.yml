@@ -135,6 +135,108 @@ jobs:
       - name: Run unit tests
         run: cargo test --locked
 
+  # ─── CamillaDSP live compatibility (pinned release) ──────────────────────
+  #
+  # Runs the #[ignore]-gated live-CamillaDSP tests (Rust `--check` config
+  # validation + real WebSocket queries) against the exact CamillaDSP binary
+  # this project pins in install_picoredsp.sh. These tests exercise the
+  # actual upstream binary rather than mocks, so they catch config-schema or
+  # WebSocket-API drift that unit tests alone cannot (see
+  # `docs/CAMILLADSP_TRACKING.md`). This job is blocking: a pinned-version
+  # regression must fail CI.
+  camilladsp_compat_pinned:
+    name: CamillaDSP live compat (pinned)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cdsp-compat-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cdsp-compat-
+
+      - name: Download pinned CamillaDSP release
+        run: |
+          set -euo pipefail
+          cdsp_version=$(grep -m1 '^CDSP_VERSION=' install_picoredsp.sh | cut -d'"' -f2)
+          echo "Pinned CamillaDSP version: ${cdsp_version}"
+          mkdir -p /tmp/camilladsp
+          curl -fsSL -o /tmp/camilladsp/camilladsp.tar.gz \
+            "https://github.com/HEnquist/camilladsp/releases/download/${cdsp_version}/camilladsp-linux-amd64.tar.gz"
+          tar -xzf /tmp/camilladsp/camilladsp.tar.gz -C /tmp/camilladsp
+          chmod +x /tmp/camilladsp/camilladsp
+          /tmp/camilladsp/camilladsp --version
+
+      - name: Run live CamillaDSP compatibility tests
+        env:
+          PICOREDSP_TEST_CAMILLADSP_BIN: /tmp/camilladsp/camilladsp
+        run: cargo test --locked -- --ignored --test-threads=1
+
+  # ─── CamillaDSP live compatibility (latest upstream release) ────────────
+  #
+  # Same tests, but against whatever CamillaDSP currently publishes as
+  # "latest" — not the pinned version. This is a non-blocking early-warning
+  # signal for upstream API/schema drift ahead of intentionally bumping
+  # CDSP_VERSION; see docs/CAMILLADSP_TRACKING.md and Phase 20a of
+  # ROADMAP_CHECKLIST.md. Never gates the build.
+  camilladsp_compat_latest:
+    name: CamillaDSP live compat (latest upstream, non-blocking)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ALSA development headers
+        run: sudo apt-get install -y libasound2-dev
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cdsp-compat-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cdsp-compat-
+
+      - name: Download latest CamillaDSP release
+        run: |
+          set -euo pipefail
+          latest_tag=$(curl -fsSL https://api.github.com/repos/HEnquist/camilladsp/releases/latest \
+            | grep -m1 '"tag_name"' | cut -d'"' -f4)
+          echo "Latest upstream CamillaDSP version: ${latest_tag}"
+          mkdir -p /tmp/camilladsp-latest
+          curl -fsSL -o /tmp/camilladsp-latest/camilladsp.tar.gz \
+            "https://github.com/HEnquist/camilladsp/releases/download/${latest_tag}/camilladsp-linux-amd64.tar.gz"
+          tar -xzf /tmp/camilladsp-latest/camilladsp.tar.gz -C /tmp/camilladsp-latest
+          chmod +x /tmp/camilladsp-latest/camilladsp
+          /tmp/camilladsp-latest/camilladsp --version
+
+      - name: Run live CamillaDSP compatibility tests (latest)
+        env:
+          PICOREDSP_TEST_CAMILLADSP_BIN: /tmp/camilladsp-latest/camilladsp
+        run: cargo test --locked -- --ignored --test-threads=1
+
   # ─── Installer shell syntax checks ────────────────────────────────────────
   installer_shell_syntax:
     name: Installer shell syntax
@@ -404,7 +506,7 @@ jobs:
   build:
     name: Build (${{ matrix.binary_suffix }})
     runs-on: ubuntu-24.04
-    needs: [fmt, clippy, msrv, test, installer_shell_syntax, native_c_tests, asan, ubsan, tsan, clang_tidy]
+    needs: [fmt, clippy, msrv, test, camilladsp_compat_pinned, installer_shell_syntax, native_c_tests, asan, ubsan, tsan, clang_tidy]
     permissions:
       contents: read
 
