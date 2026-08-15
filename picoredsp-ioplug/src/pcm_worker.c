@@ -135,3 +135,26 @@ size_t pcdsp_drain_period_null_sink(pcdsp_ringbuffer_t *rb,
 
     return drained;
 }
+
+/* -----------------------------------------------------------------------
+ * pcdsp_wait_pause_ack
+ * ---------------------------------------------------------------------- */
+
+int pcdsp_wait_pause_ack(pthread_mutex_t      *mutex,
+                          pthread_cond_t       *cond,
+                          const bool           *ack,
+                          const _Atomic(bool)  *running,
+                          const struct timespec *deadline)
+{
+    while (!(*ack) &&
+           atomic_load_explicit(running, memory_order_acquire)) {
+        int wr = pthread_cond_timedwait(cond, mutex, deadline);
+        if (wr == ETIMEDOUT)
+            break;
+    }
+
+    if (!(*ack) && atomic_load_explicit(running, memory_order_acquire))
+        return -ETIMEDOUT;
+
+    return 0;
+}

@@ -735,9 +735,12 @@ static int pcdsp_pause(snd_pcm_ioplug_t *io, int enable)
 
     /* Pause: request the worker to park, then block until it has actually
      * acknowledged the pause (reached a safe point, not mid-write) or has
-     * stopped running — so pause() cannot return while a write is still
-     * in flight. Bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS in case the worker
-     * is wedged for an unrelated reason. */
+     * stopped running — so pause() cannot return successfully while a
+     * write is still in flight. Bounded by PCDSP_PAUSE_ACK_TIMEOUT_NS in
+     * case the worker is wedged for an unrelated reason; if the deadline
+     * is reached without an acknowledgement while the worker is still
+     * running, the "no write in flight" invariant could not be confirmed,
+     * so this returns -ETIMEDOUT rather than reporting success. */
     pthread_mutex_lock(&pcdsp->pause_mutex);
     atomic_store_explicit(&pcdsp->paused, true, memory_order_release);
 
@@ -750,12 +753,17 @@ static int pcdsp_pause(snd_pcm_ioplug_t *io, int enable)
         deadline.tv_sec  += 1;
     }
 
-    while (!pcdsp->worker_paused_ack &&
-           atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
-        int wr = pthread_cond_timedwait(&pcdsp->pause_cond, &pcdsp->pause_mutex,
-                                         &deadline);
-        if (wr == ETIMEDOUT)
-            break;
+    int wait_rc = pcdsp_wait_pause_ack(&pcdsp->pause_mutex, &pcdsp->pause_cond,
+                                        &pcdsp->worker_paused_ack,
+                                        &pcdsp->worker_running, &deadline);
+    if (wait_rc != 0) {
+        /* Acknowledgement not confirmed within the deadline: retract the
+         * pause request (under the same lock, so this cannot race the
+         * worker's own ack) so the worker does not park later for a pause
+         * the caller was just told had failed. */
+        atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
+        pthread_mutex_unlock(&pcdsp->pause_mutex);
+        return wait_rc;
     }
     pthread_mutex_unlock(&pcdsp->pause_mutex);
 
