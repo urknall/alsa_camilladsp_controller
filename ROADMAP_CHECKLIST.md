@@ -343,6 +343,20 @@ Sequence: correctness → stability → measurement → latency optimisation
   - [ ] MEDIUM: Linux ALSA, BlueALSA reference changes
   - [ ] LOW: unrelated BlueALSA Bluetooth functionality
 
+## Phase 20a — CamillaDSP upstream monitoring
+
+- [ ] Create `docs/CAMILLADSP_TRACKING.md` (or `docs/camilladsp-upstream.yml`)
+- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
+
+## Phase 20b — pycamilladsp upstream monitoring
+
+- [ ] Create `docs/PYCAMILLADSP_TRACKING.md` (or `docs/pycamilladsp-upstream.yml`)
+- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant pycamilladsp changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/pycamilladsp`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
+
 ---
 
 ## Gate 14 — Experimental release

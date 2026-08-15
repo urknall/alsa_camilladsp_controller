@@ -1285,6 +1285,133 @@ A new alsa-lib release should trigger the plugin test suite even if no source ch
 
 ---
 
+## 24a. Phase 20a — Monitor CamillaDSP upstream
+
+CamillaDSP is a direct runtime dependency: we spawn it, control it via websocket, and depend on its config
+schema, websocket protocol, and process lifecycle semantics.
+
+Create:
+
+```text
+docs/CAMILLADSP_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/camilladsp-upstream.yml
+```
+
+containing:
+
+```text
+repository          https://github.com/HEnquist/camilladsp
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket API (command names, response format, state machine)
+config file schema (pipeline, filters, devices, resampler)
+process lifecycle (startup, shutdown, error codes, exit behaviour)
+stdin/pipe audio transport
+rate/format negotiation
+capture/playback device handling
+volume / loudness commands
+signal path (capture → processing → playback)
+breaking changes in any of the above
+```
+
+Ignore changes that are purely internal optimisations with no externally observable effect.
+
+Preferred process — identical to BlueALSA monitoring:
+
+```text
+CamillaDSP release / commit
+      ↓
+CI notices tracked areas changed
+      ↓
+GitHub issue (label: upstream/camilladsp)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update websocket client / config schema / lifecycle handling
+reviewed  + add or update regression test
+```
+
+---
+
+## 24b. Phase 20b — Monitor pycamilladsp upstream
+
+pycamilladsp is the official Python websocket client for CamillaDSP.
+It defines the authoritative command/response API that we re-implement in Rust.
+
+Create:
+
+```text
+docs/PYCAMILLADSP_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/pycamilladsp-upstream.yml
+```
+
+containing:
+
+```text
+repository          https://github.com/HEnquist/pycamilladsp
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket command names and arguments
+response parsing (field names, types, error codes)
+state machine transitions (Idle → Running → Paused → …)
+new commands or deprecations
+volume / loudness API
+config load / reload / validate commands
+GetConfig / SetConfig schema
+any breaking change in the client ↔ server protocol
+```
+
+Ignore changes that are purely documentation or example scripts with no protocol implications.
+
+Preferred process:
+
+```text
+pycamilladsp release / commit
+      ↓
+CI notices relevant API change
+      ↓
+GitHub issue (label: upstream/pycamilladsp)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update our Rust websocket client
+reviewed  + add or update protocol test
+```
+
+---
+
 ## 25. Phase 21 — Experimental release
 
 First public ioplug release:
