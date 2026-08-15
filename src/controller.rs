@@ -786,9 +786,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                                     }
                                 }
                             }
-                            Ok(Some(serde_json::Value::String(ref state)))
-                                if state != "Error" =>
-                            {
+                            Ok(Some(serde_json::Value::String(ref state))) if state != "Error" => {
                                 // State recovered (e.g. Running/Idle after a heal).
                                 state_error_healed = false;
                             }
