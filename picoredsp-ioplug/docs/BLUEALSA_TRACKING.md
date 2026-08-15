@@ -16,11 +16,23 @@ importing any Bluetooth-specific code.
 
 | Field                  | Value                                                   |
 |------------------------|---------------------------------------------------------|
-| Repository             | <https://github.com/Arkq/bluez-alsa>                    |
-| Tracked source files   | `src/bluealsa-pcm.c`, `src/ringbuf.c`, `src/ringbuf.h` |
-| Last reviewed commit   | _(not yet reviewed — initial tracking entry)_           |
-| Last review date       | _(not yet reviewed)_                                    |
-| Fork point commit      | _(original `alsa_cdsp` fork point not recorded)_        |
+| Repository             | <https://github.com/arkq/bluez-alsa>                    |
+| Tracked source files   | `src/asound/bluealsa-pcm.c`, `src/shared/rt.h`          |
+| Last reviewed commit   | [`84ad90d`](https://github.com/arkq/bluez-alsa/commit/84ad90d9cb3812a062521b876beb34b294a7066c) — "Use alsa-lib logging for ALSA plugins" |
+| Last review date       | 2026-08-15                                              |
+| Fork point commit      | _(no `alsa_cdsp` code was ever imported into this project; piCoreDSP's ioplug was written from scratch against ALSA's public `pcm_ioplug.h` API, using BlueALSA only as a design reference — see Findings below)_ |
+
+> **Note (2026-08 review):** the tracked path in earlier drafts of this
+> document (`src/bluealsa-pcm.c`, plus a separate `src/ringbuf.c` /
+> `src/ringbuf.h`) reflected the pre-rename BlueALSA source layout and an
+> assumption that BlueALSA implements its ring buffer in a dedicated file.
+> Neither is true of the current upstream: the ALSA PCM plugin now lives at
+> `src/asound/bluealsa-pcm.c`, and BlueALSA does **not** use a separate
+> lock-free ring buffer module — the "ring buffer" is a single `malloc`'d
+> linear buffer (`pcm->io_hw_buffer`) whose `hw_ptr`/`appl_ptr` bookkeeping is
+> handled by the ioplug's boundary-aware pointer arithmetic
+> (`snd_pcm_ioplug_hw_avail()`), not by a custom atomics-based ring buffer
+> implementation. The topic notes below have been corrected accordingly.
 
 ---
 
@@ -100,106 +112,202 @@ The job should be idempotent (does not re-open already-reviewed issues).
 
 | Date | BlueALSA commit | Topic | Decision | Notes |
 |------|-----------------|-------|----------|-------|
-| _(initial entry)_ | — | — | Initial tracking document created | No review performed yet |
+| 2026-08-15 | [`84ad90d`](https://github.com/arkq/bluez-alsa/commit/84ad90d9cb3812a062521b876beb34b294a7066c) | Full re-read of `bluealsa-pcm.c` against all tracked topics | Reviewed, no port needed | See "Findings from 2026-08 review" below. Confirms piCoreDSP's design choices are compatible in spirit; corrects several stale assumptions from the initial (pre-review) design-intent notes. |
 
 ---
 
-## Findings from Initial Engineering Review
+## Findings from 2026-08 review
 
-The following learnings were captured during the initial piCoreDSP ioplug
-design phase (Gate 4 / M4), based on public BlueALSA documentation and the
-design intent described in the piCoreDSP roadmap.
+The notes below replace the earlier "design intent" placeholders with an
+actual reading of `src/asound/bluealsa-pcm.c` at commit `84ad90d`. Where the
+real upstream diverges from what piCoreDSP's ioplug does, that is called out
+explicitly — divergence is expected and acceptable, since piCoreDSP is not a
+BlueALSA fork and has different requirements (single local CamillaDSP process
+via a pipe, not a Bluetooth transport via D-Bus/FIFO).
 
-### C11 atomics
+### C11 atomics usage
 
-- Use `_Atomic(uint64_t)` for ring buffer `write_pos` / `read_pos`.
-- Producer uses `memory_order_release` on `write_pos` store.
-- Consumer uses `memory_order_acquire` on `write_pos` load.
-- Consumer uses `memory_order_release` on `read_pos` store.
-- Producer uses `memory_order_acquire` on `read_pos` load.
-- This guarantees the data written before `write_pos` is updated is visible
-  to the consumer after it reads `write_pos`.
+- BlueALSA marks the shared cursors as C11 atomics on the `bluealsa_pcm`
+  struct: `_Atomic snd_pcm_sframes_t io_hw_ptr`, `_Atomic snd_pcm_uframes_t
+  io_hw_boundary`, `_Atomic snd_pcm_uframes_t io_avail_min`, and
+  `atomic_bool connected` / `atomic_bool fifo_active`.
+- There is **no explicit `memory_order_*` tuning** — all atomic accesses use
+  the default `memory_order_seq_cst` (plain `pcm->io_hw_ptr = x` / reads),
+  relying on the mutex (`pcm->mutex`) for the data that actually needs
+  release/acquire pairing (delay bookkeeping, transfer areas). This is
+  simpler than a hand-rolled lock-free ring buffer and is consistent with
+  piCoreDSP's own approach of using a mutex-guarded shared struct rather than
+  bespoke atomics ordering.
 
 ### Ringbuffer pointer synchronisation
 
-- Positions are **never wrapped** at capacity; wrapping is done only for
-  array index lookup (`pos & mask`).  This avoids ABA problems.
-- Capacity **must be a power of two** to allow cheap masking.
-- 64-bit monotone counters mean overflow is not a practical concern
-  (would take ~13 million years at 192 kHz stereo 32-bit).
+- **Correction:** BlueALSA does not implement a custom lock-free ring buffer
+  with power-of-two masking. `io_hw_ptr` and `appl_ptr` are plain frame
+  counters bounded by `io_hw_boundary` (a multiple of `buffer_size` chosen by
+  alsa-lib), and available space/frames are computed via alsa-lib's own
+  `snd_pcm_ioplug_hw_avail()` helper (with a local fallback implementation
+  for alsa-lib < 1.1.6). Wrap-around uses `% io->buffer_size`, not bitmasking,
+  so `buffer_size` is not required to be a power of two.
+- The actual audio storage (`pcm->io_hw_buffer`) is one `malloc`'d linear
+  buffer sized to `buffer_size * frame_size`, copied into/out of by
+  `snd_pcm_areas_copy_wrap()` under `pcm->mutex`.
 
 ### Period boundary handling
 
-- `hw_ptr` is advanced by exactly `period_size` frames per period consumed.
-- The worker thread drains `period_size` frames at a time and signals
-  the eventfd after each drain.
-- ALSA checks `hw_ptr` progress to determine available space; advancing by
-  partial periods can confuse some applications.
+- The IO thread transfers at most one `period_size` chunk per loop iteration
+  (`frames = min(period_size, avail)`), advances `io_hw_ptr` by exactly the
+  number of frames transferred (with boundary wrap against
+  `io_hw_boundary`), and only then publishes the new `io_hw_ptr` to the
+  ioplug side.
+- It signals `event_fd` (wakes `poll()`) once **after** the transfer when
+  `frames + buffer_size - avail >= io_avail_min`, i.e. respects the
+  application's configured `avail_min`, not just "always signal every
+  period". piCoreDSP's ioplug follows the same avail_min-aware signalling.
 
 ### Buffer boundary handling
 
-- The ring buffer capacity is a multiple of `buffer_size` (currently 8×)
-  to allow the application and the worker to operate without false
-  write-stalls during transient bursts.
-- When alsa-lib exposes `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA`, the plugin must set
-  that flag and return the monotone `hw_ptr` from `pointer()`.
-- Falling back to `hw_ptr % buffer_size` is only for older alsa-lib builds that
-  lack the boundary-workaround flag.
-- Without the boundary-aware path, `hw_ptr == appl_ptr == 0` after wrap-around
-  is indistinguishable from a full buffer, so writable space never reappears
-  even though the worker has drained audio.
+- BlueALSA relies on alsa-lib's `SND_PCM_IOPLUG_FLAG_BOUNDARY_WA` capability
+  when available (monotone `hw_ptr` returned as-is from `pointer()`), and
+  falls back to `hw_ptr % io->buffer_size` only when that flag is not
+  defined by the installed alsa-lib headers. This matches the workaround
+  piCoreDSP's ioplug already implements.
 
 ### `poll`/`revents` behaviour
 
-- One `eventfd` (non-blocking) is used as the poll descriptor.
-- The worker posts `1` to the eventfd after consuming a period.
-- `poll_revents()` consumes the eventfd counter and sets `POLLOUT`
-  (writable / space available) so the application knows it can write more.
-- The eventfd is drained during `prepare()` to avoid stale events from a
-  previous stream.
+- One non-blocking `eventfd` per PCM instance is the sole poll descriptor.
+- The IO thread posts to the eventfd after each period transfer (subject to
+  the `avail_min` gate above) and once more when it detects no work to do
+  (XRUN / drained condition, `avail == 0`), pinning `io_hw_ptr = -1` first.
+- On a fatal IO error, the thread writes a large sentinel value
+  (`0xDEAD0000`) to the eventfd and marks `connected = false` before
+  parking forever — a "poison the poll descriptor" pattern for reporting
+  disconnection asynchronously to the poll-driven application thread.
 
 ### XRUN detection
 
-- An XRUN is detected in `pointer()` when `write_pos - read_pos > buffer_size`.
-- This means the application filled the ring buffer faster than the
-  consumer could drain it.
-- The `pointer()` callback returns `-EPIPE` to signal XRUN to alsa-lib.
+- No explicit `-EPIPE` counter check is done in `pointer()`; instead XRUN is
+  represented implicitly by `snd_pcm_ioplug_hw_avail()` returning `0`, which
+  the IO thread turns into the sentinel `io_hw_ptr = -1`. `pointer()` returns
+  that value straight to alsa-lib's ioplug core, which is what actually
+  translates a stalled `hw_ptr` into `SND_PCM_STATE_XRUN` for the
+  application. There is no separate `write_pos - read_pos > buffer_size`
+  check as earlier notes assumed — that framing came from a generic
+  lock-free ring buffer design, not from this codebase.
 
 ### Pause/resume synchronisation
 
-- `pause(enable=1)`: set `paused` flag atomically; stop the stream timer.
-- `pause(enable=0)`: restart the stream timer from the current position.
-- The worker checks the `paused` flag at the top of its loop and spins
-  with a 1 ms sleep while paused (does not drain the ring buffer).
+- Pausing is a two-party handshake, not a simple boolean flag:
+  - `bluealsa_pause(enable=1)` sets a `BA_PAUSE_STATE_PENDING` bit under
+    `pcm->mutex` and then blocks on `pcm->pause_cond` until the IO thread
+    reports `BA_PAUSE_STATE_PAUSED`, guaranteeing the IO thread is not
+    mid-transfer when the D-Bus `Pause` control command is sent.
+  - The IO thread checks the pending bit (or `io_hw_ptr == -1`) at the top of
+    each loop iteration, signals `pause_cond`, and then blocks in
+    `sigwait()` for a real-time resume signal (`SIGIO`) instead of polling
+    with a sleep.
+  - `bluealsa_pause(enable=0)` sends the D-Bus `Resume` command and then
+    `pthread_kill(pcm->io_thread, SIGIO)` to wake the IO thread, which
+    re-initializes its rate-sync clock (`asrsync_init`) before resuming
+    transfers — important so the resumed stream doesn't think it is behind
+    schedule.
+  - **Divergence:** piCoreDSP has no persistent background IO thread analog
+    to pause — the ioplug's `pause()` callback operates against the
+    stdin-pipe transport to CamillaDSP directly (see `pcm_worker.c`). The
+    handshake pattern (mutex + condvar rendezvous before touching shared
+    transport state, rather than a bare flag check) is the transferable
+    lesson and is already reflected in piCoreDSP's own worker synchronization
+    (Step 3/Step 4 of this project's correctness pass).
 
 ### Drain semantics
 
-- `drain()` blocks until `read_avail == 0` (ring buffer empty).
-- The null-sink prototype implements this with a polling sleep loop.
-- The real data path (Gate 8) will need to ensure the pipe is flushed
-  and CamillaDSP has consumed the tail before returning.
+- Capture drain is a documented **no-op returning success** — an ioplug bug
+  makes it impossible to correctly finish `snd_pcm_drain()` in
+  `SND_PCM_STATE_DRAINING` for capture, so BlueALSA just lets ioplug stop the
+  PCM immediately.
+- Playback drain: ensures the IO thread is running (starts it if necessary),
+  returns `-EAGAIN` immediately for non-blocking drain, and otherwise polls
+  `event_fd` in a loop, recomputing `snd_pcm_ioplug_hw_avail()` each wake-up
+  until the buffer empties, with a **timeout bounded by the number of whole
+  periods remaining** (`100ms + periods_remaining * period_time`) rather than
+  an unbounded wait — a fixed timeout (or infinite poll) would either abort
+  slow-but-healthy drains too early or hang forever on a truly stuck
+  transport. This bounded-timeout pattern matches the fix already applied to
+  piCoreDSP's `pcdsp_drain()` (Step 3), which likewise avoids an
+  open-ended wait.
+- Once the local buffer is empty, BlueALSA additionally sends a D-Bus
+  `Drain` control command so the *far side* (Bluetooth transport) can flush
+  before the ALSA-level state moves to `SETUP`.
 
 ### Thread cancellation
 
-- The worker thread is stopped by setting `worker_running = false` and
-  then posting to the eventfd to wake it from `nanosleep`.
-- The main thread calls `pthread_join` to wait for clean shutdown.
-- No `pthread_cancel` is used — cancellation points are avoided entirely.
+- The IO thread installs a `pthread_cleanup_push` handler and blocks with
+  `sigwait()` rather than sleeping, but the *shutdown* path
+  (`io_thread_cancel()`) still uses `pthread_cancel()` + `pthread_join()`
+  from the main thread — i.e. BlueALSA does rely on POSIX cancellation
+  points for stopping the thread, contrary to the earlier assumption in this
+  document that cancellation is "avoided entirely". All signals are blocked
+  in the IO thread (`sigfillset` + `pthread_sigmask(SIG_SETMASK, ...)`) so
+  the only way `sigwait()` unblocks is a signal explicitly delivered via
+  `pthread_kill()` (`SIGIO`) — this also means `pthread_cancel()` delivery
+  timing is only guaranteed at defined cancellation points (e.g. inside
+  `ppoll`/`read`/`sigwait`), which is consistent with piCoreDSP's own
+  cooperative (flag + wake, not `pthread_cancel`) shutdown for its worker
+  thread.
 
 ### Signal masking
 
-- Worker threads should block `SIGPIPE` (pipe write to a closed fd) and
-  `SIGINT`/`SIGTERM` to ensure clean shutdown is handled in the main thread.
-- To be implemented when the real pipe data path is wired up (Gate 8).
+- `sigfillset()` + `pthread_sigmask(SIG_SETMASK, &sigset, NULL)` blocks
+  *all* signals in the IO thread, explicitly to (a) guarantee `EPIPE` is
+  returned from `write()` instead of raising `SIGPIPE`, and (b) so `SIGIO`
+  (used for resume) is only ever consumed via `sigwait()`, never delivered
+  asynchronously. piCoreDSP's worker (`pcm_worker.c`) similarly blocks
+  `SIGPIPE` per Step 3/Step 4 of the correctness pass; this review confirms
+  blocking the full signal set (not just `SIGPIPE`) in the transport thread
+  is the more robust upstream pattern worth keeping in mind if piCoreDSP
+  adds more signal-driven control paths later.
 
 ### Delay accounting
 
-- `delay()` returns the number of frames currently in the ring buffer
-  (written by the application but not yet consumed by the worker).
-- This is an approximation for the null-sink; the real path will need to
-  account for frames in the pipe and CamillaDSP's internal buffers.
+- `bluealsa_calculate_delay()` combines four components: (1) frames still
+  sitting in the kernel FIFO at the last sampled instant
+  (`delay_pcm_nread`, from `ioctl(FIONREAD)`), adjusted for elapsed wall
+  time since that sample; (2) frames in the local ring buffer not yet
+  consumed by the IO thread; (3) a fixed encode/transport delay reported by
+  the BlueALSA server itself (`ba_pcm.delay`) and any user-supplied
+  `client_delay`; (4) an additional `delay_ex` fudge factor. Time-based
+  extrapolation (rather than re-querying the FIFO on every `delay()` call)
+  avoids a syscall on every `delay()` invocation, which can be called at
+  high frequency by some applications.
+- For capture, delay is *not* time-extrapolated at all — it simply reports
+  `snd_pcm_ioplug_avail()` (frames available to read), because Bluetooth
+  profiles don't expose true source-to-sink latency.
+- piCoreDSP's simpler ring-buffer-occupancy delay is adequate for its
+  single local pipe transport (no encode/BT leg to account for), but the
+  "snapshot + extrapolate rather than re-poll on every call" technique is
+  worth keeping in mind if `delay()` becomes a hot path.
 
 ### alsa-lib compatibility workarounds
 
-- No workarounds identified yet.  To be updated as field testing reveals
-  issues.
+- `BLUEALSA_HW_PARAMS_FIX` (`SND_LIB_VERSION` in `[1.1.4, 1.2.5.1]`) rewrites
+  the negotiated `hw_params` container from scratch to force
+  `buffer_size % period_size == 0`, working around a rate-plugin `avail()`
+  bug in older alsa-lib that could otherwise deadlock applications built on
+  PortAudio.
+  - piCoreDSP declares `rust-version = "1.71"` for the *Rust* toolchain and
+    links against whatever `alsa-lib` the target ships; this specific
+    version range (alsa-lib 1.1.4–1.2.5.1) predates piCoreDSP's supported
+    targets (modern piCorePlayer images ship alsa-lib well past 1.2.5.1), so
+    no equivalent fix is currently required, but the *pattern* — detect a
+    known-bad `SND_LIB_VERSION` range at compile time and patch the
+    negotiated `hw_params` rather than the runtime behaviour — is the
+    reusable takeaway if a similar quirk surfaces for piCoreDSP's supported
+    alsa-lib range.
+  - `enum ba_hwcompat { BA_HWCOMPAT_NONE, BA_HWCOMPAT_BUSY, BA_HWCOMPAT_SILENCE }`
+    is a separate, user-selectable compatibility mode (device busy vs.
+    silence-injection) for applications that misbehave when a Bluetooth
+    transport is momentarily inactive. This is Bluetooth-transport-specific
+    (masking transport gaps) and out of scope for piCoreDSP, which always
+    has an active local pipe to CamillaDSP.
+  - No workaround is needed purely for alsa-lib compatibility as far as
+    piCoreDSP's supported alsa-lib range is concerned; revisit if field
+    testing on older piCorePlayer images (older alsa-lib) surfaces issues.

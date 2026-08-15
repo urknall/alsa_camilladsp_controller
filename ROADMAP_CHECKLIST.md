@@ -11,6 +11,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > parent box were checked off because the underlying work already existed.
 > See inline notes below each affected item, and the correctness-fix plan
 > tracked alongside this checklist for the remediation work in progress.
+> Phase 5 was subsequently re-closed on 2026-08-15 (Step 7 of that plan)
+> after an actual review of current upstream BlueALSA source was performed
+> and documented.
 
 ---
 
@@ -132,27 +135,31 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ## Phase 5 — BlueALSA reference review
 
-> Reopened: `docs/BLUEALSA_TRACKING.md` itself records "last reviewed commit:
-> not yet reviewed" and tracks the pre-rename path `src/bluealsa-pcm.c`
-> (current upstream layout is `src/asound/bluealsa-pcm.c`). The items below
-> capture the *design intent* from the Gate 4 prototyping phase, not an
-> actual review of current BlueALSA source — see Step 7 of the correctness
-> follow-up plan.
+> Closed out 2026-08-15 (Step 7 of the correctness follow-up plan):
+> `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md` now records an actual review
+> of current upstream `src/asound/bluealsa-pcm.c` at commit `84ad90d`
+> (2026-08-15), including the corrected tracked-path layout and a finding
+> that BlueALSA has no separate ring-buffer file (contrary to the earlier
+> "design intent" notes, which assumed one). No `alsa_cdsp` code was ever
+> imported into this project; piCoreDSP's ioplug was written from scratch
+> against ALSA's public `pcm_ioplug.h`, so "vs. original `alsa_cdsp` fork
+> point" is reframed as "vs. current upstream BlueALSA reference" — see the
+> tracking doc for details.
 
-- [ ] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
-- [ ] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
+- [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
+- [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:
   - [x] C11 atomics usage
   - [x] Ringbuffer pointer synchronisation
   - [x] Period boundary handling
   - [x] Buffer boundary handling
   - [x] poll/revents behaviour
   - [x] XRUN detection
-  - [ ] Pause/resume synchronisation
-  - [ ] Drain semantics
+  - [x] Pause/resume synchronisation
+  - [x] Drain semantics
   - [x] Thread cancellation
   - [x] Signal masking
-  - [ ] Delay accounting
-  - [ ] alsa-lib compatibility workarounds
+  - [x] Delay accounting
+  - [x] alsa-lib compatibility workarounds
 - [x] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
 
 ---
