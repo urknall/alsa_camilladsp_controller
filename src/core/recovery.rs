@@ -6,7 +6,7 @@
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 // ─── Retry/backoff state ───────────────────────────────────────────────────
@@ -111,8 +111,8 @@ impl ConfigFingerprint {
     }
 
     /// Sample the current state of `path` (may be a symlink).
-    pub fn sample(path: &PathBuf) -> Self {
-        let target = path.canonicalize().unwrap_or_else(|_| path.clone());
+    pub fn sample(path: &Path) -> Self {
+        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let meta = fs::metadata(path);
         let modified = meta.as_ref().ok().and_then(|m| m.modified().ok());
         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);

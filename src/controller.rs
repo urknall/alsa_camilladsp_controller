@@ -123,7 +123,7 @@ fn write_runtime_config(path: &Path, yaml: &str) -> AppResult<()> {
 fn latch_on_config_error(
     retry: &mut RetryState,
     last_fingerprint: &mut ConfigFingerprint,
-    adapt_path: &PathBuf,
+    adapt_path: &Path,
 ) {
     *last_fingerprint = ConfigFingerprint::sample(adapt_path);
     retry.latch();
