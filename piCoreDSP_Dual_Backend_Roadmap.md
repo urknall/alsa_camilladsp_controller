@@ -1285,6 +1285,200 @@ A new alsa-lib release should trigger the plugin test suite even if no source ch
 
 ---
 
+## 24a. Phase 20a — Monitor CamillaDSP upstream
+
+CamillaDSP is a direct runtime dependency: we spawn it, control it via websocket, and depend on its config
+schema, websocket protocol, and process lifecycle semantics.
+
+Create:
+
+```text
+docs/CAMILLADSP_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/camilladsp-upstream.yml
+```
+
+containing:
+
+```text
+repository          https://github.com/HEnquist/camilladsp
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket API (command names, response format, state machine)
+config file schema (pipeline, filters, devices, resampler)
+process lifecycle (startup, shutdown, error codes, exit behaviour)
+stdin/pipe audio transport
+rate/format negotiation
+capture/playback device handling
+volume / loudness commands
+signal path (capture → processing → playback)
+breaking changes in any of the above
+```
+
+Ignore changes that are purely internal optimisations with no externally observable effect.
+
+Preferred process — identical to BlueALSA monitoring:
+
+```text
+CamillaDSP release / commit
+      ↓
+CI notices tracked areas changed
+      ↓
+GitHub issue (label: upstream/camilladsp)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update websocket client / config schema / lifecycle handling
+reviewed  + add or update regression test
+```
+
+---
+
+## 24b. Phase 20b — Monitor camilladsp-controller upstream
+
+camilladsp-controller is the official Python controller and websocket client for CamillaDSP.
+It defines the authoritative command/response API that we re-implement in Rust.
+
+Create:
+
+```text
+docs/CAMILLADSP_CONTROLLER_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/camilladsp-controller-upstream.yml
+```
+
+containing:
+
+```text
+repository          https://github.com/HEnquist/camilladsp-controller
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket command names and arguments
+response parsing (field names, types, error codes)
+state machine transitions (Idle → Running → Paused → …)
+new commands or deprecations
+volume / loudness API
+config load / reload / validate commands
+GetConfig / SetConfig schema
+any breaking change in the client ↔ server protocol
+```
+
+Ignore changes that are purely documentation or example scripts with no protocol implications.
+
+Preferred process:
+
+```text
+camilladsp-controller release / commit
+      ↓
+CI notices relevant API change
+      ↓
+GitHub issue (label: upstream/camilladsp-controller)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update our Rust websocket client
+reviewed  + add or update protocol test
+```
+
+---
+
+## 24c. Phase 20c — Monitor CamillaDSP GUI upstream
+
+CamillaDSP GUI (camillagui-backend + camillagui) is the reference web front-end for CamillaDSP.
+It is the primary user-facing way to edit configs, manage filters, and monitor the signal path.
+Tracking it matters because:
+
+- it exercises and documents the full websocket + config API surface (often ahead of the official docs)
+- breaking GUI ↔ backend changes are early signals of protocol or schema changes that will also affect us
+- UI conventions for pipeline editing, device selection, and volume control may guide our own config tooling
+
+Create:
+
+```text
+docs/CAMILLAGUI_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/camillagui-upstream.yml
+```
+
+containing:
+
+```text
+repository (backend)    https://github.com/HEnquist/camillagui-backend
+repository (frontend)   https://github.com/HEnquist/camillagui
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket API calls made by the GUI (new commands, changed arguments)
+config schema assumed by the GUI (pipeline structure, filter types, device fields)
+volume / loudness control API
+capture / playback device enumeration
+rate and format handling visible in the UI
+any breaking change that would require a coordinated update to CamillaDSP itself
+```
+
+Ignore purely cosmetic or layout changes with no API or schema implications.
+
+Preferred process:
+
+```text
+camillagui / camillagui-backend release / commit
+      ↓
+CI notices tracked API or schema area changed
+      ↓
+GitHub issue (label: upstream/camillagui)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update our Rust websocket client / config schema handling
+reviewed  + add or update regression test
+```
+
+---
+
 ## 25. Phase 21 — Experimental release
 
 First public ioplug release:

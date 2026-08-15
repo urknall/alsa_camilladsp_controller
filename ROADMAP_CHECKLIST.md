@@ -343,6 +343,27 @@ Sequence: correctness → stability → measurement → latency optimisation
   - [ ] MEDIUM: Linux ALSA, BlueALSA reference changes
   - [ ] LOW: unrelated BlueALSA Bluetooth functionality
 
+## Phase 20a — CamillaDSP upstream monitoring
+
+- [ ] Create `docs/CAMILLADSP_TRACKING.md` (or `docs/camilladsp-upstream.yml`)
+- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
+
+## Phase 20b — camilladsp-controller upstream monitoring
+
+- [ ] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (or `docs/camilladsp-controller-upstream.yml`)
+- [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
+
+## Phase 20c — CamillaDSP GUI upstream monitoring
+
+- [ ] Create `docs/CAMILLAGUI_TRACKING.md` (or `docs/camillagui-upstream.yml`)
+- [ ] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+
 ---
 
 ## Gate 14 — Experimental release
