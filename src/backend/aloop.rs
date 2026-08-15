@@ -206,4 +206,41 @@ mod tests {
         assert_eq!(backend.detector(), StreamDetector::AloopHctl);
         assert_eq!(backend.transport(), AudioTransport::AlsaCapture);
     }
+
+    #[test]
+    fn poll_event_emits_full_started_changed_stopped_chain() {
+        let initial = MockListener::inactive();
+        let listener = MockListener::new(
+            vec![false, false, false],
+            vec![
+                MockListener::active(44_100, "S16_LE", 2),
+                MockListener::active(48_000, "S24_3LE", 2),
+                MockListener::inactive(),
+            ],
+        );
+        let mut backend = AloopBackend::new(listener, initial, WaveFormat::default());
+
+        let started = backend.poll_event(1).unwrap();
+        let changed = backend.poll_event(1).unwrap();
+        let stopped = backend.poll_event(1).unwrap();
+
+        assert_eq!(
+            started,
+            Some(StreamEvent::Started(crate::backend::StreamParams {
+                rate: 44_100,
+                format: "S16_LE".to_owned(),
+                channels: 2,
+            }))
+        );
+        assert_eq!(
+            changed,
+            Some(StreamEvent::Changed(crate::backend::StreamParams {
+                rate: 48_000,
+                format: "S24_3LE".to_owned(),
+                channels: 2,
+            }))
+        );
+        assert_eq!(stopped, Some(StreamEvent::Stopped));
+        assert!(!backend.current_snapshot().active);
+    }
 }

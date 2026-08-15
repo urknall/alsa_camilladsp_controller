@@ -736,6 +736,108 @@ mod tests {
     }
 
     #[test]
+    fn backend_supports_two_full_ioplug_stream_chains_in_sequence() {
+        let path = test_socket_path("two-stream-chains");
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+
+        let first_path = path.clone();
+        let first_client = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&first_path);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            let mut ready = [0u8; 2];
+            client.read_exact(&mut ready).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&ready).unwrap(),
+                PluginMessage::Ready { version: 1 }
+            );
+            client
+                .write_all(&PluginMessage::Stop { version: 1 }.encode())
+                .unwrap();
+        });
+
+        let first_started = loop {
+            if let Some(event) = backend.poll_event(200).unwrap() {
+                break event;
+            }
+        };
+        assert_eq!(
+            first_started,
+            StreamEvent::Started(crate::backend::StreamParams {
+                rate: 48_000,
+                format: "S32_LE".to_owned(),
+                channels: 2,
+            })
+        );
+        backend.send_ready_to_plugin().unwrap();
+        let first_stopped = loop {
+            if let Some(event) = backend.poll_event(200).unwrap() {
+                break event;
+            }
+        };
+        assert_eq!(first_stopped, StreamEvent::Stopped);
+        assert!(!backend.current_snapshot().active);
+        first_client.join().unwrap();
+
+        let second_path = path.clone();
+        let second_client = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&second_path);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 96_000,
+                        format: 2,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            let mut ready = [0u8; 2];
+            client.read_exact(&mut ready).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&ready).unwrap(),
+                PluginMessage::Ready { version: 1 }
+            );
+            drop(client);
+        });
+
+        let second_started = loop {
+            if let Some(event) = backend.poll_event(200).unwrap() {
+                break event;
+            }
+        };
+        assert_eq!(
+            second_started,
+            StreamEvent::Started(crate::backend::StreamParams {
+                rate: 96_000,
+                format: "S16_LE".to_owned(),
+                channels: 2,
+            })
+        );
+        backend.send_ready_to_plugin().unwrap();
+        let second_stopped = loop {
+            if let Some(event) = backend.poll_event(200).unwrap() {
+                break event;
+            }
+        };
+        assert_eq!(second_stopped, StreamEvent::Stopped);
+        assert!(!backend.current_snapshot().active);
+        second_client.join().unwrap();
+    }
+
+    #[test]
     fn send_error_to_plugin_sends_error_and_resets_to_idle() {
         let path = test_socket_path("error");
         let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
