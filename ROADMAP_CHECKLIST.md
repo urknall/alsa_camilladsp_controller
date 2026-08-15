@@ -227,14 +227,29 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    (`test_pcm_worker.c`) captures the worker thread's own signal mask and
 >    proves `SIGUSR1`/`SIGTERM`/`SIGHUP` are blocked in addition to
 >    `SIGPIPE`.
-> 2. **Drain timeout** — `pcdsp_drain()` previously used a flat 5 s
->    constant. Replaced with `pcdsp_drain_timeout_ns()` (`pcm.c`), computing
->    BlueALSA's own formula `100ms + periods_remaining * period_time` from
->    the frames actually queued at drain-entry. New regression test
+> 2. **Drain timeout and error-path state** — `pcdsp_drain()` previously
+>    used a flat 5 s constant. Replaced with `pcdsp_drain_timeout_ns()`
+>    (`pcm.c`), computing BlueALSA's own formula
+>    `100ms + periods_remaining * period_time` from the frames actually
+>    queued at drain-entry. New regression test
 >    `drain_timeout_scales_with_backlog_not_flat_constant`
 >    (`test_pcm_integration.c`) measures wall-clock `-ETIMEDOUT` latency for
 >    a small vs. large period/buffer configuration and asserts the bound
 >    scales with backlog (>2× difference) rather than being fixed.
+>    Additionally, matching BlueALSA's drain() error paths exactly:
+>    alsa-lib's generic `snd_pcm_ioplug_drain()` only auto-drops the stream
+>    when the plugin's `drain()` callback returns `0` (confirmed in
+>    `pcm_ioplug.c`), so a nonzero return (timeout, undrained buffer)
+>    previously left the PCM stuck in `SND_PCM_STATE_DRAINING` with the
+>    worker thread still running. `pcdsp_drain()` now calls
+>    `pcdsp_stop_worker()` and `snd_pcm_ioplug_set_state(io,
+>    SND_PCM_STATE_SETUP)` on those error paths itself, exactly as
+>    `bluealsa_drain()` does. New test
+>    `drain_timeout_stops_worker_and_resets_state_to_setup` proves the PCM
+>    lands in `SND_PCM_STATE_SETUP` (not stuck in `DRAINING`) and that a
+>    subsequent `snd_pcm_prepare()` succeeds. (BlueALSA's `io->nonblock == 2`
+>    signal-abort sentinel was evaluated and deliberately not ported — see
+>    `BLUEALSA_TRACKING.md`'s Drain semantics section for why.)
 >
 > 3. **Delay accounting — evaluated and reverted.** BlueALSA's
 >    snapshot+extrapolate delay technique (`io_thread_update_delay()` +
@@ -277,9 +292,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    `snd_pcm_prepare()` itself returns `-ENODEV` rather than resetting to a
 >    healthy-looking state).
 >
-> Full C suite re-run after all four changes: 7/7 binaries, 0 failures
-> (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 18/18 checks
-> inside `test_pcm_integration` including the four new tests). `cargo test`
+> Full C suite re-run after all changes: 7/7 binaries, 0 failures
+> (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 19/19 checks
+> inside `test_pcm_integration` including all new tests). `cargo test`
 > re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.
 > `BLUEALSA_TRACKING.md`'s verification table and prose sections (Signal
 > masking, Drain semantics, Delay accounting, Device disconnect / connectivity

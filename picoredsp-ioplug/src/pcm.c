@@ -797,10 +797,23 @@ static int pcdsp_drain(snd_pcm_ioplug_t *io)
     int serr = pcdsp_disconnect_on_stream_error(io, pcdsp);
     if (serr != 0)
         return serr;
-    if (timed_out)
-        return -ETIMEDOUT;
-    if (pcdsp_rb_read_avail(&pcdsp->rb) > 0)
-        return -EPIPE;
+    if (timed_out || pcdsp_rb_read_avail(&pcdsp->rb) > 0) {
+        /* Matching BlueALSA's drain() error paths exactly: on timeout (or
+         * poll error) it does not just return an error and leave the PCM
+         * sitting in SND_PCM_STATE_DRAINING — it calls bluealsa_stop() and
+         * sets the state to SND_PCM_STATE_SETUP itself. This matters
+         * because alsa-lib's generic snd_pcm_ioplug_drain() wrapper only
+         * auto-drops the stream when the plugin's drain() callback returns
+         * 0 (confirmed in pcm_ioplug.c: `if (!err && state != SETUP)
+         * snd_pcm_ioplug_drop(pcm)`); when drain() returns a nonzero error,
+         * as it does here, nothing else stops the worker or moves the PCM
+         * out of DRAINING, so without this the worker would keep running
+         * (still trying to write frames CamillaDSP will never read) even
+         * though the application has already been told drain() failed. */
+        pcdsp_stop_worker(pcdsp);
+        snd_pcm_ioplug_set_state(io, SND_PCM_STATE_SETUP);
+        return timed_out ? -ETIMEDOUT : -EPIPE;
+    }
     return 0;
 }
 

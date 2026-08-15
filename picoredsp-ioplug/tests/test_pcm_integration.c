@@ -738,6 +738,64 @@ TEST(drain_times_out_when_camilladsp_stops_reading_pipe)
     unlink(g_sock_path);
 }
 
+TEST(drain_timeout_stops_worker_and_resets_state_to_setup)
+{
+    /*
+     * Regression: matching BlueALSA's drain() error paths exactly —
+     * bluealsa_drain() calls bluealsa_stop(io) and sets
+     * io->state = SND_PCM_STATE_SETUP itself on timeout, rather than
+     * relying on alsa-lib's generic post-drain auto-drop (confirmed via
+     * pcm_ioplug.c: snd_pcm_ioplug_drain() only auto-drops when the
+     * plugin's drain() callback returns 0). Previously pcdsp_drain()
+     * returned -ETIMEDOUT but left the PCM in SND_PCM_STATE_DRAINING with
+     * the worker thread still running (still retrying writes CamillaDSP
+     * will never read). Verify the PCM is left in SND_PCM_STATE_SETUP
+     * (not stuck in DRAINING) immediately after a timed-out drain, and
+     * that the plugin can be started again from that state.
+     */
+    init_sock_path("drain-timeout-state");
+    _Atomic(bool) stop_holding2 = false;
+    server_args_t args2 = {
+        .sock_path         = g_sock_path,
+        .response          = PCDSP_ERR_OK,
+        .hold_pipe_no_read = true,
+        .stop_holding      = &stop_holding2,
+    };
+    pthread_t srv2 = start_mock_server(&args2);
+
+    snd_pcm_t *pcm2 = NULL;
+    CHECK(open_plugin(&pcm2, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm2) == 0);
+    CHECK(snd_pcm_nonblock(pcm2, 1) == 0);
+
+    int16_t frames2[257 * 2] = { 0 };
+    for (int i = 0; i < 64; i++) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm2, frames2, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0 || rc == -EAGAIN);
+    }
+
+    CHECK(snd_pcm_nonblock(pcm2, 0) == 0);
+    int drain_rc2 = snd_pcm_drain(pcm2);
+    CHECK(drain_rc2 == -ETIMEDOUT);
+
+    /* Must not be left stuck in DRAINING: the plugin itself transitions to
+     * SETUP on a timed-out drain, matching BlueALSA exactly. */
+    CHECK(snd_pcm_state(pcm2) == SND_PCM_STATE_SETUP);
+
+    /* The PCM must still be usable afterward: a fresh prepare() should
+     * succeed, proving the worker was actually stopped (not left spinning)
+     * and can be restarted cleanly rather than the instance being wedged. */
+    CHECK(snd_pcm_prepare(pcm2) == 0);
+    CHECK(snd_pcm_state(pcm2) == SND_PCM_STATE_PREPARED);
+
+    atomic_store_explicit(&stop_holding2, true, memory_order_release);
+    snd_pcm_close(pcm2);
+    pthread_join(srv2, NULL);
+    unlink(g_sock_path);
+}
+
 /*
  * Helper for drain_timeout_scales_with_backlog_not_flat_constant: negotiate
  * hw_params with the given period, fill the pipeline, hold the peer's read
@@ -1184,6 +1242,7 @@ int main(void)
 
     /* Drain timeout / pause synchronisation (Step 3) */
     RUN(drain_times_out_when_camilladsp_stops_reading_pipe);
+    RUN(drain_timeout_stops_worker_and_resets_state_to_setup);
     RUN(drain_timeout_scales_with_backlog_not_flat_constant);
     RUN(pause_blocks_until_worker_stops_writing_before_returning);
 
