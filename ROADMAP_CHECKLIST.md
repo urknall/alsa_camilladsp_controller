@@ -357,6 +357,13 @@ Sequence: correctness → stability → measurement → latency optimisation
 - [ ] CI automation detects new relevant pycamilladsp changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/pycamilladsp`; never auto-merges)
 - [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
 
+## Phase 20c — CamillaDSP GUI upstream monitoring
+
+- [ ] Create `docs/CAMILLAGUI_TRACKING.md` (or `docs/camillagui-upstream.yml`)
+- [ ] Record: backend + frontend repository URLs, last reviewed tag/commit, review date, relevant topic categories
+- [ ] CI automation detects new relevant camillagui / camillagui-backend changes (websocket API calls, config schema, volume/device API) and opens a GitHub issue (label: `upstream/camillagui`; never auto-merges)
+- [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / config schema handling + regression test, or mark reviewed
+
 ---
 
 ## Gate 14 — Experimental release

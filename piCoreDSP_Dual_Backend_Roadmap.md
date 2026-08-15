@@ -1412,6 +1412,73 @@ reviewed  + add or update protocol test
 
 ---
 
+## 24c. Phase 20c — Monitor CamillaDSP GUI upstream
+
+CamillaDSP GUI (camillagui-backend + camillagui) is the reference web front-end for CamillaDSP.
+It is the primary user-facing way to edit configs, manage filters, and monitor the signal path.
+Tracking it matters because:
+
+- it exercises and documents the full websocket + config API surface (often ahead of the official docs)
+- breaking GUI ↔ backend changes are early signals of protocol or schema changes that will also affect us
+- UI conventions for pipeline editing, device selection, and volume control may guide our own config tooling
+
+Create:
+
+```text
+docs/CAMILLAGUI_TRACKING.md
+```
+
+or machine-readable:
+
+```text
+docs/camillagui-upstream.yml
+```
+
+containing:
+
+```text
+repository (backend)    https://github.com/HEnquist/camillagui-backend
+repository (frontend)   https://github.com/HEnquist/camillagui
+last reviewed tag
+last reviewed commit
+review date
+relevant topic categories
+```
+
+Track changes concerning:
+
+```text
+websocket API calls made by the GUI (new commands, changed arguments)
+config schema assumed by the GUI (pipeline structure, filter types, device fields)
+volume / loudness control API
+capture / playback device enumeration
+rate and format handling visible in the UI
+any breaking change that would require a coordinated update to CamillaDSP itself
+```
+
+Ignore purely cosmetic or layout changes with no API or schema implications.
+
+Preferred process:
+
+```text
+camillagui / camillagui-backend release / commit
+      ↓
+CI notices tracked API or schema area changed
+      ↓
+GitHub issue (label: upstream/camillagui)
+      ↓
+manual review
+      ↓
+relevant?
+  │        │
+ no       yes
+  │        │
+mark     update our Rust websocket client / config schema handling
+reviewed  + add or update regression test
+```
+
+---
+
 ## 25. Phase 21 — Experimental release
 
 First public ioplug release:
