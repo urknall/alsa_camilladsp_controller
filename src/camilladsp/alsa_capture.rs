@@ -254,6 +254,40 @@ pub fn alsa_format_to_camilladsp(value: i32) -> AppResult<Option<&'static str>> 
     Ok(mapped)
 }
 
+/// Translate a CamillaDSP `Alsa`-device format name to the equivalent name
+/// accepted by CamillaDSP's generic (non-ALSA) device types (`Stdin`,
+/// `File`, `RawFile`, `WavFile`, ...).
+///
+/// CamillaDSP 4.1's `Alsa` device schema and its generic device schema use
+/// *different* enum variant sets for the 24-bit-in-4-byte-container format:
+/// the `Alsa` schema accepts the convenience alias `S24_4_LE` (and rejects
+/// `S24_4_RJ_LE`/`S24_4_LJ_LE`), while every generic device schema accepts
+/// only the underlying binary format names `S24_4_RJ_LE`/`S24_4_LJ_LE` (and
+/// rejects `S24_4_LE`). Verified directly against the CamillaDSP 4.1.3
+/// binary: an `Alsa` block with `format: S24_4_LE` validates, but a `Stdin`
+/// block with the same value is rejected with
+/// `unknown variant \`S24_4_LE\`, expected one of \`S16_LE\`,
+/// \`S24_4_RJ_LE\`, \`S24_4_LJ_LE\`, \`S24_3_LE\`, \`S32_LE\`, \`F32_LE\`,
+/// \`F64_LE\``.
+///
+/// `SND_PCM_FORMAT_S24_LE` is right-justified (the 24-bit sample occupies
+/// the low three bytes of the 32-bit word), so the correct generic-schema
+/// equivalent is `S24_4_RJ_LE`, not `S24_4_LJ_LE`.
+///
+/// This must be applied whenever an ALSA-derived format string produced by
+/// [`alsa_format_to_camilladsp`] is written into a non-`Alsa` device block
+/// (as the ioplug backend's `Stdin` capture device does) — otherwise
+/// CamillaDSP rejects the config for any 24-bit-in-32-bit-container stream.
+/// Every other mapped format name (`S16_LE`, `S24_3_LE`, `S32_LE`, `F32_LE`,
+/// `F64_LE`) is identical between the two schemas and passes through
+/// unchanged.
+pub fn alsa_only_format_to_generic(format: &str) -> &str {
+    match format {
+        "S24_4_LE" => "S24_4_RJ_LE",
+        other => other,
+    }
+}
+
 impl DeviceListener for AlsaLoopbackListener {
     fn wait_for_event(&self, timeout_ms: u32) -> AppResult<bool> {
         AlsaLoopbackListener::wait_for_event(self, timeout_ms)
@@ -284,5 +318,20 @@ mod tests {
                                                                   // Out-of-range values are errors.
         assert!(alsa_format_to_camilladsp(99).is_err());
         assert!(alsa_format_to_camilladsp(-1).is_err());
+    }
+
+    /// Verified against the real CamillaDSP 4.1.3 binary: a `Stdin`/`File`
+    /// device block with `format: S24_4_LE` fails config validation
+    /// (`unknown variant \`S24_4_LE\``), while `format: S24_4_RJ_LE`
+    /// validates. Conversely an `Alsa` device block accepts `S24_4_LE` but
+    /// rejects `S24_4_RJ_LE`. See `alsa_only_format_to_generic`'s doc
+    /// comment for the full schema-mismatch rationale.
+    #[test]
+    fn alsa_only_format_to_generic_translates_only_s24_4_le() {
+        assert_eq!(alsa_only_format_to_generic("S24_4_LE"), "S24_4_RJ_LE");
+        // Every other mapped format name is shared between both schemas.
+        for fmt in ["S16_LE", "S24_3_LE", "S32_LE", "F32_LE", "F64_LE"] {
+            assert_eq!(alsa_only_format_to_generic(fmt), fmt);
+        }
     }
 }

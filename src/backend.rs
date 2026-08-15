@@ -626,7 +626,12 @@ mod cross_backend_tests {
             );
         }
 
-        // All formats must produce the correct format field for ioplug.
+        // All formats must produce the correct format field for ioplug's
+        // `Stdin` capture device. `S24_4_LE` is CamillaDSP's `Alsa`-schema
+        // name and must be translated to the generic-schema name
+        // `S24_4_RJ_LE` for `Stdin` (verified against CamillaDSP 4.1.3 — see
+        // `alsa_only_format_to_generic`); every other format name is shared
+        // between both schemas and passes through unchanged.
         for &fmt in &formats {
             let wave = WaveFormat {
                 sample_rate: Some(48_000),
@@ -636,9 +641,14 @@ mod cross_backend_tests {
             let ioplug =
                 adapt_config_for_backend(&config_path, &wave, RuntimeBackend::Ioplug).unwrap();
             let io: serde_yaml_ng::Value = serde_yaml_ng::from_str(&ioplug).unwrap();
+            let expected = if fmt == "S24_4_LE" {
+                "S24_4_RJ_LE"
+            } else {
+                fmt
+            };
             assert_eq!(
                 io["devices"]["capture"]["format"].as_str(),
-                Some(fmt),
+                Some(expected),
                 "ioplug format mismatch for {fmt}"
             );
         }
