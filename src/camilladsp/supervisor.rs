@@ -231,10 +231,23 @@ mod tests {
         p
     }
 
+    /// Create an executable shell script that blocks reading from stdin
+    /// (ignoring its arguments) and exits cleanly when it receives EOF.
+    /// Use this as the `binary_path` in tests that need `is_running()` to
+    /// return `true` until the write-end of the pipe is closed.
+    fn blocking_binary(name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = std::env::temp_dir().join(format!("picoredsp-sup-block-{name}.sh"));
+        std::fs::write(&p, "#!/bin/sh\nread x\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
     #[test]
     fn supervisor_starts_cat_and_stops_cleanly() {
+        let binary = blocking_binary("start-stop");
         let config = tmp_config("start-stop");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
 
         let write_fd = sup.start_stream().unwrap();
         assert!(write_fd >= 0);
@@ -259,8 +272,9 @@ mod tests {
 
     #[test]
     fn supervisor_release_controller_write_end_allows_plugin_close_to_end_process() {
+        let binary = blocking_binary("release-write-end");
         let config = tmp_config("release-write-end");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
         let fd = sup.start_stream().unwrap();
         let plugin_fd = dup_fd(fd);
 
@@ -300,8 +314,9 @@ mod tests {
 
     #[test]
     fn supervisor_start_stops_previous_process_on_restart() {
+        let binary = blocking_binary("restart");
         let config = tmp_config("restart");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
 
         // First stream.
         sup.start_stream().unwrap();
