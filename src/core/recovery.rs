@@ -5,7 +5,6 @@
 //! implement identical recovery semantics.
 
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -125,11 +124,7 @@ impl ConfigFingerprint {
         let ino = meta.as_ref().map(|m| m.ino()).unwrap_or(0);
         let content_hash = fs::read(path)
             .ok()
-            .map(|bytes| {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                bytes.hash(&mut hasher);
-                hasher.finish()
-            })
+            .map(|bytes| stable_content_hash64(&bytes))
             .unwrap_or(0);
         Self {
             target,
@@ -139,6 +134,18 @@ impl ConfigFingerprint {
             content_hash,
         }
     }
+}
+
+fn stable_content_hash64(bytes: &[u8]) -> u64 {
+    // FNV-1a 64-bit; deterministic across processes/platforms.
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -243,7 +250,14 @@ mod tests {
 
     #[test]
     fn fingerprint_detects_same_size_content_change() {
-        let path = std::env::temp_dir().join("picoredsp-fp-same-size-change.txt");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "picoredsp-fp-same-size-change-{}-{stamp}.txt",
+            std::process::id()
+        ));
         std::fs::write(&path, "aaaa").unwrap();
         let fp1 = ConfigFingerprint::sample(&path);
         std::fs::write(&path, "bbbb").unwrap();
