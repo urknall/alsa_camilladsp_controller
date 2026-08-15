@@ -258,17 +258,49 @@ fn base_runtime_capture(existing_capture: Option<&Mapping>) -> Mapping {
     capture
 }
 
+/// Build the non-runtime-managed portion of a CamillaDSP `Stdin` capture block.
+///
+/// CamillaDSP device variants use strict schemas (`deny_unknown_fields`).  A
+/// baseline config saved by CamillaGUI may contain ALSA-only capture keys such
+/// as `link_mute_control` and `link_volume_control`, even when their values are
+/// `null`.  Merely changing `type: Alsa` to `type: Stdin` therefore produces an
+/// invalid config.  Only carry fields that are valid for the Stdin device; the
+/// runtime-managed `channels` and `format` fields are injected afterwards.
+fn base_stdin_capture(existing_capture: Option<&Mapping>) -> Mapping {
+    let mut capture = Mapping::new();
+    let Some(existing_capture) = existing_capture else {
+        return capture;
+    };
+
+    for (key, value) in existing_capture {
+        let preserve = key
+            .as_str()
+            .map(|name| {
+                matches!(
+                    name,
+                    "labels" | "extra_samples" | "skip_bytes" | "read_bytes"
+                )
+            })
+            .unwrap_or(false);
+        if preserve {
+            capture.insert(key.clone(), value.clone());
+        }
+    }
+
+    capture
+}
+
 fn build_runtime_capture(
     existing_capture: Option<&Mapping>,
     wave: &WaveFormat,
     backend: RuntimeBackend,
 ) -> AppResult<Mapping> {
-    let mut capture = base_runtime_capture(existing_capture);
     let channels = resolve_capture_channels(existing_capture, wave)?;
     let explicit_format = existing_capture_format(existing_capture)?;
 
-    match backend {
+    let capture = match backend {
         RuntimeBackend::Aloop => {
+            let mut capture = base_runtime_capture(existing_capture);
             capture.insert(yaml_key("type"), YamlValue::String("Alsa".to_owned()));
             capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
             capture.insert(
@@ -286,8 +318,10 @@ fn build_runtime_capture(
                     capture.insert(yaml_key("format"), YamlValue::String(format));
                 }
             }
+            capture
         }
         RuntimeBackend::Ioplug => {
+            let mut capture = base_stdin_capture(existing_capture);
             let format = wave
                 .sample_format
                 .clone()
@@ -300,8 +334,9 @@ fn build_runtime_capture(
             capture.insert(yaml_key("type"), YamlValue::String("Stdin".to_owned()));
             capture.insert(yaml_key("channels"), YamlValue::from(channels as u64));
             capture.insert(yaml_key("format"), YamlValue::String(format));
+            capture
         }
-    }
+    };
 
     Ok(capture)
 }
@@ -899,6 +934,51 @@ mod tests {
             parsed["devices"]["capture"]["labels"][0].as_str(),
             Some("Input_L")
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ioplug_adaptation_strips_alsa_only_capture_fields_from_camillagui_config() {
+        let dir = test_dir("ioplug-strips-alsa-only-fields");
+        let config = dir.join("config.yml");
+        fs::write(
+            &config,
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  capture:\n    type: Alsa\n    channels: 2\n    device: hw:Loopback,0,0\n    format: S16_LE\n    labels: null\n    link_mute_control: null\n    link_volume_control: null\n    stop_on_inactive: true\n  playback:\n    type: Alsa\n    channels: 2\n    device: plughw:CARD=sndrpihifiberry,DEV=0\nfilters: {}\nmixers: {}\npipeline: []\nprocessors: {}\n",
+        )
+        .unwrap();
+
+        let wave = WaveFormat {
+            sample_rate: Some(44_100),
+            sample_format: Some("S16_LE".to_owned()),
+            channels: Some(2),
+        };
+
+        let adapted = adapt_config_for_backend(&config, &wave, RuntimeBackend::Ioplug).unwrap();
+        let parsed: YamlValue = serde_yaml_ng::from_str(&adapted).unwrap();
+        let capture = parsed["devices"]["capture"].as_mapping().unwrap();
+
+        assert_eq!(
+            capture.get(yaml_key("type")).and_then(YamlValue::as_str),
+            Some("Stdin")
+        );
+        assert_eq!(
+            capture
+                .get(yaml_key("channels"))
+                .and_then(YamlValue::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            capture
+                .get(yaml_key("format"))
+                .and_then(YamlValue::as_str),
+            Some("S16_LE")
+        );
+        assert!(capture.contains_key(yaml_key("labels")));
+        assert!(!capture.contains_key(yaml_key("device")));
+        assert!(!capture.contains_key(yaml_key("stop_on_inactive")));
+        assert!(!capture.contains_key(yaml_key("link_mute_control")));
+        assert!(!capture.contains_key(yaml_key("link_volume_control")));
 
         fs::remove_dir_all(dir).unwrap();
     }
