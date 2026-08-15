@@ -124,6 +124,19 @@ impl StdinSupervisor {
         self.stop_stream_inner();
     }
 
+    /// Release the controller's duplicate of the active stdin pipe write-end.
+    /// Call this immediately after READY+SCM_RIGHTS has been sent successfully.
+    pub fn release_controller_write_end(&mut self) {
+        if let Some(proc) = &mut self.active {
+            proc.release_write_end();
+            log(
+                LogLevel::Debug,
+                self.log_level,
+                "supervisor: released controller copy of stdin pipe write-end",
+            );
+        }
+    }
+
     /// Check whether the CamillaDSP process is still alive.
     ///
     /// Returns `true` if a process is running, `false` if it has exited or no

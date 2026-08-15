@@ -126,6 +126,18 @@ impl StdinPipeProcess {
             .unwrap_or(-1)
     }
 
+    /// Drop the controller's copy of the pipe write-end after it has been
+    /// successfully transferred to the plugin via SCM_RIGHTS.
+    ///
+    /// `sendmsg(SCM_RIGHTS)` duplicates the file description for the receiver,
+    /// so once that call succeeds the controller no longer needs to keep an
+    /// extra writer open.  Releasing it here means an unexpected plugin close
+    /// produces EOF at CamillaDSP stdin immediately instead of being masked by
+    /// the supervisor's duplicate.
+    pub fn release_write_end(&mut self) {
+        drop(self.write_fd.take());
+    }
+
     /// Gracefully shut down CamillaDSP by closing the write-end of the pipe.
     ///
     /// Dropping our write-end sends EOF to CamillaDSP's stdin (once the

@@ -348,6 +348,12 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
             continue;
         }
 
+        // SCM_RIGHTS has duplicated the write-end into the plugin.  Do not keep
+        // a second writer in the controller: otherwise a lost/closed plugin fd
+        // cannot produce EOF at CamillaDSP stdin and the process remains
+        // misleadingly alive in Stalled state.
+        supervisor.release_controller_write_end();
+
         log(
             LogLevel::Info,
             log_level,
