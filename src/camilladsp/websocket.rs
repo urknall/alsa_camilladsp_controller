@@ -96,12 +96,97 @@ impl Error for WsError {}
 ///
 /// Defining a trait enables mock implementations for unit-testing the
 /// controller state machine without a live CamillaDSP process.
+///
+/// `query` is the single low-level transport primitive: it serializes a
+/// command name and optional argument, sends it, and returns the raw `value`
+/// field from the reply. Every other method on this trait is a typed
+/// wrapper around `query` that owns the wire-level command name, argument
+/// shape, and reply parsing for one CamillaDSP API call — mirroring how
+/// `pycamilladsp`'s `CamillaClient` class encapsulates the WebSocket
+/// protocol behind named Python methods instead of leaking raw command
+/// strings to callers. Application code (the controller, benchmarks, CLI
+/// modes) should call these typed methods; `query` itself is only meant to
+/// be used here and by test mocks.
 pub trait CamillaClient {
     fn query(
         &mut self,
         command: &str,
         argument: Option<JsonValue>,
     ) -> Result<Option<JsonValue>, WsError>;
+
+    /// `GetVersion` — CamillaDSP's version string.
+    fn get_version(&mut self) -> Result<String, WsError> {
+        let value = self.query("GetVersion", None)?;
+        value
+            .as_ref()
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                WsError::Protocol(format!("GetVersion returned non-string value: {value:?}"))
+            })
+    }
+
+    /// `GetState` — the current `ProcessingState`.
+    fn get_state(&mut self) -> Result<ProcessingState, WsError> {
+        parse_processing_state(self.query("GetState", None)?)
+    }
+
+    /// `GetStopReason` — why processing last stopped (or `None`).
+    fn get_stop_reason(&mut self) -> Result<StopReason, WsError> {
+        parse_stop_reason(self.query("GetStopReason", None)?)
+    }
+
+    /// `GetCaptureRate` — the measured capture sample rate, or `0` if
+    /// processing is not currently running.
+    fn get_capture_rate(&mut self) -> Result<u64, WsError> {
+        let value = self.query("GetCaptureRate", None)?;
+        value.as_ref().and_then(JsonValue::as_u64).ok_or_else(|| {
+            WsError::Protocol(format!(
+                "GetCaptureRate returned non-numeric value: {value:?}"
+            ))
+        })
+    }
+
+    /// `GetConfigValue` — read a single value from the active config via a
+    /// [JSON Pointer](https://datatracker.ietf.org/doc/html/rfc6901), e.g.
+    /// `/devices/chunksize`.
+    fn get_config_value(&mut self, pointer: &str) -> Result<Option<JsonValue>, WsError> {
+        self.query(
+            "GetConfigValue",
+            Some(JsonValue::String(pointer.to_owned())),
+        )
+    }
+
+    /// `GetConfigFilePath` — path of the config file CamillaDSP currently has
+    /// loaded, if any.
+    fn get_config_file_path(&mut self) -> Result<Option<String>, WsError> {
+        let value = self.query("GetConfigFilePath", None)?;
+        Ok(value
+            .as_ref()
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned))
+    }
+
+    /// `SetConfig` — load and start processing with `config_yaml`.
+    fn set_config(&mut self, config_yaml: &str) -> Result<(), WsError> {
+        self.query("SetConfig", Some(JsonValue::String(config_yaml.to_owned())))?;
+        Ok(())
+    }
+
+    /// `ValidateConfig` — validate `config_yaml` without applying it.
+    fn validate_config(&mut self, config_yaml: &str) -> Result<(), WsError> {
+        self.query(
+            "ValidateConfig",
+            Some(JsonValue::String(config_yaml.to_owned())),
+        )?;
+        Ok(())
+    }
+
+    /// `Stop` — stop processing.
+    fn stop(&mut self) -> Result<(), WsError> {
+        self.query("Stop", None)?;
+        Ok(())
+    }
 }
 
 // ─── Client ────────────────────────────────────────────────────────────────
@@ -179,7 +264,7 @@ impl CamillaWs {
 
         let mut client = Self { socket };
         // pyCamillaDSP calls GetVersion immediately after connecting.
-        client.query("GetVersion", None)?;
+        client.get_version()?;
         Ok(client)
     }
 
@@ -433,6 +518,168 @@ pub fn parse_stop_reason(value: Option<JsonValue>) -> Result<StopReason, WsError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    /// Minimal scripted [`CamillaClient`] for exercising the typed
+    /// convenience methods (default trait implementations) without a live
+    /// CamillaDSP process.
+    #[derive(Default)]
+    struct MockClient {
+        responses: VecDeque<Result<Option<JsonValue>, WsError>>,
+        commands_sent: Vec<(String, Option<JsonValue>)>,
+    }
+
+    impl MockClient {
+        fn new(responses: Vec<Result<Option<JsonValue>, WsError>>) -> Self {
+            Self {
+                responses: responses.into(),
+                commands_sent: Vec::new(),
+            }
+        }
+    }
+
+    impl CamillaClient for MockClient {
+        fn query(
+            &mut self,
+            command: &str,
+            argument: Option<JsonValue>,
+        ) -> Result<Option<JsonValue>, WsError> {
+            self.commands_sent.push((command.to_owned(), argument));
+            self.responses
+                .pop_front()
+                .unwrap_or_else(|| Err(WsError::Transport("no more responses".to_owned())))
+        }
+    }
+
+    #[test]
+    fn get_version_sends_get_version_and_extracts_string() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::String("3.0.0".to_owned())))]);
+        assert_eq!(client.get_version().unwrap(), "3.0.0");
+        assert_eq!(client.commands_sent, vec![("GetVersion".to_owned(), None)]);
+    }
+
+    #[test]
+    fn get_version_non_string_value_is_protocol_error() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(42)))]);
+        assert!(matches!(client.get_version(), Err(WsError::Protocol(_))));
+    }
+
+    #[test]
+    fn get_state_sends_get_state_and_parses_processing_state() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::String("Running".to_owned())))]);
+        assert_eq!(client.get_state().unwrap(), ProcessingState::Running);
+        assert_eq!(client.commands_sent, vec![("GetState".to_owned(), None)]);
+    }
+
+    #[test]
+    fn get_stop_reason_sends_get_stop_reason_and_parses_reason() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::String("Done".to_owned())))]);
+        assert_eq!(client.get_stop_reason().unwrap(), StopReason::Done);
+        assert_eq!(
+            client.commands_sent,
+            vec![("GetStopReason".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn get_capture_rate_sends_get_capture_rate_and_extracts_u64() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(48_000u64)))]);
+        assert_eq!(client.get_capture_rate().unwrap(), 48_000);
+        assert_eq!(
+            client.commands_sent,
+            vec![("GetCaptureRate".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn get_capture_rate_zero_is_not_an_error() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(0u64)))]);
+        assert_eq!(client.get_capture_rate().unwrap(), 0);
+    }
+
+    #[test]
+    fn get_capture_rate_missing_value_is_protocol_error() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        assert!(matches!(
+            client.get_capture_rate(),
+            Err(WsError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn get_config_value_sends_pointer_as_argument() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(1024u64)))]);
+        let value = client.get_config_value("/devices/chunksize").unwrap();
+        assert_eq!(value, Some(JsonValue::from(1024u64)));
+        assert_eq!(
+            client.commands_sent,
+            vec![(
+                "GetConfigValue".to_owned(),
+                Some(JsonValue::String("/devices/chunksize".to_owned()))
+            )]
+        );
+    }
+
+    #[test]
+    fn get_config_file_path_returns_none_when_no_config_loaded() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        assert_eq!(client.get_config_file_path().unwrap(), None);
+    }
+
+    #[test]
+    fn get_config_file_path_extracts_string() {
+        let mut client =
+            MockClient::new(vec![Ok(Some(JsonValue::String("/tmp/cfg.yml".to_owned())))]);
+        assert_eq!(
+            client.get_config_file_path().unwrap(),
+            Some("/tmp/cfg.yml".to_owned())
+        );
+    }
+
+    #[test]
+    fn set_config_sends_config_yaml_as_string_argument() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        client.set_config("devices: {}").unwrap();
+        assert_eq!(
+            client.commands_sent,
+            vec![(
+                "SetConfig".to_owned(),
+                Some(JsonValue::String("devices: {}".to_owned()))
+            )]
+        );
+    }
+
+    #[test]
+    fn set_config_propagates_command_errors() {
+        let mut client = MockClient::new(vec![Err(WsError::Command(
+            CommandReason::ConfigValidation,
+            "bad config".to_owned(),
+        ))]);
+        assert!(matches!(
+            client.set_config("bogus"),
+            Err(WsError::Command(CommandReason::ConfigValidation, _))
+        ));
+    }
+
+    #[test]
+    fn validate_config_sends_config_yaml_as_string_argument() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        client.validate_config("devices: {}").unwrap();
+        assert_eq!(
+            client.commands_sent,
+            vec![(
+                "ValidateConfig".to_owned(),
+                Some(JsonValue::String("devices: {}".to_owned()))
+            )]
+        );
+    }
+
+    #[test]
+    fn stop_sends_stop_with_no_argument() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        client.stop().unwrap();
+        assert_eq!(client.commands_sent, vec![("Stop".to_owned(), None)]);
+    }
 
     #[test]
     fn stop_reason_json_shapes_match_camilladsp_v4_protocol() {

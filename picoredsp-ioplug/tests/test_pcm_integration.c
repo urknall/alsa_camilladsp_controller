@@ -1035,13 +1035,17 @@ TEST(delay_accounts_for_frames_queued_in_kernel_pipe)
      * the ring buffer or already handed off to the pipe — proving frames
      * are not silently dropped from the delay estimate once they leave the
      * ring buffer. Prior to this fix, delay would fall roughly a whole
-     * pipe-capacity short of total_written. Allow slack of one
-     * PCDSP_PIPE_CHUNK_FRAMES: the worker pulls frames out of the ring
-     * buffer in that granularity before writing them to the pipe, so at
-     * most one in-flight chunk can transiently be counted by neither the
-     * ring buffer nor FIONREAD (analogous to a small hardware FIFO) when
-     * the peer stops reading mid-chunk. */
-    CHECK(delay >= total_written - (snd_pcm_sframes_t)PCDSP_PIPE_CHUNK_FRAMES);
+     * pipe-capacity short of total_written.
+     *
+     * No slack is needed here (unlike earlier revisions of this test):
+     * pcdsp_drain_period_to_pipe() now peeks a chunk out of the ring buffer
+     * (pcdsp_rb_peek()) and only commits its removal (pcdsp_rb_drop()) once
+     * that exact chunk has actually been written to the pipe in full. So a
+     * chunk that is only partially handed to a stalled/wedged pipe is still
+     * counted by the ring buffer (delay()'s pcdsp_rb_read_avail() term),
+     * closing the "counted by neither" gap this slack used to compensate
+     * for. */
+    CHECK(delay >= total_written);
 
     atomic_store_explicit(&stop_holding, true, memory_order_release);
     snd_pcm_close(pcm);

@@ -1,14 +1,12 @@
 use crate::backend::{ControllerBackend, StreamEvent};
 use crate::camilladsp::websocket::{
-    parse_processing_state, parse_stop_reason, CamillaClient, CommandReason, ProcessingState,
-    StopReason, WsError,
+    CamillaClient, CommandReason, ProcessingState, StopReason, WsError,
 };
 use crate::core::adaptation::adapt_config;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
 use crate::core::recovery::{ConfigFingerprint, RetryState};
-use serde_json::Value as JsonValue;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -96,7 +94,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
 
     fn stop_cdsp(&mut self) -> AppResult<()> {
         log(LogLevel::Info, self.log_level, "Stopping CamillaDSP");
-        self.client.query("Stop", None)?;
+        self.client.stop()?;
         Ok(())
     }
 
@@ -167,10 +165,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
             "Starting CamillaDSP with current config",
         );
 
-        match self
-            .client
-            .query("SetConfig", Some(JsonValue::String(config)))
-        {
+        match self.client.set_config(&config) {
             Ok(_) => {
                 // SetConfig accepted.  CamillaDSP processes the config
                 // asynchronously, so record the pending timestamp to prevent a
@@ -400,7 +395,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
     }
 
     fn process_inactive_state(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
-        let reason = parse_stop_reason(self.client.query("GetStopReason", None)?)?;
+        let reason = self.client.get_stop_reason()?;
         if let Some(since) = self.pending_since {
             // We sent SetConfig and are waiting for CamillaDSP to process it.
             // StopReason None means it hasn't consumed the config yet.
@@ -440,7 +435,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
     /// * active=false → do not send SetConfig; wait for first active playback
     ///   stream so snd-aloop capture is not opened before the player.
     fn bootstrap_initial_config(&mut self, snapshot: &DeviceSnapshot) -> AppResult<()> {
-        let state = parse_processing_state(self.client.query("GetState", None)?)?;
+        let state = self.client.get_state()?;
         match state {
             ProcessingState::Inactive => {
                 self.retry.reset();
@@ -564,7 +559,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
             }
 
             // ── CamillaDSP state ─────────────────────────────────────────
-            let state = parse_processing_state(self.client.query("GetState", None)?)?;
+            let state = self.client.get_state()?;
             self.handle_processing_state(state, &current)?;
         }
     }

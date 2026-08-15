@@ -44,7 +44,7 @@ pub struct BenchmarkMetrics {
     pub transition_48_to_96_ms: Option<f64>,
     pub stop_latency_ms: Option<f64>,
     pub pcm_transport_latency_ms: Option<f64>,
-    pub total_end_to_end_latency_ms: Option<f64>,
+    pub software_visible_latency_ms: Option<f64>,
     pub cpu_usage_percent: Option<f64>,
     pub context_switches: Option<u64>,
     pub controller_rss_kib: Option<u64>,
@@ -317,9 +317,9 @@ fn metric_specs() -> [MetricSpec; 14] {
             get: pcm_transport_latency,
         },
         MetricSpec {
-            label: "Total end-to-end latency (ms)",
+            label: "Software-visible latency (ms)",
             kind: MetricKind::LowerIsBetter,
-            get: total_end_to_end_latency,
+            get: software_visible_latency,
         },
         MetricSpec {
             label: "CPU usage (%)",
@@ -423,14 +423,14 @@ fn tuning_recommendations(plan: &BenchmarkPlan) -> Vec<String> {
     }
 
     if aloop
-        .and_then(|run| run.metrics.total_end_to_end_latency_ms)
+        .and_then(|run| run.metrics.software_visible_latency_ms)
         .is_none()
         || ioplug
-            .and_then(|run| run.metrics.total_end_to_end_latency_ms)
+            .and_then(|run| run.metrics.software_visible_latency_ms)
             .is_none()
     {
         out.push(
-            "Total end-to-end latency is still missing for at least one backend; keep an external measurement in the loop because software-visible buffers alone are not enough.".to_owned(),
+            "Software-visible latency is still missing for at least one backend; keep an external measurement in the loop because software-visible buffers alone are not enough.".to_owned(),
         );
     }
 
@@ -525,7 +525,7 @@ fn latency_win_counts(plan: &BenchmarkPlan) -> (usize, usize) {
         transition_48_to_96,
         stop_latency,
         pcm_transport_latency,
-        total_end_to_end_latency,
+        software_visible_latency,
     ] {
         let aloop_value = aloop.map(selector).unwrap_or(MetricValue::Missing);
         let ioplug_value = ioplug.map(selector).unwrap_or(MetricValue::Missing);
@@ -581,9 +581,9 @@ fn pcm_transport_latency(metrics: &BenchmarkMetrics) -> MetricValue {
         .unwrap_or(MetricValue::Missing)
 }
 
-fn total_end_to_end_latency(metrics: &BenchmarkMetrics) -> MetricValue {
+fn software_visible_latency(metrics: &BenchmarkMetrics) -> MetricValue {
     metrics
-        .total_end_to_end_latency_ms
+        .software_visible_latency_ms
         .map(MetricValue::Float)
         .unwrap_or(MetricValue::Missing)
 }
@@ -713,7 +713,7 @@ mod tests {
         let report = render_benchmark_report(&plan);
         assert!(report.contains("# Benchmark report"));
         assert!(report.contains("Gate 12 metrics complete for both backends: 0/14."));
-        assert!(report.contains("Total end-to-end latency is still missing"));
+        assert!(report.contains("Software-visible latency is still missing"));
     }
 
     #[test]
@@ -729,7 +729,7 @@ mod tests {
         aloop.metrics.transition_48_to_96_ms = Some(19.0);
         aloop.metrics.stop_latency_ms = Some(11.0);
         aloop.metrics.pcm_transport_latency_ms = Some(9.0);
-        aloop.metrics.total_end_to_end_latency_ms = Some(30.0);
+        aloop.metrics.software_visible_latency_ms = Some(30.0);
         aloop.metrics.cpu_usage_percent = Some(7.0);
         aloop.metrics.context_switches = Some(100);
         aloop.metrics.controller_rss_kib = Some(2048);
@@ -749,7 +749,7 @@ mod tests {
         ioplug.metrics.transition_48_to_96_ms = Some(16.0);
         ioplug.metrics.stop_latency_ms = Some(9.0);
         ioplug.metrics.pcm_transport_latency_ms = Some(5.0);
-        ioplug.metrics.total_end_to_end_latency_ms = Some(24.0);
+        ioplug.metrics.software_visible_latency_ms = Some(24.0);
         ioplug.metrics.cpu_usage_percent = Some(6.0);
         ioplug.metrics.context_switches = Some(80);
         ioplug.metrics.controller_rss_kib = Some(1800);

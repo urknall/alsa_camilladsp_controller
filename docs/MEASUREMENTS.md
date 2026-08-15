@@ -90,7 +90,7 @@ The flags are optional and default to the values shown above.
 | `stop_latency_ms` *(aloop only)* | Elapsed time from `aplay` termination |
 | `xrun_count` *(aloop only)* | XRUN lines in `aplay` output |
 | `pcm_transport_latency_ms` | `/proc/asound/card*/pcm*/sub*/hw_params` rate, combined with CamillaDSP buffer depth |
-| `total_end_to_end_latency_ms` | Sum of PCM transport and CamillaDSP buffer latency |
+| `software_visible_latency_ms` | Sum of PCM transport and CamillaDSP buffer latency |
 
 The PID used for resource metrics is the running `picoredsp-controller` daemon
 if one is found; otherwise the measurement process itself is used.

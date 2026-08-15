@@ -52,6 +52,13 @@ sources:
     label: upstream/alsa-lib
     priority: HIGH
     doc: docs/ALSA_LIB_TRACKING.md
+    # alsa-lib is tracked by release tag (see last_reviewed_tag above), not
+    # by tracked_paths/commit diff alone. When check_upstream_tracking.py
+    # detects a newer published release than last_reviewed_tag, it emits
+    # GitHub Actions step outputs so .github/workflows/upstream-tracking.yml
+    # can build alsa-lib from that tag and run the native ioplug test suite
+    # against it automatically, not just open a tracking issue.
+    run_tests_on_release: true
 
   - id: camilladsp
     repository: HEnquist/camilladsp

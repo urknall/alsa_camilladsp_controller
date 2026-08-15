@@ -13,6 +13,7 @@
  *   - partial read (consumer cannot underread)
  *   - init rejects non-power-of-two capacity
  *   - init rejects capacity < 2
+ *   - peek copies data without advancing read_pos (and wraps correctly)
  */
 
 #include "ringbuffer.h"
@@ -239,6 +240,121 @@ TEST(partial_read_at_boundary)
     pcdsp_rb_free(&rb);
 }
 
+TEST(peek_does_not_advance_read_pos)
+{
+    /* Core of the drain-completion race fix: peek must copy data without
+     * removing it from the ring buffer, so callers can defer the "commit"
+     * (pcdsp_rb_drop()) until a downstream handoff has actually succeeded. */
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 8, 4) == 0);
+
+    uint8_t src[4 * 4];
+    for (int i = 0; i < (int)sizeof(src); i++)
+        src[i] = (uint8_t)(0x10 + i);
+    CHECK(pcdsp_rb_write(&rb, src, 4) == 4);
+
+    uint8_t dst[4 * 4] = {0};
+    CHECK(pcdsp_rb_peek(&rb, dst, 4) == 4);
+    CHECK(memcmp(src, dst, sizeof(src)) == 0);
+
+    /* Unlike pcdsp_rb_read(), availability must be unchanged. */
+    CHECK(pcdsp_rb_read_avail(&rb) == 4);
+    CHECK(pcdsp_rb_write_avail(&rb) == 4);
+
+    /* Peeking again returns the exact same data (idempotent). */
+    uint8_t dst2[4 * 4] = {0};
+    CHECK(pcdsp_rb_peek(&rb, dst2, 4) == 4);
+    CHECK(memcmp(src, dst2, sizeof(src)) == 0);
+
+    pcdsp_rb_free(&rb);
+}
+
+TEST(peek_then_drop_matches_read)
+{
+    /* peek() + drop() must be externally indistinguishable from read() for
+     * the data actually consumed. */
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 8, 4) == 0);
+
+    uint8_t src[6 * 4];
+    for (int i = 0; i < (int)sizeof(src); i++)
+        src[i] = (uint8_t)(0xA0 + i);
+    CHECK(pcdsp_rb_write(&rb, src, 6) == 6);
+
+    uint8_t dst[6 * 4] = {0};
+    CHECK(pcdsp_rb_peek(&rb, dst, 6) == 6);
+    CHECK(pcdsp_rb_read_avail(&rb) == 6); /* still all present */
+
+    CHECK(pcdsp_rb_drop(&rb, 6) == 6);
+    CHECK(pcdsp_rb_read_avail(&rb) == 0);
+    CHECK(memcmp(src, dst, sizeof(src)) == 0);
+
+    pcdsp_rb_free(&rb);
+}
+
+TEST(peek_clamps_to_available_frames)
+{
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 8, 2) == 0);
+
+    uint8_t src[3 * 2];
+    memset(src, 0x3C, sizeof(src));
+    CHECK(pcdsp_rb_write(&rb, src, 3) == 3);
+
+    uint8_t dst[8 * 2];
+    /* Asking for 8 but only 3 available. */
+    size_t got = pcdsp_rb_peek(&rb, dst, 8);
+    CHECK(got == 3);
+    /* Nothing removed by peek. */
+    CHECK(pcdsp_rb_read_avail(&rb) == 3);
+
+    pcdsp_rb_free(&rb);
+}
+
+TEST(peek_returns_zero_on_empty_buffer)
+{
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 8, 2) == 0);
+
+    uint8_t dst[4 * 2];
+    CHECK(pcdsp_rb_peek(&rb, dst, 4) == 0);
+
+    pcdsp_rb_free(&rb);
+}
+
+TEST(peek_wraps_around_ring_buffer_boundary)
+{
+    /* Same wrap set-up as wrap_around: write 6, consume 4 (read_pos=4),
+     * write 6 more (wraps at capacity 8). Peek across the wrap boundary and
+     * verify the bytes match, then confirm nothing was removed. */
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 8, 4) == 0);
+
+    uint8_t src1[6 * 4];
+    memset(src1, 0x11, sizeof(src1));
+    CHECK(pcdsp_rb_write(&rb, src1, 6) == 6);
+
+    uint8_t tmp[4 * 4];
+    CHECK(pcdsp_rb_read(&rb, tmp, 4) == 4);
+
+    uint8_t src2[6 * 4];
+    for (int i = 0; i < (int)sizeof(src2); i++)
+        src2[i] = (uint8_t)(0xB0 + i);
+    CHECK(pcdsp_rb_write(&rb, src2, 6) == 6);
+
+    CHECK(pcdsp_rb_read_avail(&rb) == 8);
+
+    uint8_t dst[8 * 4];
+    CHECK(pcdsp_rb_peek(&rb, dst, 8) == 8);
+    CHECK(memcmp(dst + 2 * 4, src2, sizeof(src2)) == 0);
+
+    /* Peek must not have advanced read_pos. */
+    CHECK(pcdsp_rb_read_avail(&rb) == 8);
+    CHECK(pcdsp_rb_write_avail(&rb) == 0);
+
+    pcdsp_rb_free(&rb);
+}
+
 /* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
@@ -258,6 +374,13 @@ int main(void)
     RUN(reset_empties_buffer);
     RUN(partial_write_at_boundary);
     RUN(partial_read_at_boundary);
+
+    /* pcdsp_rb_peek (drain-completion race fix) */
+    RUN(peek_does_not_advance_read_pos);
+    RUN(peek_then_drop_matches_read);
+    RUN(peek_clamps_to_available_frames);
+    RUN(peek_returns_zero_on_empty_buffer);
+    RUN(peek_wraps_around_ring_buffer_boundary);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

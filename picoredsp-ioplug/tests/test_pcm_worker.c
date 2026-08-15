@@ -28,6 +28,14 @@
  *
  * Poll / eventfd (eventfd signalling):
  *   eventfd_is_signalled_after_each_period
+ *
+ * Drain-completion race regression (Gate-14 follow-up, blocker):
+ *   drain_period_does_not_empty_ring_before_pipe_write_completes
+ *
+ * pcdsp_wait_pause_ack (pause-ack timeout regression):
+ *   wait_pause_ack_returns_zero_when_ack_already_true
+ *   wait_pause_ack_returns_zero_when_worker_stops_without_ack
+ *   wait_pause_ack_returns_etimedout_when_worker_running_and_no_ack
  */
 
 #define _GNU_SOURCE
@@ -823,9 +831,35 @@ TEST(worker_survives_default_sigpipe_disposition_via_thread_scoped_block)
 static void *capture_mask_after_block_thread(void *arg)
 {
     sigset_t *out = arg;
-    pcdsp_worker_block_all_signals();
+    int rc = pcdsp_worker_block_all_signals();
+    (void)rc; /* checked by block_all_signals_returns_zero_on_success below */
     pthread_sigmask(SIG_BLOCK, NULL, out);
     return NULL;
+}
+
+static void *return_rc_after_block_thread(void *arg)
+{
+    int *rc_out = arg;
+    *rc_out = pcdsp_worker_block_all_signals();
+    return NULL;
+}
+
+TEST(block_all_signals_returns_zero_on_success)
+{
+    /* Regression: pcdsp_worker_block_all_signals() used to return void,
+     * silently discarding pthread_sigmask()'s result. It now reports
+     * success/failure so worker_thread() can treat a failure to establish
+     * the SIGPIPE-safety invariant as fatal instead of assuming it.
+     *
+     * Run on a dedicated thread (rather than directly on the test binary's
+     * main thread) so this test does not itself permanently alter the main
+     * thread's signal mask — the mask is intentionally never restored, and
+     * other tests below rely on the main thread's mask being untouched. */
+    int rc = -9999;
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, return_rc_after_block_thread, &rc) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(rc == 0);
 }
 
 TEST(block_all_signals_blocks_full_signal_set_not_just_sigpipe)
@@ -960,6 +994,200 @@ TEST(drain_period_partial_final_period_via_drain_frames)
 }
 
 /* -----------------------------------------------------------------------
+ * Drain-completion race regression (Gate-14 follow-up review, blocker)
+ *
+ * Prior to the pcdsp_rb_peek()/pcdsp_rb_drop() rewrite of
+ * pcdsp_drain_period_to_pipe(), frames were removed from the ring buffer
+ * (pcdsp_rb_read()) *before* being handed to the pipe. That created a
+ * window where pcdsp_drain()'s completion check
+ * (pcdsp_rb_read_avail(&rb) == 0) could observe an empty ring buffer and
+ * return success while the final chunk of a period was still stuck
+ * retrying against a stalled/full pipe — i.e. audio that had left the ring
+ * buffer but had not actually reached the pipe yet. This test proves the
+ * ring buffer now retains ownership of a chunk until it has actually been
+ * written in full.
+ * ---------------------------------------------------------------------- */
+
+TEST(drain_period_does_not_empty_ring_before_pipe_write_completes)
+{
+    const size_t period = 32;
+    const size_t fb     = 4; /* stereo S16_LE */
+
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 64, (uint32_t)fb) == 0);
+    fill_rb(&rb, period, 0x77);
+    CHECK(pcdsp_rb_read_avail(&rb) == period);
+
+    /* Shrink and fill the pipe so the worker's write() blocks (via its
+     * POLLOUT poll loop) instead of completing immediately. */
+    int pipefd[2];
+    CHECK(pipe2(pipefd, O_NONBLOCK | O_CLOEXEC) == 0);
+#ifdef F_SETPIPE_SZ
+    fcntl(pipefd[1], F_SETPIPE_SZ, 4096);
+#endif
+    uint8_t filler[4096];
+    memset(filler, 0, sizeof(filler));
+    while (write(pipefd[1], filler, sizeof(filler)) > 0)
+        ;
+    CHECK(errno == EAGAIN || errno == EWOULDBLOCK);
+
+    _Atomic(bool) running = true;
+    drain_thread_args_t args = {
+        .rb = &rb,
+        .pipe_fd = pipefd[1],
+        .period_frames = period,
+        .frame_bytes = fb,
+        .keep_running = &running,
+        .result = -9999,
+    };
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, drain_thread_main, &args) == 0);
+
+    /* Give the worker time to reach (and block in) its POLLOUT wait. */
+    struct timespec settle = { .tv_nsec = 100000000L }; /* 100 ms */
+    nanosleep(&settle, NULL);
+
+    /*
+     * The regression: with pcdsp_rb_read() (removes frames up front), this
+     * would already read 0 here — exactly what let a concurrent
+     * pcdsp_drain() declare success while these frames were neither in the
+     * ring buffer nor in the pipe. With pcdsp_rb_peek()/pcdsp_rb_drop(),
+     * the frames must still be reported as available: they have not
+     * actually reached the pipe yet, so drain() must not be able to treat
+     * them as done.
+     */
+    CHECK(pcdsp_rb_read_avail(&rb) == period);
+
+    /* Now drain the pipe's read end so the worker's write() can proceed and
+     * the thread can finish normally. */
+    uint8_t sink[4096];
+    ssize_t total_drained = 0;
+    struct timespec deadline;
+    CHECK(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += 2;
+    for (;;) {
+        ssize_t n = read(pipefd[0], sink, sizeof(sink));
+        if (n > 0) {
+            total_drained += n;
+        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct timespec ts_now;
+            clock_gettime(CLOCK_REALTIME, &ts_now);
+            if (ts_now.tv_sec > deadline.tv_sec ||
+                (ts_now.tv_sec == deadline.tv_sec && ts_now.tv_nsec > deadline.tv_nsec))
+                break;
+            struct timespec brief = { .tv_nsec = 5000000 }; /* 5 ms */
+            nanosleep(&brief, NULL);
+        } else {
+            break;
+        }
+        if (pcdsp_rb_read_avail(&rb) == 0)
+            break;
+    }
+    (void)total_drained;
+
+    int join_rc = pthread_timedjoin_np(thread, NULL, &deadline);
+    CHECK(join_rc == 0);
+    CHECK(args.result == (ssize_t)period);
+    /* Only now — after the write genuinely completed — is the ring buffer
+     * allowed to be empty. */
+    CHECK(pcdsp_rb_read_avail(&rb) == 0);
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+    pcdsp_rb_free(&rb);
+}
+
+/* -----------------------------------------------------------------------
+ * pcdsp_wait_pause_ack regression tests (Gate-14 follow-up review)
+ *
+ * The reviewer's own independent harness reproduced the previously-fixed
+ * timeout bug (rc=-110 expected=-110) but noted that branch had no
+ * permanent repository regression test of its own. These tests cover the
+ * success path, the timeout path, and the worker-stopped-without-ack path.
+ * ---------------------------------------------------------------------- */
+
+static struct timespec deadline_from_now(long ms)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_nsec += ms * 1000000L;
+    while (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_nsec -= 1000000000L;
+        deadline.tv_sec  += 1;
+    }
+    return deadline;
+}
+
+TEST(wait_pause_ack_returns_zero_when_ack_already_true)
+{
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t  cond  = PTHREAD_COND_INITIALIZER;
+    bool            ack   = true;
+    _Atomic(bool)   running = true;
+
+    struct timespec deadline = deadline_from_now(200);
+
+    pthread_mutex_lock(&mutex);
+    int rc = pcdsp_wait_pause_ack(&mutex, &cond, &ack, &running, &deadline);
+    pthread_mutex_unlock(&mutex);
+
+    CHECK(rc == 0);
+
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
+}
+
+TEST(wait_pause_ack_returns_zero_when_worker_stops_without_ack)
+{
+    /* If the worker exits (worker_running -> false) it cannot possibly be
+     * mid-write, so the "no write in flight" invariant holds even without
+     * an explicit ack. */
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t  cond  = PTHREAD_COND_INITIALIZER;
+    bool            ack   = false;
+    _Atomic(bool)   running = false;
+
+    struct timespec deadline = deadline_from_now(200);
+
+    pthread_mutex_lock(&mutex);
+    int rc = pcdsp_wait_pause_ack(&mutex, &cond, &ack, &running, &deadline);
+    pthread_mutex_unlock(&mutex);
+
+    CHECK(rc == 0);
+
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
+}
+
+TEST(wait_pause_ack_returns_etimedout_when_worker_running_and_no_ack)
+{
+    /*
+     * Regression for the previously-fixed pause-timeout bug: if the worker
+     * never acknowledges the pause and never stops running, the deadline
+     * must be respected and -ETIMEDOUT returned — pause() must not be able
+     * to return success without an ACK.
+     */
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t  cond  = PTHREAD_COND_INITIALIZER;
+    bool            ack   = false;
+    _Atomic(bool)   running = true;
+
+    struct timespec deadline = deadline_from_now(50);
+
+    pthread_mutex_lock(&mutex);
+    int rc = pcdsp_wait_pause_ack(&mutex, &cond, &ack, &running, &deadline);
+    pthread_mutex_unlock(&mutex);
+
+    CHECK(rc == -ETIMEDOUT);
+    /* Confirm the invariant the caller relies on: ack is still false, so a
+     * caller cannot mistake this for a successful pause. */
+    CHECK(ack == false);
+
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -998,12 +1226,21 @@ int main(void)
     RUN(failure_camilladsp_early_exit_detected_via_epipe);
     RUN(worker_survives_default_sigpipe_disposition_via_thread_scoped_block);
     RUN(block_all_signals_blocks_full_signal_set_not_just_sigpipe);
+    RUN(block_all_signals_returns_zero_on_success);
 
     /* Buffer-safety regression (finding #2: stack overflow with max frame bytes) */
     RUN(drain_period_max_frame_bytes_stereo_s32le_no_overflow);
 
     /* Partial-period drain regression (finding #3: drain hangs on final period) */
     RUN(drain_period_partial_final_period_via_drain_frames);
+
+    /* Drain-completion race regression (Gate-14 follow-up review, blocker) */
+    RUN(drain_period_does_not_empty_ring_before_pipe_write_completes);
+
+    /* pcdsp_wait_pause_ack regression tests */
+    RUN(wait_pause_ack_returns_zero_when_ack_already_true);
+    RUN(wait_pause_ack_returns_zero_when_worker_stops_without_ack);
+    RUN(wait_pause_ack_returns_etimedout_when_worker_running_and_no_ack);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

@@ -299,6 +299,60 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > `BLUEALSA_TRACKING.md`'s verification table and prose sections (Signal
 > masking, Drain semantics, Delay accounting, Device disconnect / connectivity
 > state) updated to cite the new code and tests.
+>
+> **Second correctness follow-up (Gate-14 hardware-qualification review):**
+> a further external review of the 2026-08-15/16 pass found the pause
+> timeout fix itself correct, but flagged a **blocker**: `pcdsp_drain()`'s
+> success condition raced with the worker's pipe handoff. It also flagged
+> three smaller BlueALSA-parity gaps.
+> 1. **Drain in-flight-chunk race (blocker, fixed).** `pcdsp_drain_period_to_pipe()`
+>    called `pcdsp_rb_read()` — which removes frames from the ring buffer
+>    immediately — *before* the (potentially blocking) pipe write completed.
+>    `pcdsp_drain()`'s completion check (`pcdsp_rb_read_avail() == 0`) could
+>    therefore report success while the final chunk was still stuck
+>    retrying against a stalled pipe: frames vanished from the ring buffer's
+>    accounting before they had actually reached the pipe. Fixed by adding
+>    `pcdsp_rb_peek()` (`ringbuffer.c`/`ringbuffer.h`, copies without
+>    advancing `read_pos`) and rewriting the drain path to peek → write →
+>    `pcdsp_rb_drop()` only after the write fully succeeds, so a cancelled or
+>    failed write leaves the frames untouched. New test
+>    `drain_period_does_not_empty_ring_before_pipe_write_completes`
+>    (`test_pcm_worker.c`) reproduces the race directly and was
+>    self-verified by reverting to the old `pcdsp_rb_read()`-based logic and
+>    confirming it fails without the fix; 5 new `test_ringbuffer.c` tests
+>    cover `pcdsp_rb_peek()` itself. As a side effect this also closes the
+>    "up to one chunk counted by neither ring nor FIONREAD" gap in
+>    `pcdsp_delay()` — `delay_accounts_for_frames_queued_in_kernel_pipe` was
+>    tightened from a slack-tolerant to an exact lower bound and re-run 3x
+>    with no flakiness.
+> 2. **Pause-ack timeout regression test (requested, added).** The
+>    `-ETIMEDOUT` branch of `pcdsp_wait_pause_ack()` had no dedicated
+>    repository test. Added `wait_pause_ack_returns_zero_when_ack_already_true`,
+>    `wait_pause_ack_returns_zero_when_worker_stops_without_ack`, and
+>    `wait_pause_ack_returns_etimedout_when_worker_running_and_no_ack`
+>    (`test_pcm_worker.c`), pinning the exact timeout behaviour permanently.
+> 3. **SIGPIPE-mask error handling (fixed).** `pcdsp_worker_block_all_signals()`
+>    returned `void` and silently ignored `pthread_sigmask()`'s result.
+>    Changed to `int`-returning, propagating `pthread_sigmask()`'s return
+>    value; `worker_thread()` now treats a nonzero return as a fatal startup
+>    error instead of assuming the mask was applied. New test
+>    `block_all_signals_returns_zero_on_success` (run on a dedicated thread
+>    to avoid disturbing the main test thread's mask, which another test
+>    depends on being untouched).
+> 4. **Exact `-ENODEV` disconnect semantics (fixed).** `pcdsp_disconnect_on_stream_error()`
+>    returned the raw stored errno (e.g. `-EPIPE`) instead of BlueALSA's
+>    exact `!pcm->connected` → `-ENODEV` contract, so a callback that was the
+>    *first* to observe a recorded failure could return something other than
+>    `-ENODEV` while simultaneously setting `DISCONNECTED`. Changed to always
+>    return `-ENODEV` when a stream error is present (raw error retained in
+>    `pcdsp->stream_error` for diagnostics); confirmed unchanged behaviour via
+>    the existing `prepare_refuses_to_silently_clear_a_fatal_stream_error`
+>    test, which already expected `-ENODEV`.
+>
+> Full C suite re-run after all four fixes: 7/7 binaries, 0 failures.
+> `docs/BLUEALSA_TRACKING.md`'s verification table updated (SIGPIPE, Pause
+> synchronization, Drain, Delay, Device disconnect rows) to cite the new
+> code and tests.
 
 - [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
 - [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:
@@ -433,7 +487,7 @@ CI requirements:
 > below is scoped accordingly: it proves the ioplug's own transport is
 > bit-transparent, not that CamillaDSP-side processing is transparent too.
 
-- [x] Known PCM pattern sent through plugin → output captured → binary comparison
+- [x] Known PCM pattern sent through ring-buffer/worker pipe transport → output captured → binary comparison
 - [x] All intended sample formats tested: S16_LE, S24_3_LE, S24_4LE, S32_LE, F32_LE
 - [x] All intended sample rates tested
 - [x] No accidental resampling
@@ -489,7 +543,7 @@ CI requirements:
   - [ ] 48 → 96 kHz transition time (requires manual rate-switch test)
   - [x] Stop latency (auto-collected for aloop via HCTL polling)
   - [x] PCM transport latency (auto-collected from `/proc/asound` hw_params)
-  - [x] Total end-to-end latency (auto-computed: transport + CamillaDSP buffer from WS)
+  - [x] Software-visible latency (auto-computed: transport + CamillaDSP buffer from WS; not physical end-to-end/DAC-to-ear latency)
   - [x] CPU usage (auto-collected from `/proc/<pid>/stat`)
   - [x] Context switches (auto-collected from `/proc/<pid>/status`)
   - [x] Controller RSS (auto-collected from `/proc/<pid>/status`)
@@ -566,9 +620,23 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 > Closed out 2026-08-15: `docs/ALSA_LIB_TRACKING.md` + the `alsa-lib` entry
 > in `docs/upstream-tracking.yml`.
+>
+> **2026-08-15 correctness follow-up:** the item below was previously
+> checked off without the automation actually existing —
+> `check_upstream_tracking.py` recorded `last_reviewed_tag` in the manifest
+> but never queried it, so alsa-lib was only tracked by default-branch
+> commit, and the workflow only ever opened an issue, never ran the test
+> suite. Fixed: `check_upstream_tracking.py::check_release_for_source()`
+> now compares `last_reviewed_tag` against alsa-lib's newest published
+> release/tag independently of the commit-diff check, and (via the new
+> `run_tests_on_release` manifest flag + `alsa_lib_release_detected`/
+> `alsa_lib_release_tag` step outputs) the workflow's new
+> `test_against_new_alsa_lib_release` job builds that release from source
+> and runs the native `picoredsp-ioplug` CTest suite against it
+> automatically.
 
 - [x] alsa-lib version tracked separately from BlueALSA
-- [x] New alsa-lib release triggers the plugin test suite automatically (see `docs/ALSA_LIB_TRACKING.md` Automation section)
+- [x] New alsa-lib release triggers the plugin test suite automatically (see `docs/ALSA_LIB_TRACKING.md` Automation section and the `test_against_new_alsa_lib_release` job in `.github/workflows/upstream-tracking.yml`)
 - [x] Maintenance priority documented:
   - [x] HIGH: alsa-lib, CamillaDSP, piCorePlayer
   - [x] MEDIUM: Linux ALSA, BlueALSA reference changes

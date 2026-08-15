@@ -8,9 +8,17 @@ script opens (or updates) a GitHub issue in *this* repository asking for a
 manual review. It never modifies the manifest, never merges or applies
 upstream changes, and never auto-closes issues.
 
+For sources that record a ``last_reviewed_tag`` (e.g. alsa-lib, which is
+tracked by release rather than by tracked file paths), this script also
+independently checks the newest published release/tag against
+``last_reviewed_tag`` and opens a distinct "new release" issue when it is
+stale. For sources flagged ``run_tests_on_release: true`` in the manifest,
+a newly detected release is additionally surfaced via ``$GITHUB_OUTPUT`` so
+the calling workflow can trigger the native ioplug test suite against it.
+
 Design goals:
   * Idempotent: re-running does not create duplicate issues for the same
-    upstream commit.
+    upstream commit or release tag.
   * Safe by default: with no ``GITHUB_TOKEN``, or when ``--dry-run`` is
     passed, the script only prints what it *would* do.
   * No behavioural changes to tracked repositories or this one beyond
@@ -54,6 +62,7 @@ class Source:
     label: str = ""
     priority: str = ""
     doc: str = ""
+    run_tests_on_release: bool = False
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Source":
@@ -67,6 +76,7 @@ class Source:
             label=data.get("label") or "",
             priority=data.get("priority") or "",
             doc=data.get("doc") or "",
+            run_tests_on_release=bool(data.get("run_tests_on_release", False)),
         )
 
 
@@ -166,6 +176,121 @@ def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[d
         if newest is None or commit_date > newest["commit"]["committer"]["date"]:
             newest = commit
     return newest
+
+
+def latest_release_tag_for_source(source: Source, token: Optional[str]) -> Optional[str]:
+    """Return the newest published release tag for ``source.repository``.
+
+    Falls back to the newest git tag when the repository has no published
+    GitHub Releases (some projects, e.g. alsa-lib, only push annotated tags).
+    Returns ``None`` when neither is available or the API call fails.
+    """
+    url = f"{GITHUB_API}/repos/{source.repository}/releases/latest"
+    try:
+        release = _api_request(url, token)
+        tag = release.get("tag_name")
+        if tag:
+            return tag
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            print(f"warning: could not fetch latest release for "
+                  f"{source.repository}: {exc}", file=sys.stderr)
+            return None
+
+    url = f"{GITHUB_API}/repos/{source.repository}/tags?per_page=1"
+    try:
+        tags = _api_request(url, token)
+    except urllib.error.HTTPError as exc:
+        print(f"warning: could not fetch tags for {source.repository}: {exc}", file=sys.stderr)
+        return None
+    if not tags:
+        return None
+    return tags[0].get("name")
+
+
+def build_new_release_issue_body(source: Source, tag: str) -> str:
+    tests_note = (
+        "The native ioplug test suite has been automatically triggered against "
+        "this release in the companion job of this workflow run; check its "
+        "result before doing anything else.\n\n"
+        if source.run_tests_on_release else ""
+    )
+    return (
+        f"{MARKER_PREFIX}{source.id}:new-release:{tag} -->\n\n"
+        f"A newer release/tag was published for **{source.id}** "
+        f"(`{source.repository}`).\n\n"
+        f"- Last reviewed tag: `{source.last_reviewed_tag or '(none)'}` "
+        f"(reviewed {source.review_date or 'unknown'})\n"
+        f"- New tag: `{tag}`\n"
+        f"- Tracking doc: `{source.doc}`\n\n"
+        "This is an automated notification only. Nothing has been changed, "
+        f"merged, or cherry-picked in this repository.\n\n{tests_note}"
+        "Please review manually:\n\n"
+        "1. Determine whether the release notes mention ioplug-relevant "
+        "behaviour changes (`pcm_ioplug.h`, `pcm_external.h`, "
+        "`hw_params`/`sw_params` semantics).\n"
+        f"2. If relevant, port the concept/fix and add or update a regression "
+        f"test, then update `{source.doc}`.\n"
+        "3. Update `last_reviewed_tag` / `last_reviewed_commit` / "
+        "`review_date` in `docs/upstream-tracking.yml` once reviewed, then "
+        "close this issue.\n"
+    )
+
+
+def check_release_for_source(source: Source, repo: str, token: Optional[str],
+                              dry_run: bool) -> Optional[str]:
+    """Check ``source.last_reviewed_tag`` against the newest published release/tag.
+
+    This is intentionally independent of the commit-diff check above: a
+    project such as alsa-lib merges commits to its default branch far more
+    often than it cuts a release, so relying on ``last_reviewed_commit``
+    alone means ``last_reviewed_tag`` was recorded in the manifest but never
+    actually consulted - the exact gap flagged in review. Returns the newly
+    detected tag (used to drive CI job outputs) if one was found, else None.
+    """
+    if not source.last_reviewed_tag:
+        return None
+
+    tag = latest_release_tag_for_source(source, token)
+    if tag is None:
+        print(f"[{source.id}] could not determine latest release/tag, "
+              "skipping release check")
+        return None
+    if tag == source.last_reviewed_tag:
+        print(f"[{source.id}] release up to date ({tag})")
+        return None
+
+    print(f"[{source.id}] new release detected: {tag} "
+          f"(last reviewed tag: {source.last_reviewed_tag})")
+
+    if dry_run or not token:
+        print(f"[{source.id}] dry-run: would ensure label {source.label!r} "
+              "and open/skip new-release issue")
+        return tag
+
+    marker = f"{MARKER_PREFIX}{source.id}:new-release:{tag} -->"
+    title = f"Upstream release detected: {source.id} ({tag})"
+    body = build_new_release_issue_body(source, tag)
+    open_issue_if_new(repo, source, marker, title, body, token)
+    return tag
+
+
+def output_key(source_id: str) -> str:
+    """Sanitise a source id into a valid GitHub Actions output-key prefix."""
+    return source_id.replace("-", "_")
+
+
+def emit_github_output(key: str, value: str) -> None:
+    """Append a ``key=value`` line to ``$GITHUB_OUTPUT`` if it is set.
+
+    No-op outside of a GitHub Actions step (e.g. when run locally or under
+    the unit tests), so callers never need to special-case that.
+    """
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(f"{key}={value}\n")
 
 
 def find_existing_issue_by_marker(repo: str, marker: str, token: str) -> Optional[dict[str, Any]]:
@@ -323,6 +448,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         try:
             if process_source(source, args.repo, token, args.dry_run):
                 any_updates = True
+
+            new_tag = check_release_for_source(source, args.repo, token, args.dry_run)
+            if new_tag:
+                any_updates = True
+                if source.run_tests_on_release:
+                    key = output_key(source.id)
+                    emit_github_output(f"{key}_release_detected", "true")
+                    emit_github_output(f"{key}_release_tag", new_tag)
         except Exception as exc:  # noqa: BLE001 - keep checking remaining sources
             print(f"error: failed processing {source.id}: {exc}", file=sys.stderr)
 
