@@ -15,12 +15,12 @@ use benchmark::{
 use camilladsp::alsa_capture::AlsaLoopbackListener;
 use camilladsp::websocket::{CamillaClient, CamillaWs};
 use controller::{new_aloop_controller, run_ioplug};
-use core::adaptation::{
+use crate::core::adaptation::{
     adapt_config, adapt_config_for_backend, get_config_path, get_playback_device,
     get_state_fragment, make_bypass_config, make_statefile, RuntimeBackend,
 };
-use core::config::WaveFormat;
-use core::errors::{app_error, AppResult};
+use crate::core::config::WaveFormat;
+use crate::core::errors::{app_error, AppResult};
 use serde_json::Value as JsonValue;
 
 fn run_main() -> AppResult<()> {
