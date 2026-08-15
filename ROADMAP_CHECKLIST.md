@@ -350,11 +350,11 @@ Sequence: correctness → stability → measurement → latency optimisation
 - [ ] CI automation detects new relevant CamillaDSP changes (websocket API, config schema, process lifecycle, stdin transport) and opens a GitHub issue (label: `upstream/camilladsp`; never auto-merges)
 - [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client / lifecycle handling + regression test, or mark reviewed
 
-## Phase 20b — pycamilladsp upstream monitoring
+## Phase 20b — camilladsp-controller upstream monitoring
 
-- [ ] Create `docs/PYCAMILLADSP_TRACKING.md` (or `docs/pycamilladsp-upstream.yml`)
+- [ ] Create `docs/CAMILLADSP_CONTROLLER_TRACKING.md` (or `docs/camilladsp-controller-upstream.yml`)
 - [ ] Record: repository URL, last reviewed tag/commit, review date, relevant topic categories
-- [ ] CI automation detects new relevant pycamilladsp changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/pycamilladsp`; never auto-merges)
+- [ ] CI automation detects new relevant camilladsp-controller changes (command names, response parsing, state machine, new/deprecated commands) and opens a GitHub issue (label: `upstream/camilladsp-controller`; never auto-merges)
 - [ ] Review process established: detect → issue → manual review → relevant? → update Rust websocket client + protocol test, or mark reviewed
 
 ## Phase 20c — CamillaDSP GUI upstream monitoring

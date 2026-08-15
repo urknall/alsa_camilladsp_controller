@@ -1349,27 +1349,27 @@ reviewed  + add or update regression test
 
 ---
 
-## 24b. Phase 20b — Monitor pycamilladsp upstream
+## 24b. Phase 20b — Monitor camilladsp-controller upstream
 
-pycamilladsp is the official Python websocket client for CamillaDSP.
+camilladsp-controller is the official Python controller and websocket client for CamillaDSP.
 It defines the authoritative command/response API that we re-implement in Rust.
 
 Create:
 
 ```text
-docs/PYCAMILLADSP_TRACKING.md
+docs/CAMILLADSP_CONTROLLER_TRACKING.md
 ```
 
 or machine-readable:
 
 ```text
-docs/pycamilladsp-upstream.yml
+docs/camilladsp-controller-upstream.yml
 ```
 
 containing:
 
 ```text
-repository          https://github.com/HEnquist/pycamilladsp
+repository          https://github.com/HEnquist/camilladsp-controller
 last reviewed tag
 last reviewed commit
 review date
@@ -1394,11 +1394,11 @@ Ignore changes that are purely documentation or example scripts with no protocol
 Preferred process:
 
 ```text
-pycamilladsp release / commit
+camilladsp-controller release / commit
       ↓
 CI notices relevant API change
       ↓
-GitHub issue (label: upstream/pycamilladsp)
+GitHub issue (label: upstream/camilladsp-controller)
       ↓
 manual review
       ↓
