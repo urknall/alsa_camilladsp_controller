@@ -3,6 +3,15 @@
 Generated from [`piCoreDSP_Dual_Backend_Roadmap.md`](piCoreDSP_Dual_Backend_Roadmap.md).
 Each section maps to a milestone or gate. Check items off as work is completed.
 
+> **Checklist honesty pass (2026-08):** an independent architecture review
+> found drift in both directions — items checked without meeting their
+> stated bar, and items left unchecked despite being implemented. Phase 5
+> (BlueALSA review) and the Gate 10 `ERROR_PLAYBACK_DEVICE` item were
+> reopened because they weren't actually true yet; Phase 18 and Gate 13's
+> parent box were checked off because the underlying work already existed.
+> See inline notes below each affected item, and the correctness-fix plan
+> tracked alongside this checklist for the remediation work in progress.
+
 ---
 
 ## Gate 0 — Freeze current aloop baseline
@@ -123,20 +132,27 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 
 ## Phase 5 — BlueALSA reference review
 
-- [x] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
-- [x] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
+> Reopened: `docs/BLUEALSA_TRACKING.md` itself records "last reviewed commit:
+> not yet reviewed" and tracks the pre-rename path `src/bluealsa-pcm.c`
+> (current upstream layout is `src/asound/bluealsa-pcm.c`). The items below
+> capture the *design intent* from the Gate 4 prototyping phase, not an
+> actual review of current BlueALSA source — see Step 7 of the correctness
+> follow-up plan.
+
+- [ ] Review current BlueALSA PCM implementation vs. original `alsa_cdsp` fork point
+- [ ] Document relevant learnings in `docs/BLUEALSA_TRACKING.md`:
   - [x] C11 atomics usage
   - [x] Ringbuffer pointer synchronisation
   - [x] Period boundary handling
   - [x] Buffer boundary handling
   - [x] poll/revents behaviour
   - [x] XRUN detection
-  - [x] Pause/resume synchronisation
-  - [x] Drain semantics
+  - [ ] Pause/resume synchronisation
+  - [ ] Drain semantics
   - [x] Thread cancellation
   - [x] Signal masking
-  - [x] Delay accounting
-  - [x] alsa-lib compatibility workarounds
+  - [ ] Delay accounting
+  - [ ] alsa-lib compatibility workarounds
 - [x] Confirm no BlueALSA Bluetooth-specific code is copied (D-Bus, A2DP, SCO, ASHA, codec negotiation)
 
 ---
@@ -207,8 +223,16 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 Failure scenarios:
 - [x] Rust controller absent: plugin fails cleanly with meaningful ALSA error, no silent sample discard
 - [x] Invalid DSP config: `ERROR_CONFIG` returned, ALSA start fails cleanly
-- [x] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
+- [ ] CamillaDSP cannot open DAC: `ERROR_PLAYBACK_DEVICE` returned
+  <br>Reopened: `run_ioplug()` in `src/controller.rs` always sent `ErrorCode::Config`
+  (with a permanent config-fingerprint latch) whenever CamillaDSP exited immediately
+  after spawn, regardless of whether the cause was an invalid config or an
+  unavailable/disconnected playback device — see Step 5 of the correctness follow-up.
 - [x] CamillaDSP exits mid-stream: plugin receives EPIPE, terminates ALSA stream cleanly, Rust records failure
+  <br>Fixed: the worker thread now blocks `SIGPIPE` for itself (`pthread_sigmask`,
+  thread-scoped) instead of relying on tests installing process-wide `SIG_IGN`;
+  see `pcdsp_worker_block_sigpipe()` in `pcm_worker.c` and the regression test
+  `worker_survives_default_sigpipe_disposition_via_thread_scoped_block`.
 - [x] Plugin/application disappears: Rust cleans up CamillaDSP (control socket close + PCM fd close)
 - [x] Rust daemon restarts mid-stream: active stream fails cleanly (reconnect not required for v1)
 
@@ -237,8 +261,14 @@ CI requirements:
 
 **Milestone M11: Run audio-integrity tests**
 
+> Note: these tests exercise `pcdsp_drain_period_to_pipe()` / the worker's
+> ring-buffer → pipe write path directly (`test_audio_integrity.c`), not the
+> full `application → ioplug → pipe → CamillaDSP → DAC` chain. The invariant
+> below is scoped accordingly: it proves the ioplug's own transport is
+> bit-transparent, not that CamillaDSP-side processing is transparent too.
+
 - [x] Known PCM pattern sent through plugin → output captured → binary comparison
-- [x] All intended sample formats tested: S16_LE, S24_3LE, S24_4LE, S32_LE, F32_LE
+- [x] All intended sample formats tested: S16_LE, S24_3_LE, S24_4LE, S32_LE, F32_LE
 - [x] All intended sample rates tested
 - [x] No accidental resampling
 - [x] No accidental channel swap
@@ -311,7 +341,7 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 **Milestone M13: Integrate both backends into installer**
 
-- [ ] Installer installs both binaries:
+- [x] Installer installs both binaries:
   - [x] `/usr/local/bin/picoredsp-controller`
   - [x] `/usr/local/lib/alsa-lib/libasound_module_pcm_picoredsp.so`
 - [x] User-facing backend selection in installer (snd-aloop recommended/stable vs. direct ioplug experimental)
@@ -321,9 +351,16 @@ Sequence: correctness → stability → measurement → latency optimisation
 
 ## Phase 18 — Configuration migration
 
-- [ ] Controller normalises any existing baseline config into the correct runtime config for the active backend
-- [ ] Single `MySpeakers.yml` works with both backends (no separate copies needed)
-- [ ] Capture section injected at runtime based on the active backend
+> Checked off: implemented by `adapt_config_for_backend()` in
+> `src/core/adaptation.rs` (dispatches on `RuntimeBackend::Aloop` /
+> `RuntimeBackend::Ioplug` to inject the correct capture section) and
+> documented in `CONFIG_MIGRATION.md`. Verified by the
+> `same_portable_baseline_adapts_for_aloop_and_ioplug` test, which asserts a
+> single baseline config adapts correctly for both backends.
+
+- [x] Controller normalises any existing baseline config into the correct runtime config for the active backend
+- [x] Single `MySpeakers.yml` works with both backends (no separate copies needed)
+- [x] Capture section injected at runtime based on the active backend
 
 ---
 
