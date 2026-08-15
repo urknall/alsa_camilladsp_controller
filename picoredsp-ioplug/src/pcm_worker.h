@@ -68,6 +68,32 @@ ssize_t pcdsp_drain_period_to_pipe(pcdsp_ringbuffer_t  *rb,
                                     const _Atomic(bool) *keep_running);
 
 /*
+ * pcdsp_worker_block_sigpipe — block SIGPIPE for the calling thread only.
+ *
+ * Must be called once, at the start of any thread that writes to the
+ * CamillaDSP stdin pipe (production: the ioplug worker thread; see
+ * worker_thread() in pcm.c).  write() to a pipe whose read end has been
+ * closed (CamillaDSP exited) raises SIGPIPE; with the default disposition
+ * this terminates the *entire* process — unacceptable here because this
+ * plugin is loaded inside an arbitrary host application (Squeezelite,
+ * AirPlay receivers, etc.), not a process we control.
+ *
+ * pthread_sigmask() only changes the calling thread's signal mask, so this
+ * confines the fix to the dedicated pipe-writer thread instead of calling
+ * signal(SIGPIPE, SIG_IGN), which would change disposition for the entire
+ * process — including threads owned by the host application.
+ *
+ * With SIGPIPE blocked (not ignored) for this thread, write() still returns
+ * -EPIPE on a broken pipe (the syscall failure is independent of whether the
+ * generated signal is delivered), which pcdsp_drain_period_to_pipe() already
+ * handles.  The mask is intentionally never restored: a dedicated pipe-writer
+ * thread has no other purpose for its entire lifetime, so there is no later
+ * point at which re-enabling delivery of a signal that may have gone pending
+ * while blocked would be safe.
+ */
+void pcdsp_worker_block_sigpipe(void);
+
+/*
  * pcdsp_drain_period_null_sink — drain one period worth of frames from `rb`
  * and sleep for the nominal period duration (rate-paced null sink).
  *

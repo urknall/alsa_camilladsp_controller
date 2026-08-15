@@ -10,14 +10,16 @@
  *   ✓ plugin sends HELLO (version negotiation)
  *   ✓ plugin sends START(rate, format, channels)
  *   ✓ plugin waits for READY (or ERROR) before allowing PCM transfer
- *   ✓ stop sends STOP to the controller
+ *   ✓ stop closes the local data path first, then sends STOP to the
+ *     controller (see pcdsp_stop() for why this order matters)
  *
  * Gate 8 adds the stdin pipe transport:
  *   ✓ Rust controller creates a pipe, spawns CamillaDSP with read-end as stdin
  *   ✓ Rust sends READY with the pipe write-end via SCM_RIGHTS
  *   ✓ plugin receives the write-end fd in pcdsp_ipc_recv_ready()
  *   ✓ worker thread drains the ring buffer by writing to the pipe fd
- *   ✓ on STOP / disconnect the plugin closes the fd, Rust also closes its copy
+ *   ✓ on stop, the plugin stops the worker and closes its fd *before*
+ *     notifying the controller; Rust also closes its copy
  *   ✓ CamillaDSP sees EOF on stdin and shuts down
  *
  * Data path (Gate 8):
@@ -176,6 +178,12 @@ static void *worker_thread(void *arg)
 {
     pcdsp_pcm_t *pcdsp = arg;
 
+    /* This thread writes to the CamillaDSP stdin pipe; block SIGPIPE for it
+     * (thread-scoped, not process-wide) so a broken pipe reports -EPIPE via
+     * write() instead of killing the host application. See
+     * pcdsp_worker_block_sigpipe() in pcm_worker.c for the full rationale. */
+    pcdsp_worker_block_sigpipe();
+
     while (atomic_load_explicit(&pcdsp->worker_running, memory_order_acquire)) {
         if (atomic_load_explicit(&pcdsp->paused, memory_order_acquire)) {
             struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1 ms */
@@ -294,21 +302,30 @@ static int pcdsp_stop(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
 
-    /* Gate 7: notify the controller that the stream is ending. */
-    if (pcdsp->conn.fd >= 0)
-        pcdsp_ipc_send_stop(&pcdsp->conn);
-
-    /* Stop/reap the worker before closing pipe_fd.  The worker uses bounded
-     * non-blocking pipe writes, so it observes worker_running=false promptly. */
+    /* Shut down the local data path *before* notifying the controller:
+     * stop/reap the worker thread, then close our pipe write-end so
+     * CamillaDSP sees EOF once Rust also closes its copy.  The worker uses
+     * bounded non-blocking pipe writes, so it observes worker_running=false
+     * promptly.
+     *
+     * Ordering matters: sending STOP first (as this used to do) let Rust
+     * proceed to supervisor.stop_stream() — which waits for CamillaDSP to
+     * exit — while the worker thread here could still be mid-write. Tearing
+     * down the producer/data path first guarantees that by the time the
+     * controller learns the stream ended, nothing on the plugin side can
+     * still be writing to CamillaDSP's stdin. */
     pcdsp_stop_worker(pcdsp);
     pcdsp_timer_stop(&pcdsp->timer);
 
-    /* Gate 8: close the pipe write-end so CamillaDSP sees EOF once Rust
-     * also closes its copy. */
     if (pcdsp->pipe_fd >= 0) {
         close(pcdsp->pipe_fd);
         pcdsp->pipe_fd = -1;
     }
+
+    /* Gate 7: notify the controller that the stream is ending, now that the
+     * local data path has already been fully torn down. */
+    if (pcdsp->conn.fd >= 0)
+        pcdsp_ipc_send_stop(&pcdsp->conn);
 
     /* Drain eventfd. */
     uint64_t dummy;

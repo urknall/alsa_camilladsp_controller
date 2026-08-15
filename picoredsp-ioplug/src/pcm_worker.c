@@ -14,11 +14,26 @@
 
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+
+/* -----------------------------------------------------------------------
+ * pcdsp_worker_block_sigpipe
+ * ---------------------------------------------------------------------- */
+
+void pcdsp_worker_block_sigpipe(void)
+{
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGPIPE);
+    /* Thread-directed: affects only the calling thread's signal mask. */
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+}
 
 /* -----------------------------------------------------------------------
  * pcdsp_drain_period_to_pipe

@@ -24,6 +24,7 @@
  * Partial write / EINTR / EPIPE (via real pipe fds):
  *   epipe_on_read_end_close_returns_minus_epipe
  *   worker_survives_eintr_and_delivers_all_data
+ *   worker_survives_default_sigpipe_disposition_via_thread_scoped_block
  *
  * Poll / eventfd (eventfd signalling):
  *   eventfd_is_signalled_after_each_period
@@ -112,10 +113,41 @@ typedef struct drain_thread_args {
 
 static void *drain_thread_main(void *arg)
 {
+    /* Mirror production: the real worker thread (pcm.c) blocks SIGPIPE for
+     * itself before writing to the pipe. Tests that exercise EPIPE run the
+     * drain call inside a thread that does the same, instead of relying on
+     * process-wide signal(SIGPIPE, SIG_IGN), which would hide whether the
+     * fix is actually thread-scoped. */
+    pcdsp_worker_block_sigpipe();
     drain_thread_args_t *a = arg;
     a->result = pcdsp_drain_period_to_pipe(
         a->rb, a->pipe_fd, a->period_frames, a->frame_bytes, a->keep_running);
     return NULL;
+}
+
+/* Run pcdsp_drain_period_to_pipe on a dedicated thread that blocks SIGPIPE
+ * for itself first (mirroring worker_thread() in pcm.c), and return its
+ * result. Used by tests that close the pipe's read end to simulate
+ * CamillaDSP exiting, so a broken-pipe write cannot terminate the test
+ * process via the default SIGPIPE disposition. */
+static ssize_t run_drain_on_thread(pcdsp_ringbuffer_t *rb, int pipe_fd,
+                                    size_t period_frames, size_t frame_bytes,
+                                    _Atomic(bool) *keep_running)
+{
+    drain_thread_args_t args = {
+        .rb = rb,
+        .pipe_fd = pipe_fd,
+        .period_frames = period_frames,
+        .frame_bytes = frame_bytes,
+        .keep_running = keep_running,
+        .result = -9999,
+    };
+    pthread_t thread;
+    int rc = pthread_create(&thread, NULL, drain_thread_main, &args);
+    if (rc != 0)
+        return -rc;
+    pthread_join(thread, NULL);
+    return args.result;
 }
 
 /* -----------------------------------------------------------------------
@@ -167,13 +199,12 @@ TEST(drain_period_handles_epipe_and_returns_negative_errno)
     CHECK(pipe(pipefd) == 0);
     close(pipefd[0]); /* close read end → next write() returns EPIPE */
 
-    /* Suppress SIGPIPE so we get -EPIPE instead of signal death */
-    signal(SIGPIPE, SIG_IGN);
-
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
+    /* SIGPIPE stays at its default (process-wide) disposition here; the
+     * drain runs on a dedicated thread that blocks SIGPIPE for itself only,
+     * exactly like the production worker thread. */
+    ssize_t rc = run_drain_on_thread(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc == -EPIPE);
 
-    signal(SIGPIPE, SIG_DFL);
     close(pipefd[1]);
     pcdsp_rb_free(&rb);
 }
@@ -521,10 +552,10 @@ TEST(epipe_on_read_end_close_returns_minus_epipe)
     CHECK(pipe(pipefd) == 0);
     close(pipefd[0]); /* simulate CamillaDSP gone */
 
-    signal(SIGPIPE, SIG_IGN);
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
+    /* SIGPIPE stays at its default (process-wide) disposition here; see
+     * run_drain_on_thread(). */
+    ssize_t rc = run_drain_on_thread(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc == -EPIPE);
-    signal(SIGPIPE, SIG_DFL);
 
     close(pipefd[1]);
     pcdsp_rb_free(&rb);
@@ -702,10 +733,78 @@ TEST(failure_camilladsp_early_exit_detected_via_epipe)
     /* Simulate CamillaDSP exit: close read end */
     close(pipefd[0]);
 
-    signal(SIGPIPE, SIG_IGN);
-    ssize_t rc = pcdsp_drain_period_to_pipe(&rb, pipefd[1], period, fb, NULL);
+    /* SIGPIPE stays at its default (process-wide) disposition here; see
+     * run_drain_on_thread(). */
+    ssize_t rc = run_drain_on_thread(&rb, pipefd[1], period, fb, NULL);
     CHECK(rc < 0); /* must be a negative errno, not a frame count */
-    signal(SIGPIPE, SIG_DFL);
+
+    close(pipefd[1]);
+    pcdsp_rb_free(&rb);
+}
+
+/* -----------------------------------------------------------------------
+ * SIGPIPE safety regression (release blocker)
+ *
+ * A write() to a pipe whose read end has been closed raises SIGPIPE for the
+ * writing thread.  With the default disposition (SIG_DFL), the *entire host
+ * process* is terminated — catastrophic for a plugin loaded inside an
+ * arbitrary application (Squeezelite, AirPlay receivers, etc.).  Earlier
+ * versions of this test suite concealed that by calling
+ * signal(SIGPIPE, SIG_IGN) process-wide before exercising -EPIPE, which
+ * would have masked a regression to the unsafe behaviour.  This test
+ * verifies the actual production fix: SIGPIPE remains at its default,
+ * process-wide disposition, and only the dedicated writer thread blocks it
+ * for itself via pcdsp_worker_block_sigpipe() (mirroring worker_thread() in
+ * pcm.c). If that thread-scoping were ever broken (e.g. reverted to a
+ * process-wide signal(SIGPIPE, SIG_IGN) call), this test would still pass by
+ * accident; what it *does* prove is that the fix is thread-local rather than
+ * global, and that the calling test process survives the broken-pipe write.
+ * ---------------------------------------------------------------------- */
+
+TEST(worker_survives_default_sigpipe_disposition_via_thread_scoped_block)
+{
+    const size_t period = 8;
+    const size_t fb     = 2;
+
+    /* Precondition: SIGPIPE is at its default, process-wide disposition.
+     * (If some earlier test left it otherwise this would be a test-suite
+     * bug; assert it explicitly rather than assuming.) */
+    struct sigaction old_action;
+    CHECK(sigaction(SIGPIPE, NULL, &old_action) == 0);
+    CHECK(old_action.sa_handler == SIG_DFL);
+
+    /* Snapshot this (main) thread's own signal mask so we can prove below
+     * that pcdsp_worker_block_sigpipe() — called only inside the dedicated
+     * writer thread — did not leak into the caller's mask. */
+    sigset_t mask_before;
+    CHECK(pthread_sigmask(SIG_BLOCK, NULL, &mask_before) == 0);
+    CHECK(!sigismember(&mask_before, SIGPIPE));
+
+    pcdsp_ringbuffer_t rb;
+    CHECK(pcdsp_rb_init(&rb, 16, (uint32_t)fb) == 0);
+    fill_rb(&rb, period, 0x42);
+
+    int pipefd[2];
+    CHECK(pipe(pipefd) == 0);
+    close(pipefd[0]); /* simulate CamillaDSP exiting mid-stream */
+
+    /* This runs the drain on a dedicated thread (mirroring the production
+     * worker thread) with SIGPIPE left at SIG_DFL for the whole process. If
+     * the thread failed to block SIGPIPE for itself, the write() below would
+     * deliver SIGPIPE with the default action and kill this entire test
+     * binary rather than returning -EPIPE — so simply reaching the
+     * assertions below already demonstrates survival. */
+    ssize_t rc = run_drain_on_thread(&rb, pipefd[1], period, fb, NULL);
+    CHECK(rc == -EPIPE);
+
+    /* The process (and this thread) is still alive and running further
+     * assertions: SIGPIPE did not take down the host. */
+    CHECK(sigaction(SIGPIPE, NULL, &old_action) == 0);
+    CHECK(old_action.sa_handler == SIG_DFL);
+
+    sigset_t mask_after;
+    CHECK(pthread_sigmask(SIG_BLOCK, NULL, &mask_after) == 0);
+    CHECK(!sigismember(&mask_after, SIGPIPE));
 
     close(pipefd[1]);
     pcdsp_rb_free(&rb);
@@ -852,6 +951,7 @@ int main(void)
     /* Failure scenarios */
     RUN(failure_rust_daemon_restart_ipc_send_stop_fails_gracefully);
     RUN(failure_camilladsp_early_exit_detected_via_epipe);
+    RUN(worker_survives_default_sigpipe_disposition_via_thread_scoped_block);
 
     /* Buffer-safety regression (finding #2: stack overflow with max frame bytes) */
     RUN(drain_period_max_frame_bytes_stereo_s32le_no_overflow);
