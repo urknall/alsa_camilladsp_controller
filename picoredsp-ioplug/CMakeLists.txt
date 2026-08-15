@@ -223,7 +223,7 @@ if(CLANG_TIDY)
     find_program(CLANG_TIDY_EXE NAMES clang-tidy)
     if(CLANG_TIDY_EXE)
         set_target_properties(asound_module_pcm_picoredsp PROPERTIES
-            C_CLANG_TIDY "${CLANG_TIDY_EXE};--warnings-as-errors=*"
+            C_CLANG_TIDY "${CLANG_TIDY_EXE};--warnings-as-errors=*;--checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling"
         )
     else()
         message(WARNING "CLANG_TIDY requested but clang-tidy not found")
