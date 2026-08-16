@@ -20,10 +20,10 @@ class GhRequestTests(unittest.TestCase):
                 return json.dumps({"ok": True}).encode()
 
         def fake_urlopen(request, timeout):
-            headers = dict(request.header_items())
-            seen["authorization"] = headers.get("Authorization")
-            seen["accept"] = headers.get("Accept")
-            seen["api_version"] = headers.get("X-github-api-version")
+            headers = {key.lower(): value for key, value in request.header_items()}
+            seen["authorization"] = headers.get("authorization")
+            seen["accept"] = headers.get("accept")
+            seen["api_version"] = headers.get("x-github-api-version")
             seen["timeout"] = timeout
             return FakeResponse()
 
@@ -31,8 +31,7 @@ class GhRequestTests(unittest.TestCase):
             response = upstream_sync.gh_request("repos/example/project", "test-token")
 
         self.assertEqual(response, {"ok": True})
-        self.assertTrue(seen["authorization"].startswith("Bearer "))
-        self.assertTrue(seen["authorization"].endswith("test-token"))
+        self.assertEqual(seen["authorization"], "Bearer " + "test-token")
         self.assertEqual(seen["accept"], "application/vnd.github+json")
         self.assertEqual(seen["api_version"], "2022-11-28")
         self.assertEqual(seen["timeout"], 30)
