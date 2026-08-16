@@ -3,6 +3,13 @@
 ###############################################################################
 # piCoreCDSP v2 — Installer for piCorePlayer (roadmap §43, Gate 11)
 #
+# Architecture:
+#   - audio path: Producer → pcm.picorecdsp → snd-aloop → CamillaDSP → DAC
+#   - piCoreCDSP is a single Rust daemon that monitors snd-aloop and drives
+#     the CamillaDSP WebSocket control API; no Python/pyalsa dependency.
+#   - CamillaDSP and CamillaGUI are downloaded from their official GitHub
+#     releases; no build toolchain is required on the piCorePlayer device.
+#
 # ┌─────────────────────────────────────────────────────────────────────────┐
 # │  FRESH INSTALL ONLY.  No reinstall, no migration, no backup restore.    │
 # │  Run this exactly once on a clean pCP image.                            │
@@ -21,8 +28,7 @@
 #   ✗  No backend menu or backend switcher.
 #   ✗  No overwriting of existing user configs.
 #   ✗  No Squeezelite parameter management.
-#   ✗  No runtime YAML creation.
-#   ✗  No shadow config file.
+#   ✗  No runtime YAML creation or shadow config file.
 #   ✗  No Python, no pip, no tce-load for Python.
 #
 # Usage (run as the normal piCorePlayer user "tc"):
@@ -46,6 +52,12 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 1
 fi
 
+if [ "$(id -un)" != "tc" ]; then
+    echo "ERROR: This installer must be run as user tc."
+    echo "Current user: $(id -un)"
+    exit 1
+fi
+
 ###############################################################################
 # Versions
 ###############################################################################
@@ -59,6 +71,7 @@ PICORECDSP_RELEASE_TAG="${PICORECDSP_RELEASE_TAG:-installer-latest}"
 PICORECDSP_REPO="urknall/piCoreCDSP"
 
 # Expected SHA256 checksums for the pinned CamillaDSP and CamillaGUI archives.
+# These are verified after download to detect corruption or supply-chain tampering.
 # Update these values whenever CDSP_VERSION or CAMILLA_GUI_VERSION changes.
 CDSP_SHA256_AARCH64="${CDSP_SHA256_AARCH64:-d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a}"
 CDSP_SHA256_ARMV7="${CDSP_SHA256_ARMV7:-dd1af57129e078383e2a1d5dc28cc13f3f02a78dce9247eb7d9232731b8f7609}"
@@ -71,6 +84,8 @@ GUI_SHA256_ARMV7="${GUI_SHA256_ARMV7:-22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2
 
 BUILD_DIR="/tmp/${EXTENSION_NAME}"
 CACHE_DIR="/mnt/mmcblk0p2/tce/${EXTENSION_NAME}-cache"
+STAGE_DATA_DIR="/tmp/${EXTENSION_NAME}-data.$$"
+ROLLBACK_DIR="/tmp/${EXTENSION_NAME}-rollback.$$"
 
 DATA_DIR="/mnt/mmcblk0p2/tce/camilladsp"
 CONFIG_DIR="${DATA_DIR}/configs"
@@ -79,6 +94,10 @@ COEFF_DIR="${DATA_DIR}/coeffs"
 BYPASS_CONFIG="${CONFIG_DIR}/Bypass.yml"
 NULL_CONFIG="${CONFIG_DIR}/Null.yml"
 STATEFILE="${DATA_DIR}/camilladsp_statefile.yml"
+
+STAGE_CONFIG_DIR="${STAGE_DATA_DIR}/configs"
+STAGE_BYPASS_CONFIG="${STAGE_CONFIG_DIR}/Bypass.yml"
+STAGE_NULL_CONFIG="${STAGE_CONFIG_DIR}/Null.yml"
 
 PCP_CONFIG="/usr/local/etc/pcp/pcp.cfg"
 PCP_STAGED="/tmp/pcp.cfg.picorecdsp.$$"
@@ -130,16 +149,15 @@ restore_path() {
 }
 
 prepare_rollback() {
-    ROLLBACK_DIR="/tmp/${EXTENSION_NAME}-rollback.$$"
     rm -rf "${ROLLBACK_DIR}"
     mkdir -p "${ROLLBACK_DIR}"
 
-    backup_path "${PCP_CONFIG}"       pcp.cfg
-    backup_path /etc/asound.conf      asound.conf
-    backup_path "${ONBOOT_LIST}"      onboot.lst
-    backup_path "${BYPASS_CONFIG}"    Bypass.yml
-    backup_path "${NULL_CONFIG}"      Null.yml
-    backup_path "${STATEFILE}"        statefile.yml
+    backup_path "${PCP_CONFIG}"    pcp.cfg
+    backup_path /etc/asound.conf   asound.conf
+    backup_path "${ONBOOT_LIST}"   onboot.lst
+    backup_path "${BYPASS_CONFIG}" Bypass.yml
+    backup_path "${NULL_CONFIG}"   Null.yml
+    backup_path "${STATEFILE}"     statefile.yml
 }
 
 rollback_install() {
@@ -160,6 +178,8 @@ rollback_install() {
         sudo rm -rf "${DATA_DIR}" 2>/dev/null || true
     fi
 
+    # If a failing commit reached `pcp backup`, try to persist the restored
+    # state as well. Failure here is non-fatal because rollback must complete.
     pcp backup >/dev/null 2>&1 || true
 
     echo "Rollback complete. piCorePlayer routing/configuration was restored."
@@ -167,10 +187,10 @@ rollback_install() {
 
 cleanup_temp() {
     rm -rf "${BUILD_DIR}" 2>/dev/null || true
-    rm -f "${PCP_STAGED}" "${ASOUND_STAGED}" "${TCZ_TMP}" 2>/dev/null || true
-    if [ -n "${ROLLBACK_DIR:-}" ]; then
-        rm -rf "${ROLLBACK_DIR}" 2>/dev/null || true
-    fi
+    rm -rf "${STAGE_DATA_DIR}" 2>/dev/null || true
+    rm -rf "${ROLLBACK_DIR}" 2>/dev/null || true
+    rm -f "${PCP_STAGED}" "${ASOUND_STAGED}" 2>/dev/null || true
+    rm -f "${TCZ_TMP}" 2>/dev/null || true
 }
 
 cleanup() {
@@ -189,77 +209,6 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-###############################################################################
-# Helpers
-###############################################################################
-
-install_temporarily_if_missing() {
-    pkg="$1"
-    if ! command -v "${pkg}" >/dev/null 2>&1; then
-        echo "Installing ${pkg} temporarily..."
-        tce-load -wi "${pkg}"
-    fi
-}
-
-download_and_extract_tar_gz() {
-    localFileName="$1"
-    url="$2"
-    expected_sha256="$3"
-
-    echo "Downloading ${url}"
-
-    if $keepDownloads; then
-        mkdir -p "${CACHE_DIR}"
-
-        if [ ! -f "${CACHE_DIR}/${localFileName}" ]; then
-            wget -O "${CACHE_DIR}/${localFileName}.part" "${url}"
-            if ! tar -tzf "${CACHE_DIR}/${localFileName}.part" >/dev/null 2>&1; then
-                rm -f "${CACHE_DIR}/${localFileName}.part"
-                echo "ERROR: Downloaded archive ${localFileName} is corrupt."
-                exit 1
-            fi
-            mv "${CACHE_DIR}/${localFileName}.part" "${CACHE_DIR}/${localFileName}"
-        else
-            echo "Using cached ${CACHE_DIR}/${localFileName}"
-        fi
-
-        if [ -n "${expected_sha256}" ]; then
-            _actual=$(sha256sum "${CACHE_DIR}/${localFileName}" | awk '{print $1}')
-            if [ "${_actual}" != "${expected_sha256}" ]; then
-                echo "ERROR: SHA256 mismatch for ${localFileName}."
-                echo "  Expected: ${expected_sha256}"
-                echo "  Got:      ${_actual}"
-                rm -f "${CACHE_DIR}/${localFileName}"
-                exit 1
-            fi
-            echo "SHA256 verified: ${localFileName}: ${_actual}"
-        fi
-
-        tar -xzf "${CACHE_DIR}/${localFileName}"
-    else
-        wget -O "${localFileName}.part" "${url}"
-        if ! tar -tzf "${localFileName}.part" >/dev/null 2>&1; then
-            rm -f "${localFileName}.part"
-            echo "ERROR: Downloaded archive ${localFileName} is corrupt."
-            exit 1
-        fi
-        if [ -n "${expected_sha256}" ]; then
-            _actual=$(sha256sum "${localFileName}.part" | awk '{print $1}')
-            if [ "${_actual}" != "${expected_sha256}" ]; then
-                echo "ERROR: SHA256 mismatch for ${localFileName}."
-                echo "  Expected: ${expected_sha256}"
-                echo "  Got:      ${_actual}"
-                rm -f "${localFileName}.part"
-                exit 1
-            fi
-            echo "SHA256 verified: ${localFileName}: ${_actual}"
-        fi
-        mv "${localFileName}.part" "${localFileName}"
-        tar -xzf "${localFileName}"
-        rm -f "${localFileName}"
-    fi
-}
 
 ###############################################################################
 # Architecture
@@ -330,6 +279,8 @@ do
     shift
 done
 
+$keepDownloads && echo "Keeping downloads in ${CACHE_DIR}."
+
 ###############################################################################
 # Dry-run wrapper
 ###############################################################################
@@ -339,6 +290,94 @@ drun() {
         echo "  [DRY ]  $*"
     else
         "$@"
+    fi
+}
+
+###############################################################################
+# piCorePlayer extension helpers
+###############################################################################
+
+install_if_missing() {
+    extension="$1"
+
+    if tce-status -u | grep -q "${extension}"; then
+        pcp-load -il "${extension}"
+    elif ! tce-status -i | grep -q "${extension}"; then
+        pcp-load -wil "${extension}"
+    fi
+}
+
+install_temporarily_if_missing() {
+    extension="$1"
+
+    if tce-status -u | grep -q "${extension}"; then
+        pcp-load -il "${extension}"
+    elif ! tce-status -i | grep -q "${extension}"; then
+        if $keepDownloads; then
+            pcp-load -wil "${extension}"
+        else
+            pcp-load -wil -t /tmp "${extension}"
+        fi
+    fi
+}
+
+download_and_extract_tar_gz() {
+    localFileName="$1"
+    url="$2"
+    expected_sha256="$3"
+
+    echo "Downloading ${url}"
+
+    if $keepDownloads; then
+        mkdir -p "${CACHE_DIR}"
+
+        if [ ! -f "${CACHE_DIR}/${localFileName}" ]; then
+            # Download atomically: write to .part, verify, then rename.
+            wget -O "${CACHE_DIR}/${localFileName}.part" "${url}"
+            if ! tar -tzf "${CACHE_DIR}/${localFileName}.part" >/dev/null 2>&1; then
+                rm -f "${CACHE_DIR}/${localFileName}.part"
+                echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+                exit 1
+            fi
+            mv "${CACHE_DIR}/${localFileName}.part" "${CACHE_DIR}/${localFileName}"
+        else
+            echo "Using cached ${CACHE_DIR}/${localFileName}"
+        fi
+
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${CACHE_DIR}/${localFileName}" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${CACHE_DIR}/${localFileName}"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
+        fi
+
+        tar -xzf "${CACHE_DIR}/${localFileName}"
+    else
+        wget -O "${localFileName}.part" "${url}"
+        if ! tar -tzf "${localFileName}.part" >/dev/null 2>&1; then
+            rm -f "${localFileName}.part"
+            echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+            exit 1
+        fi
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${localFileName}.part" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${localFileName}.part"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
+        fi
+        mv "${localFileName}.part" "${localFileName}"
+        tar -xzf "${localFileName}"
+        rm -f "${localFileName}"
     fi
 }
 
@@ -353,6 +392,9 @@ if [ -f "${FINAL_TCZ}" ]; then
     exit 1
 fi
 
+# Even when the TCZ is absent (e.g. deleted manually), old piCoreCDSP processes
+# may still be running from the previously loaded extension in RAM.  Installing
+# over a live runtime risks race conditions and process conflicts.
 if [ -e "/usr/local/tce.installed/${EXTENSION_NAME}" ]; then
     echo "ERROR: piCoreCDSP is still loaded in RAM. Reboot first."
     echo
@@ -379,16 +421,13 @@ if [ -n "${_running_procs}" ]; then
     exit 1
 fi
 
-if ! [ -f "${PCP_CONFIG}" ]; then
-    echo "ERROR: piCorePlayer config not found: ${PCP_CONFIG}"
-    exit 1
-fi
-
 requiredSpaceInMB=350
+
 availableSpaceInMB=$(
     /bin/df -m /dev/mmcblk0p2 2>/dev/null |
         awk 'NR==2 { print $4 }'
 )
+
 if [ -z "${availableSpaceInMB}" ] ||
    [ "${availableSpaceInMB}" -le "${requiredSpaceInMB}" ]; then
     echo "ERROR: Not enough free space on /dev/mmcblk0p2."
@@ -402,7 +441,7 @@ if [ -d "${BUILD_DIR}" ]; then
     exit 1
 fi
 
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}" "${STAGE_CONFIG_DIR}"
 
 ###############################################################################
 # Test ALSA Loopback support
@@ -418,11 +457,13 @@ if ! sudo modprobe snd-aloop; then
 fi
 
 i=0
+
 while [ "${i}" -lt 10 ]
 do
     if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
         break
     fi
+
     i=$((i + 1))
     sleep 1
 done
@@ -438,6 +479,11 @@ echo "ALSA Loopback is available."
 ###############################################################################
 # Resolve the physical playback device
 ###############################################################################
+
+if [ ! -f "${PCP_CONFIG}" ]; then
+    echo "ERROR: piCorePlayer config not found: ${PCP_CONFIG}"
+    exit 1
+fi
 
 read_pcp_output() {
     awk '
@@ -456,7 +502,7 @@ is_usable_playback_device() {
     candidate="$1"
 
     case "${candidate}" in
-        ""|null|*Loopback*|*loopback*)
+        ""|null|*Loopback*|*loopback*|picorecdsp|camilladsp)
             return 1
             ;;
     esac
@@ -537,17 +583,21 @@ if [ ! -x "${PICORECDSP_BIN}" ]; then
     exit 1
 fi
 
+# Verify the binary can actually execute.
+"${PICORECDSP_BIN}" --help >/dev/null
+
+# Catch missing runtime libraries before the transactional commit.
+if command -v ldd >/dev/null 2>&1; then
+    if ldd "${PICORECDSP_BIN}" 2>&1 | grep -q 'not found'; then
+        echo "ERROR: picorecdsp has unresolved runtime libraries:"
+        ldd "${PICORECDSP_BIN}" 2>&1 || true
+        exit 1
+    fi
+fi
+
 ###############################################################################
 # Stage CamillaDSP configs
 ###############################################################################
-
-STAGE_DATA_DIR="/tmp/${EXTENSION_NAME}-data.$$"
-STAGE_CONFIG_DIR="${STAGE_DATA_DIR}/configs"
-STAGE_BYPASS_CONFIG="${STAGE_CONFIG_DIR}/Bypass.yml"
-STAGE_NULL_CONFIG="${STAGE_CONFIG_DIR}/Null.yml"
-
-mkdir -p "${STAGE_CONFIG_DIR}"
-trap 'rm -rf "${STAGE_DATA_DIR}" 2>/dev/null || true; cleanup' EXIT
 
 # Bypass.yml — transparent pass-through.
 cat > "${STAGE_BYPASS_CONFIG}" <<EOF
@@ -606,94 +656,6 @@ devices:
 filters: {}
 mixers: {}
 pipeline: []
-EOF
-
-###############################################################################
-# Download CamillaDSP
-###############################################################################
-
-cd "${BUILD_DIR}/usr/local"
-
-download_and_extract_tar_gz \
-    "camilladsp-${CDSP_VERSION}-${architecture}.tar.gz" \
-    "https://github.com/HEnquist/camilladsp/releases/download/${CDSP_VERSION}/camilladsp-linux-${architecture}.tar.gz" \
-    "${CDSP_SHA256}"
-
-if [ ! -f "${BUILD_DIR}/usr/local/camilladsp" ]; then
-    echo "ERROR: CamillaDSP binary was not found after extraction."
-    exit 1
-fi
-
-chmod 755 "${BUILD_DIR}/usr/local/camilladsp"
-
-if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--wait'; then
-    echo "ERROR: Downloaded CamillaDSP does not support --wait."
-    exit 1
-fi
-
-if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--no_config'; then
-    echo "ERROR: Downloaded CamillaDSP does not support --no_config."
-    exit 1
-fi
-
-"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}" >/dev/null
-"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}"   >/dev/null
-
-echo "CamillaDSP configuration validation OK."
-
-###############################################################################
-# Download CamillaGUI
-###############################################################################
-
-cd "${BUILD_DIR}/usr/local"
-
-download_and_extract_tar_gz \
-    "camillagui-${CAMILLA_GUI_VERSION}-${architecture}.tar.gz" \
-    "https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${architecture}.tar.gz" \
-    "${GUI_SHA256}"
-
-if [ ! -f "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ]; then
-    echo "ERROR: CamillaGUI backend was not found after extraction."
-    exit 1
-fi
-
-chmod -R 775 "${BUILD_DIR}/usr/local/camillagui_backend"
-
-###############################################################################
-# CamillaGUI configuration
-###############################################################################
-
-GUI_CONFIG_DIR="${BUILD_DIR}/usr/local/camillagui_backend/_internal/config"
-
-if [ ! -d "${GUI_CONFIG_DIR}" ]; then
-    echo "ERROR: CamillaGUI bundle config directory not found:"
-    echo "  ${GUI_CONFIG_DIR}"
-    exit 1
-fi
-
-cat > "${GUI_CONFIG_DIR}/camillagui.yml" <<EOF
-camilla_host: "127.0.0.1"
-camilla_port: 1234
-
-bind_address: "0.0.0.0"
-port: 5000
-
-ssl_certificate: null
-ssl_private_key: null
-
-gui_config_file: null
-
-config_dir: "${CONFIG_DIR}"
-coeff_dir: "${COEFF_DIR}"
-default_config: "${BYPASS_CONFIG}"
-statefile_path: "${STATEFILE}"
-log_file: "/tmp/camilladsp_rCURRENT.log"
-
-supported_capture_types:
-  - "Alsa"
-
-supported_playback_types:
-  - "Alsa"
 EOF
 
 ###############################################################################
@@ -790,10 +752,10 @@ ASOUND_BLOCK
 
 cp "${PCP_CONFIG}" "${PCP_STAGED}"
 
-sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|'          -i "${PCP_STAGED}"
-sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="picorecdsp"|' -i "${PCP_STAGED}"
-sed 's|^SHAIRPORT_CONTROL=.*|SHAIRPORT_CONTROL=""|'   -i "${PCP_STAGED}"
-sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="picorecdsp"|' -i "${PCP_STAGED}"
+sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|'                -i "${PCP_STAGED}"
+sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="picorecdsp"|'  -i "${PCP_STAGED}"
+sed 's|^SHAIRPORT_CONTROL=.*|SHAIRPORT_CONTROL=""|'    -i "${PCP_STAGED}"
+sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="picorecdsp"|'  -i "${PCP_STAGED}"
 
 if ! grep -qx 'OUTPUT="picorecdsp"' "${PCP_STAGED}"; then
     echo "ERROR: Could not stage piCorePlayer OUTPUT routing."
@@ -801,27 +763,178 @@ if ! grep -qx 'OUTPUT="picorecdsp"' "${PCP_STAGED}"; then
 fi
 
 ###############################################################################
-# Pre-commit validation
+# Download CamillaDSP
 ###############################################################################
 
-if [ ! -s "${STAGE_BYPASS_CONFIG}" ] || \
-   [ ! -s "${STAGE_NULL_CONFIG}" ]   || \
-   [ ! -s "${ASOUND_STAGED}" ]       || \
-   [ ! -s "${PCP_STAGED}" ]; then
-    echo "ERROR: One or more staged installation files are missing."
+cd "${BUILD_DIR}/usr/local"
+
+download_and_extract_tar_gz \
+    "camilladsp-${CDSP_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camilladsp/releases/download/${CDSP_VERSION}/camilladsp-linux-${architecture}.tar.gz" \
+    "${CDSP_SHA256}"
+
+if [ ! -f "${BUILD_DIR}/usr/local/camilladsp" ]; then
+    echo "ERROR: CamillaDSP binary was not found after extraction."
     exit 1
 fi
 
-if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] || \
-   [ ! -x "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ] || \
-   [ ! -x "${PICORECDSP_BIN}" ]; then
-    echo "ERROR: Staged runtime is incomplete."
+chmod 755 "${BUILD_DIR}/usr/local/camilladsp"
+
+if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--wait'; then
+    echo "ERROR: Downloaded CamillaDSP does not support --wait."
     exit 1
 fi
 
-echo
-echo "All downloads and validations completed successfully."
-echo "Committing piCoreCDSP changes to piCorePlayer..."
+if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--no_config'; then
+    echo "ERROR: Downloaded CamillaDSP does not support --no_config."
+    exit 1
+fi
+
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}"
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}"
+
+echo "CamillaDSP configuration validation OK."
+
+###############################################################################
+# CamillaDSP WebSocket smoke test
+#
+# Start a temporary CamillaDSP instance in wait/no-config mode and verify
+# that its WebSocket port becomes available. This confirms the binary is
+# functional on this kernel before committing the full install.
+###############################################################################
+
+(
+    TEST_PORT=12345
+    TEST_STATEFILE="/tmp/picorecdsp-cdsp-ws-test.$$.state.yml"
+    TEST_STDERR_LOG="/tmp/picorecdsp-cdsp-ws-test.$$.log"
+    TEST_PID=""
+
+    cleanup_ws_test() {
+        if [ -n "${TEST_PID}" ]; then
+            kill "${TEST_PID}" >/dev/null 2>&1 || true
+            wait "${TEST_PID}" >/dev/null 2>&1 || true
+        fi
+        rm -f "${TEST_STATEFILE}" "${TEST_STDERR_LOG}" >/dev/null 2>&1 || true
+    }
+
+    trap cleanup_ws_test EXIT HUP INT TERM
+
+    touch "${TEST_STATEFILE}"
+
+    "${BUILD_DIR}/usr/local/camilladsp" \
+        --wait \
+        --no_config \
+        --statefile "${TEST_STATEFILE}" \
+        --port "${TEST_PORT}" \
+        --address 127.0.0.1 \
+        >"${TEST_STDERR_LOG}" 2>&1 &
+    TEST_PID=$!
+
+    i=0
+    ws_ready=false
+    while [ "${i}" -lt 20 ]
+    do
+        if ! kill -0 "${TEST_PID}" 2>/dev/null; then
+            echo "ERROR: Temporary CamillaDSP exited before WebSocket became available."
+            cat "${TEST_STDERR_LOG}" 2>/dev/null || true
+            exit 1
+        fi
+
+        # Use /dev/tcp to probe the WebSocket port without requiring nc or curl.
+        if (exec 3<>"/dev/tcp/127.0.0.1/${TEST_PORT}" && exec 3>&-) 2>/dev/null; then
+            ws_ready=true
+            break
+        fi
+
+        i=$((i + 1))
+        sleep 1
+    done
+
+    if ! $ws_ready; then
+        echo "ERROR: CamillaDSP WebSocket port ${TEST_PORT} did not open within 20 s."
+        cat "${TEST_STDERR_LOG}" 2>/dev/null || true
+        exit 1
+    fi
+)
+
+echo "CamillaDSP WebSocket smoke test OK."
+
+###############################################################################
+# Download CamillaGUI
+###############################################################################
+
+cd "${BUILD_DIR}/usr/local"
+
+download_and_extract_tar_gz \
+    "camillagui-${CAMILLA_GUI_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${architecture}.tar.gz" \
+    "${GUI_SHA256}"
+
+if [ ! -f "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ]; then
+    echo "ERROR: CamillaGUI backend was not found after extraction."
+    exit 1
+fi
+
+chmod -R 775 "${BUILD_DIR}/usr/local/camillagui_backend"
+
+###############################################################################
+# CamillaGUI configuration
+###############################################################################
+
+GUI_CONFIG_DIR="${BUILD_DIR}/usr/local/camillagui_backend/_internal/config"
+
+if [ ! -d "${GUI_CONFIG_DIR}" ]; then
+    echo "ERROR: CamillaGUI bundle config directory not found:"
+    echo "  ${GUI_CONFIG_DIR}"
+    exit 1
+fi
+
+cat > "${GUI_CONFIG_DIR}/camillagui.yml" <<EOF
+camilla_host: "127.0.0.1"
+camilla_port: 1234
+
+bind_address: "0.0.0.0"
+port: 5000
+
+ssl_certificate: null
+ssl_private_key: null
+
+gui_config_file: null
+
+config_dir: "${CONFIG_DIR}"
+coeff_dir: "${COEFF_DIR}"
+default_config: "${BYPASS_CONFIG}"
+statefile_path: "${STATEFILE}"
+log_file: "/tmp/camilladsp_rCURRENT.log"
+
+supported_capture_types:
+  - "Alsa"
+
+supported_playback_types:
+  - "Alsa"
+EOF
+
+###############################################################################
+# Log-trimmer helper script
+###############################################################################
+
+mkdir -p "${BUILD_DIR}/usr/local/bin"
+
+cat > "${BUILD_DIR}/usr/local/bin/picorecdsp-trim-log" <<'EOF'
+#!/bin/sh
+# Trim a log file to the most recent 256 KB to prevent filling /tmp (RAM).
+# Uses copy-truncate so that any process with the file open via ">>" continues
+# writing to the same inode rather than to an orphaned unlinked file.
+_log="$1"
+if [ -f "${_log}" ] && [ "$(wc -c < "${_log}")" -gt 262144 ]; then
+    tail -c 262144 "${_log}" > "${_log}.tmp" \
+        && cat "${_log}.tmp" > "${_log}" \
+        && rm -f "${_log}.tmp" \
+        || true
+fi
+EOF
+
+chmod 755 "${BUILD_DIR}/usr/local/bin/picorecdsp-trim-log"
 
 ###############################################################################
 # tce.installed boot hook
@@ -867,8 +980,11 @@ fi
 
 sudo -u tc sh -c '
 exec >> /tmp/camilladsp-supervisor.log 2>&1
+_log=/tmp/camilladsp-supervisor.log
 while :
 do
+    /usr/local/bin/picorecdsp-trim-log "${_log}"
+
     /usr/local/camilladsp \
         --wait \
         --no_config \
@@ -887,14 +1003,34 @@ done
 ' &
 
 ###############################################################################
+# Wait for CamillaDSP WebSocket to become available
+###############################################################################
+
+i=0
+while [ "${i}" -lt 30 ]
+do
+    if (exec 3<>/dev/tcp/127.0.0.1/1234 && exec 3>&-) 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+if [ "${i}" -ge 30 ]; then
+    echo "$(date): CamillaDSP WebSocket did not become ready" >> "${STARTUP_LOG}"
+fi
+
+###############################################################################
 # piCoreCDSP daemon supervisor
 ###############################################################################
 
 sudo -u tc sh -c '
 exec >> /tmp/picorecdsp-daemon.log 2>&1
-sleep 3
+_log=/tmp/picorecdsp-daemon.log
 while :
 do
+    /usr/local/bin/picorecdsp-trim-log "${_log}"
+
     /usr/local/bin/picorecdsp
 
     rc=$?
@@ -910,14 +1046,32 @@ done
 
 sudo -u tc sh -c '
 exec >> /tmp/camillagui-backend.log 2>&1
+_log=/tmp/camillagui-backend.log
 while :
 do
+    /usr/local/bin/picorecdsp-trim-log "${_log}"
+
     /usr/local/camillagui_backend/camillagui_backend
 
     rc=$?
     echo "$(date): CamillaGUI exited with ${rc}; restarting" \
         >> /tmp/picorecdsp-startup.log
     sleep 2
+done
+' &
+
+###############################################################################
+# Periodic log trimmer (bounds long-running logs even without restarts)
+###############################################################################
+
+sudo -u tc sh -c '
+exec >> /tmp/picorecdsp-logtrim.log 2>&1
+while :
+do
+    /usr/local/bin/picorecdsp-trim-log /tmp/picorecdsp-daemon.log
+    /usr/local/bin/picorecdsp-trim-log /tmp/camillagui-backend.log
+    /usr/local/bin/picorecdsp-trim-log /tmp/camilladsp-supervisor.log
+    sleep 60
 done
 ' &
 
@@ -945,6 +1099,29 @@ fi
 # present in the piCorePlayer ALSA stack. No .tcz.dep is installed.
 
 ###############################################################################
+# Pre-commit validation
+###############################################################################
+
+if [ ! -s "${STAGE_BYPASS_CONFIG}" ] || \
+   [ ! -s "${STAGE_NULL_CONFIG}" ]   || \
+   [ ! -s "${ASOUND_STAGED}" ]       || \
+   [ ! -s "${PCP_STAGED}" ]; then
+    echo "ERROR: One or more staged installation files are missing."
+    exit 1
+fi
+
+if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] || \
+   [ ! -x "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ] || \
+   [ ! -x "${PICORECDSP_BIN}" ]; then
+    echo "ERROR: Staged runtime is incomplete."
+    exit 1
+fi
+
+echo
+echo "All downloads and validations completed successfully."
+echo "Committing piCoreCDSP changes to piCorePlayer..."
+
+###############################################################################
 # Transactional commit
 ###############################################################################
 
@@ -962,7 +1139,7 @@ fi
 prepare_rollback
 COMMIT_STARTED=true
 
-# Persistent CamillaDSP data.
+# Persistent CamillaDSP data is changed only now, after all validation passed.
 sudo mkdir -p "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"
 
 if [ ! -f "${BYPASS_CONFIG}" ]; then
@@ -989,12 +1166,13 @@ fi
 sudo touch /etc/asound.conf
 sudo chmod 664 /etc/asound.conf
 sudo chown root:staff /etc/asound.conf
-sudo cp "${ASOUND_STAGED}" /etc/asound.conf
+sudo tee /etc/asound.conf < "${ASOUND_STAGED}" >/dev/null
 
 # Route pCP sources to pcm.picorecdsp LAST, when extension/config are in place.
-sudo cp "${PCP_STAGED}" "${PCP_CONFIG}"
+sudo tee "${PCP_CONFIG}" < "${PCP_STAGED}" >/dev/null
 
-# Ownership/permissions on persistent data.
+# Apply ownership and permissions only to the directories and files this
+# installer created or modified.
 for _d in "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"; do
     sudo chown tc:staff "${_d}" 2>/dev/null || true
     sudo chmod u+rwx,g+rwx "${_d}" 2>/dev/null || true
@@ -1005,10 +1183,12 @@ for _f in "${BYPASS_CONFIG}" "${NULL_CONFIG}" "${STATEFILE}"; do
     sudo chmod u+rw,g+rw "${_f}" 2>/dev/null || true
 done
 
+# Persist only after the entire commit completed successfully.
 pcp backup
 
 INSTALL_COMMITTED=true
 
+# From this point onward cleanup must not roll back the installed system.
 COMMIT_STARTED=false
 cleanup_temp
 trap - EXIT HUP INT TERM
@@ -1045,7 +1225,7 @@ echo
 echo "CamillaGUI after reboot:"
 echo "  http://pcp.local:5000"
 echo
-echo "Logs after reboot:"
+echo "Useful logs:"
 echo "  /tmp/picorecdsp-startup.log"
 echo "  /tmp/picorecdsp-daemon.log"
 echo "  /tmp/camilladsp-supervisor.log"
