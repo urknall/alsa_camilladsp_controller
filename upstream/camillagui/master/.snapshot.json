@@ -1,0 +1,26 @@
+{
+  "source_id": "camillagui-frontend-master",
+  "repo": "HEnquist/camillagui",
+  "ref": "master",
+  "sha": "948c751c7974624128d2e8b9f1f066371e7895a7",
+  "fetched_at": "2026-08-16T18:37:13.143542+00:00",
+  "files": [
+    "README.md",
+    "package.json",
+    "src/camilladsp/config.test.ts",
+    "src/camilladsp/config.ts",
+    "src/camilladsp/status.ts",
+    "src/import/configimport.test.ts",
+    "src/import/configimport.ts",
+    "src/main/UndoRedo.test.ts",
+    "src/main/UndoRedo.ts",
+    "src/utilities/arrays.ts",
+    "src/utilities/common.test.ts",
+    "src/utilities/common.ts",
+    "src/utilities/errors.test.ts",
+    "src/utilities/errors.ts",
+    "src/utilities/jsondiff.test.ts",
+    "src/utilities/jsondiff.ts",
+    "src/utilities/styles.ts"
+  ]
+}
