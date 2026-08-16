@@ -1,0 +1,145 @@
+# piCoreCDSP v2 — Upstream Removal Check Workflow (roadmap §66, Gate 14)
+#
+# Triggered by the upstream-capability-canary workflow after probes complete.
+# Compares current probe results against stored baseline in status.json to
+# detect FAIL→PASS flips.  For each flip, opens a GitHub issue labelled
+# removal-candidate, upstream, capability.
+#
+# This workflow never modifies production code.
+
+name: Upstream Removal Check
+
+on:
+  workflow_run:
+    workflows: ["Upstream Capability Canary"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to update status.json
+  issues: write    # to open removal-candidate issues
+
+jobs:
+  removal-check:
+    name: FAIL→PASS capability flip detector
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download probe result artifacts from triggering run
+        if: github.event_name == 'workflow_run'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: probe-results-*
+          path: /tmp/probe-results
+          merge-multiple: true
+
+      - name: Install Python dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Run removal candidate check
+        id: check
+        continue-on-error: true
+        run: |
+          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
+          if [ -z "$PROBE_FILES" ]; then
+            echo "No probe result files found — skipping removal check."
+            echo '[]' > /tmp/removal-candidates.json
+            exit 0
+          fi
+          python3 scripts/upstream_removal_check.py \
+            --status       upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --probes       $PROBE_FILES \
+            --output       /tmp/removal-candidates.json
+
+      - name: Update status.json with current probe results
+        continue-on-error: true
+        run: |
+          if git diff --quiet upstream/status.json 2>/dev/null; then
+            echo "status.json unchanged — skipping commit."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add upstream/status.json
+            git commit -m "chore: update probe results in status.json [skip ci]"
+            git push origin HEAD || true
+          fi
+
+      - name: Open removal-candidate issues
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f /tmp/removal-candidates.json ]; then exit 0; fi
+          COUNT=$(python3 -c \
+            "import json; print(len(json.load(open('/tmp/removal-candidates.json'))))")
+          echo "Removal candidates found: ${COUNT}"
+          if [ "$COUNT" -eq 0 ]; then exit 0; fi
+
+          python3 - <<'PYEOF'
+          import json, subprocess, sys
+
+          candidates = json.load(open("/tmp/removal-candidates.json"))
+          for c in candidates:
+              # Deduplicate: skip if an open issue with the same title already exists.
+              result = subprocess.run(
+                  ["gh", "issue", "list",
+                   "--label", "removal-candidate",
+                   "--state", "open",
+                   "--search", c["issue_title"],
+                   "--json", "number",
+                   "--jq", ".[0].number"],
+                  capture_output=True, text=True
+              )
+              existing = result.stdout.strip()
+              if existing:
+                  print(f"Issue already open (#{existing}) for: {c['capability_key']} — skipping.")
+                  continue
+
+              result = subprocess.run(
+                  ["gh", "issue", "create",
+                   "--title",  c["issue_title"],
+                   "--body",   c["issue_body"],
+                   "--label",  ",".join(c["issue_labels"])],
+                  capture_output=True, text=True
+              )
+              if result.returncode == 0:
+                  print(f"Opened issue: {result.stdout.strip()}")
+              else:
+                  print(f"Failed to open issue for {c['capability_key']}: {result.stderr.strip()}",
+                        file=sys.stderr)
+          PYEOF
+
+      - name: Write step summary
+        continue-on-error: true
+        run: |
+          echo "## Upstream Removal Check" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f /tmp/removal-candidates.json ]; then
+            echo "_No probe results available._" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - << 'PYEOF'
+          import json
+          candidates = json.load(open("/tmp/removal-candidates.json"))
+          summary_file = open(
+              __import__("os").environ["GITHUB_STEP_SUMMARY"], "a"
+          )
+          if not candidates:
+              print("No FAIL→PASS flips detected.", file=summary_file)
+          else:
+              print(
+                  f"\n**{len(candidates)} removal candidate(s) detected:**\n",
+                  file=summary_file,
+              )
+              for c in candidates:
+                  print(
+                      f"- **`{c['capability_key']}`** — FAIL→PASS (see issue)",
+                      file=summary_file,
+                  )
+          summary_file.close()
+          PYEOF

@@ -281,3 +281,173 @@ mod tests {
         assert_eq!(err.missing_field, "slave.format");
     }
 }
+
+// ── AlsaLoopbackObserver (Linux only) ────────────────────────────────────────
+
+/// A real [`SourceObserver`] that reads loopback state from
+/// `/proc/asound/<card>/pcm<device>p/sub<subdevice>/`.
+///
+/// # How it works
+///
+/// `snd-aloop` exposes the PCM state of each subdevice under
+/// `/proc/asound/`.  This observer reads two files on every `snapshot()` call:
+///
+/// * `status` — "closed" when no producer is open; any other value
+///   (e.g. "state: RUNNING") means a producer is active.
+/// * `hw_params` — parsed for the `rate:` line to extract the sample rate.
+///
+/// `next_trigger()` polls these files every `poll_interval` and returns when
+/// the active/inactive state changes.
+///
+/// # Default paths
+///
+/// | Setting       | Default          | Meaning                              |
+/// |---------------|------------------|--------------------------------------|
+/// | `card`        | `"Loopback"`     | ALSA card name under `/proc/asound/` |
+/// | `device`      | `1`              | PCM device index (playback side)     |
+/// | `subdevice`   | `0`              | Subdevice index                      |
+/// | `poll_interval` | 50 ms          | How often to re-read for triggers    |
+///
+/// The defaults correspond to the piCoreCDSP canonical config where the
+/// producer opens `hw:Loopback,1,0` (device 1, subdevice 0) and CamillaDSP
+/// reads from `hw:Loopback,0,0`.
+///
+/// # Removal criterion
+///
+/// Registered in `upstream/capabilities.yml` under `native_aloop_rate_following`.
+/// Delete when CamillaDSP natively detects loopback active/rate/stop.
+#[cfg(target_os = "linux")]
+pub struct AlsaLoopbackObserver {
+    status_path: std::path::PathBuf,
+    hw_params_path: std::path::PathBuf,
+    poll_interval: std::time::Duration,
+    generation: u64,
+    last_active: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl AlsaLoopbackObserver {
+    /// Create a new observer with default paths for the canonical piCoreCDSP setup.
+    pub fn new_default() -> Self {
+        Self::new("Loopback", 1, 0, std::time::Duration::from_millis(50))
+    }
+
+    /// Create a new observer with explicit card name, device, subdevice, and poll interval.
+    pub fn new(
+        card: &str,
+        device: u32,
+        subdevice: u32,
+        poll_interval: std::time::Duration,
+    ) -> Self {
+        let base = std::path::PathBuf::from(format!(
+            "/proc/asound/{}/pcm{}p/sub{}",
+            card, device, subdevice
+        ));
+        Self {
+            status_path: base.join("status"),
+            hw_params_path: base.join("hw_params"),
+            poll_interval,
+            generation: 0,
+            last_active: false,
+        }
+    }
+
+    fn read_snapshot_inner(&self) -> crate::source::SourceSnapshot {
+        use crate::source::{SourceSnapshot, SourceState};
+
+        let status = std::fs::read_to_string(&self.status_path).unwrap_or_default();
+        let active = !status.trim().is_empty() && status.trim() != "closed";
+
+        let sample_rate = if active {
+            std::fs::read_to_string(&self.hw_params_path)
+                .ok()
+                .and_then(|hw| parse_proc_rate(&hw))
+        } else {
+            None
+        };
+
+        let state = if active {
+            if let Some(r) = sample_rate {
+                SourceState::Active { sample_rate: r }
+            } else {
+                // Status says active but we couldn't read the rate yet — still
+                // report Inactive so the reconciler waits for the rate to settle.
+                SourceState::Inactive
+            }
+        } else {
+            SourceState::Inactive
+        };
+
+        SourceSnapshot {
+            state,
+            sample_rate,
+            format: None,
+            channels: None,
+            generation: self.generation,
+        }
+    }
+}
+
+/// Parse `rate: 44100 (44100/1)` from a `/proc/asound/.../hw_params` file.
+#[cfg(target_os = "linux")]
+fn parse_proc_rate(hw_params: &str) -> Option<u32> {
+    for line in hw_params.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("rate:") {
+            // rest is something like " 44100 (44100/1)"
+            let first_token = rest.split_whitespace().next()?;
+            return first_token.parse::<u32>().ok();
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+#[async_trait::async_trait]
+impl crate::source::observer::SourceObserver for AlsaLoopbackObserver {
+    async fn snapshot(
+        &self,
+    ) -> Result<crate::source::SourceSnapshot, crate::error::PicorecdspError> {
+        Ok(self.read_snapshot_inner())
+    }
+
+    async fn next_trigger(&mut self) -> Result<(), crate::error::PicorecdspError> {
+        loop {
+            tokio::time::sleep(self.poll_interval).await;
+            let snap = self.read_snapshot_inner();
+            let now_active = snap.state.is_active();
+            if now_active != self.last_active {
+                if now_active {
+                    self.generation = self.generation.wrapping_add(1);
+                }
+                self.last_active = now_active;
+                return Ok(());
+            }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod proc_observer_tests {
+    use super::*;
+
+    #[test]
+    fn parse_proc_rate_extracts_rate() {
+        let hw_params = "access: MMAP_INTERLEAVED\nformat: S32_LE\nsubformat: STD\nchannels: 2\nrate: 44100 (44100/1)\nperiod_size: 11025\nbuffer_size: 44100\n";
+        assert_eq!(parse_proc_rate(hw_params), Some(44_100));
+    }
+
+    #[test]
+    fn parse_proc_rate_various_rates() {
+        for rate in &[44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            let hw_params = format!("rate: {rate} ({rate}/1)\n");
+            assert_eq!(parse_proc_rate(&hw_params), Some(*rate));
+        }
+    }
+
+    #[test]
+    fn parse_proc_rate_returns_none_for_empty() {
+        assert_eq!(parse_proc_rate(""), None);
+        assert_eq!(parse_proc_rate("access: MMAP_INTERLEAVED\n"), None);
+    }
+}

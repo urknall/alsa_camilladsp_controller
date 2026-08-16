@@ -1,0 +1,110 @@
+# piCoreCDSP v2 — Upstream Release Watch (roadmap §64, Gate 14)
+#
+# Daily watch for new releases of every upstream project piCoreCDSP depends on.
+# Reports new releases in the Actions step summary.  NEVER auto-upgrades.
+#
+# Monitoring levels (roadmap §67):
+#   critical — CamillaDSP, pyCamillaDSP, piCorePlayer
+#   high     — CamillaGUI backend
+#   medium   — CamillaGUI frontend
+#
+# The upgrade path:
+#   new release discovered → canary → hardware validation (Gate 12) → deliberate pin
+
+name: Upstream Release Watch
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # 03:30 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch-releases:
+    name: Release watch
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CamillaDSP releases [critical]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaDSP Releases [critical]" >> "$GITHUB_STEP_SUMMARY"
+          LATEST=$(gh api repos/HEnquist/camilladsp/releases/latest \
+            --jq '"- Latest: \(.tag_name) (\(.published_at[:10]))"' 2>/dev/null \
+            || echo "- (API unavailable)")
+          echo "$LATEST" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Recent releases:**" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camilladsp/releases \
+            --jq '.[:5][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: Check CamillaGUI backend releases [high]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaGUI Backend Releases [high]" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camillagui-backend/releases \
+            --jq '.[:3][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "- (no releases or API unavailable)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check CamillaGUI frontend releases [medium]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaGUI Frontend Releases [medium]" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camillagui/releases \
+            --jq '.[:3][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "- (no releases or API unavailable)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check pyCamillaDSP releases [critical]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## pyCamillaDSP Releases [critical]" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/pycamilladsp/releases \
+            --jq '.[:3][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "- (no releases or API unavailable)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check piCorePlayer releases [critical]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## piCorePlayer Releases [critical]" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/piCorePlayer/pCP-Releases/releases \
+            --jq '.[:3][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "- (no releases or API unavailable)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check CamillaDSP controller releases [high]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaDSP Controller Releases [high]" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camilladsp-controller/releases \
+            --jq '.[:3][] | "- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "- (no releases or API unavailable)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No-auto-upgrade reminder
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "---" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ⚠️  **No automatic upgrade is performed.**" >> "$GITHUB_STEP_SUMMARY"
+          echo "> New releases require: canary CI → hardware validation (Gate 12) → deliberate pin decision." >> "$GITHUB_STEP_SUMMARY"
+          echo "> See roadmap §1, §41, §64, §69." >> "$GITHUB_STEP_SUMMARY"

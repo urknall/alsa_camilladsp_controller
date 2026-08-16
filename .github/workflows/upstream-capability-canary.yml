@@ -1,0 +1,199 @@
+# piCoreCDSP v2 — Upstream Capability Canary (roadmap §63, Gate 14)
+#
+# Runs the black-box CamillaDSP capability probes (probes/) nightly and after
+# upstream-sync PRs.  Feeds results into the removal-check workflow.
+#
+# This workflow is NON-BLOCKING — it never gates a release merge.
+# All jobs use continue-on-error: true.
+#
+# Probe scope (roadmap §63):
+#   CamillaDSP: WebSocket contract, GetConfig, GetPreviousConfig, ConfigFilePath,
+#   SetConfig, SetConfigValue, state events, stop_on_inactive, source-rate override,
+#   override while inactive, override survives SetConfig/Apply, config revision/CAS,
+#   $samplerate$ token-aware override.
+#   ALSA/kernel: snd-aloop availability (modprobe check).
+#
+# Hardware-dependent probes (real pCP + DAC) are NOT included here — those run
+# at Gate 12 hardware validation and are not simulated by GitHub-hosted CI.
+
+name: Upstream Capability Canary
+
+on:
+  schedule:
+    - cron: "0 4 * * *"   # nightly at 04:00 UTC
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "upstream/**"     # triggered when an upstream-sync PR is opened
+
+permissions:
+  contents: read
+
+jobs:
+  probe-camilladsp:
+    name: "CamillaDSP capability probe @ ${{ matrix.branch }}"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - master
+          - next4.2.0
+          - next5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout CamillaDSP ${{ matrix.branch }}
+        id: clone
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: HEnquist/camilladsp
+          ref: ${{ matrix.branch }}
+          path: /tmp/camilladsp-src
+
+      - name: Install ALSA headers + Python deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev python3-pip
+          pip install --quiet websockets pyyaml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "/tmp/camilladsp-src -> target"
+
+      - name: Build CamillaDSP ${{ matrix.branch }}
+        id: build
+        continue-on-error: true
+        working-directory: /tmp/camilladsp-src
+        run: cargo build --release 2>&1 | tail -5
+
+      - name: Run capability probes
+        id: probe
+        continue-on-error: true
+        env:
+          CAMILLA_BINARY: /tmp/camilladsp-src/target/release/camilladsp
+          CAMILLA_BRANCH: ${{ matrix.branch }}
+          RESULTS_FILE: /tmp/probe-results-${{ matrix.branch }}.json
+        run: |
+          if [ ! -f "$CAMILLA_BINARY" ]; then
+            echo "Binary not available — skipping probes for ${{ matrix.branch }}"
+            echo '{"branch":"${{ matrix.branch }}","probes":[]}' > "$RESULTS_FILE"
+            exit 0
+          fi
+          python3 probes/probe_camilla_capabilities.py \
+            --binary       "$CAMILLA_BINARY" \
+            --branch       "$CAMILLA_BRANCH" \
+            --capabilities upstream/capabilities.yml \
+            --output       "$RESULTS_FILE"
+
+      - name: Summarise probe results
+        continue-on-error: true
+        run: |
+          RESULTS="/tmp/probe-results-${{ matrix.branch }}.json"
+          echo "## Capability probe: CamillaDSP ${{ matrix.branch }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RESULTS" ]; then
+            python3 probes/report_probe_results.py "$RESULTS" \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_No results (build or probe failure)._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload probe results
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: probe-results-${{ matrix.branch }}
+          path: /tmp/probe-results-${{ matrix.branch }}.json
+          retention-days: 90
+
+  # Run the removal check after all probes finish.
+  removal-check:
+    name: Check for FAIL→PASS capability flips
+    needs: probe-camilladsp
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all probe results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: probe-results-*
+          path: /tmp/probe-results
+          merge-multiple: true
+
+      - name: Install Python deps
+        run: pip install --quiet pyyaml
+
+      - name: Run removal candidate check
+        id: removal
+        continue-on-error: true
+        run: |
+          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
+          python3 scripts/upstream_removal_check.py \
+            --status       upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --probes       $PROBE_FILES \
+            --output       /tmp/removal-candidates.json
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Update upstream/status.json with probe results
+        continue-on-error: true
+        run: |
+          # The removal check script updates status.json in-place with current results.
+          if [ -f upstream/status.json ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add upstream/status.json
+            git diff --cached --quiet || git commit -m "chore: update probe results in status.json [skip ci]"
+            git push origin HEAD || true
+          fi
+
+      - name: Open removal-candidate issues
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f /tmp/removal-candidates.json ]; then exit 0; fi
+          COUNT=$(python3 -c "import json,sys; d=json.load(open('/tmp/removal-candidates.json')); print(len(d))")
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No new removal candidates."
+            exit 0
+          fi
+          python3 - <<'PYEOF'
+          import json, subprocess, sys
+          candidates = json.load(open("/tmp/removal-candidates.json"))
+          for c in candidates:
+              result = subprocess.run(
+                  ["gh", "issue", "create",
+                   "--title",  c["issue_title"],
+                   "--body",   c["issue_body"],
+                   "--label",  ",".join(c["issue_labels"])],
+                  capture_output=True, text=True
+              )
+              if result.returncode == 0:
+                  print(f"Opened: {result.stdout.strip()}")
+              else:
+                  print(f"Failed: {result.stderr.strip()}", file=sys.stderr)
+          PYEOF
+
+      - name: Regenerate dashboard
+        continue-on-error: true
+        run: |
+          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
+          python3 scripts/upstream_dashboard.py \
+            --status       upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --probes       $PROBE_FILES \
+            --output       upstream/status.md
+          echo "## Upstream Status Dashboard" >> "$GITHUB_STEP_SUMMARY"
+          cat upstream/status.md >> "$GITHUB_STEP_SUMMARY" || true

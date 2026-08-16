@@ -1,0 +1,351 @@
+# piCoreCDSP v2 — Upstream Source Manifest (roadmap §60, Gate 14)
+#
+# Declarative registry of every upstream project piCoreCDSP monitors.
+# The upstream-sync.yml workflow reads this file to know WHAT to fetch,
+# at WHAT ref, from WHERE, and WHICH capabilities each source affects.
+#
+# Priority levels (roadmap §67):
+#   critical — immediate canary + review; blocks nothing but triggers alerts
+#   high     — automatic PR + tests; sync always runs
+#   medium   — report only; no automatic PR
+#   ignore   — tracked but no active monitoring (documented for completeness)
+#
+# Retention policy (roadmap §70): current + previous snapshot kept in-tree;
+# SHA/release history in upstream/status.json; no full external repo copies.
+#
+# Format:
+#   id:           stable local identifier for this source/branch combination
+#   repo:         GitHub repo in owner/name format
+#   ref:          branch name or "auto" (resolves to repo default branch)
+#   priority:     critical | high | medium | ignore
+#   local_dir:    where sparse snapshots are stored under upstream/
+#   paths:        glob patterns of relevant files to fetch (sparse checkout)
+#   capabilities: capability keys this source informs (from upstream/capabilities.yml)
+#   notes:        human context
+
+version: 1
+
+sources:
+
+  # ── Priority A — Directly Production-Critical ───────────────────────────
+  # §55.1 CamillaDSP Engine — three tracked branches
+
+  - id: camilladsp-master
+    repo: HEnquist/camilladsp
+    ref: master
+    priority: critical
+    local_dir: upstream/camilladsp/master
+    paths:
+      - src/alsa_backend/**
+      - src/config/**
+      - src/engine.rs
+      - src/websocket_server/**
+      - src/statefile.rs
+      - src/bin.rs
+      - backend_alsa.md
+      - websocket.md
+      - CHANGELOG.md
+      - Cargo.toml
+    capabilities:
+      - camilla.websocket.protocol
+      - camilla.state.events
+      - camilla.runtime.active_config
+      - camilla.runtime.previous_config
+      - camilla.runtime.config_path
+      - camilla.config.set
+      - camilla.config.set_value
+      - camilla.source_rate.override
+      - camilla.alsa.loopback.active
+      - camilla.alsa.loopback.rate
+      - camilla.alsa.loopback.lifecycle
+      - camilla.stop_on_inactive
+      - camilla.config.revision
+      - camilla.token.samplerate
+      - camilla.statefile
+      - camilla.process.lifecycle
+    notes: >
+      Current stable reference baseline for piCoreCDSP v2.  Changes here are
+      production-critical and trigger an immediate canary run.
+
+  - id: camilladsp-next4.2.0
+    repo: HEnquist/camilladsp
+    ref: next4.2.0
+    priority: critical
+    local_dir: upstream/camilladsp/next4.2.0
+    paths:
+      - src/alsa_backend/**
+      - src/config/**
+      - src/engine.rs
+      - src/websocket_server/**
+      - src/statefile.rs
+      - src/bin.rs
+      - backend_alsa.md
+      - websocket.md
+      - CHANGELOG.md
+      - Cargo.toml
+    capabilities:
+      - camilla.websocket.protocol
+      - camilla.state.events
+      - camilla.runtime.active_config
+      - camilla.runtime.previous_config
+      - camilla.runtime.config_path
+      - camilla.config.set
+      - camilla.config.set_value
+      - camilla.source_rate.override
+      - camilla.alsa.loopback.rate
+      - camilla.alsa.loopback.lifecycle
+      - camilla.stop_on_inactive
+      - camilla.config.revision
+      - camilla.token.samplerate
+      - camilla.statefile
+    notes: >
+      4.2.x interim/test platform.  May or may not exist yet; sync silently
+      skips if the branch is not found.
+
+  - id: camilladsp-next5
+    repo: HEnquist/camilladsp
+    ref: next5
+    priority: critical
+    local_dir: upstream/camilladsp/next5
+    paths:
+      - src/alsa_backend/**
+      - src/config/**
+      - src/engine.rs
+      - src/websocket_server/**
+      - src/statefile.rs
+      - src/bin.rs
+      - backend_alsa.md
+      - websocket.md
+      - CHANGELOG.md
+      - Cargo.toml
+    capabilities:
+      - camilla.websocket.protocol
+      - camilla.state.events
+      - camilla.source_rate.override
+      - camilla.alsa.loopback.rate
+      - camilla.alsa.loopback.lifecycle
+      - camilla.config.revision
+      - camilla.token.samplerate
+      - camilla_v5_wire_format
+    notes: >
+      CamillaDSP 5 design target.  A capability flip here is the primary removal
+      signal for local workarounds.  May not exist yet; sync silently skips.
+
+  # §55.2 CamillaGUI Backend
+
+  - id: camillagui-backend-master
+    repo: HEnquist/camillagui-backend
+    ref: master
+    priority: high
+    local_dir: upstream/camillagui-backend/master
+    paths:
+      - backend/**
+      - config/**
+      - main.py
+      - README.md
+      - release_automation/versions.yml
+    capabilities:
+      - gui.active_config.path
+      - gui.statefile.integration
+      - gui.apply
+      - gui.save
+      - gui.eventstream
+      - gui.camilla.version_compat
+      - gui.config.path_resolution
+      - gui.runtime_vs_saved_config
+    notes: >
+      Apply/Save semantics, ConfigFilePath behavior, statefile integration.
+      Changes here can silently break the "Apply-without-Save survives rate change"
+      invariant that piCoreCDSP relies on.
+
+  - id: camillagui-backend-next4.2.0
+    repo: HEnquist/camillagui-backend
+    ref: next4.2.0
+    priority: high
+    local_dir: upstream/camillagui-backend/next4.2.0
+    paths:
+      - backend/**
+      - config/**
+      - main.py
+      - release_automation/versions.yml
+    capabilities:
+      - gui.active_config.path
+      - gui.statefile.integration
+      - gui.apply
+      - gui.save
+      - gui.camilla.version_compat
+    notes: >
+      4.2.x GUI branch.  May not exist yet; sync silently skips.
+
+  # §55.3 CamillaGUI Frontend
+
+  - id: camillagui-frontend-master
+    repo: HEnquist/camillagui
+    ref: master
+    priority: medium
+    local_dir: upstream/camillagui/master
+    paths:
+      - src/**/*.js
+      - src/**/*.ts
+      - src/**/*.vue
+      - package.json
+      - CHANGELOG.md
+      - README.md
+    capabilities:
+      - gui.apply
+      - gui.save
+      - gui.runtime_vs_saved_config
+    notes: >
+      Lower priority than the backend.  Monitor Apply workflow, config-switch
+      workflow, runtime-state display.  Do not fully mirror — only metadata and
+      specifically relevant UI/API files.
+
+  # §55.4 pyCamillaDSP
+
+  - id: pycamilladsp-master
+    repo: HEnquist/pycamilladsp
+    ref: master
+    priority: high
+    local_dir: upstream/pycamilladsp/master
+    paths:
+      - camilladsp/**
+      - docs/**
+      - tests/test_camillaws.py
+    capabilities:
+      - pycamilla.protocol.version
+      - pycamilla.state.events
+      - pycamilla.config.active
+      - pycamilla.config.previous
+      - pycamilla.config.path
+      - pycamilla.set_config
+      - pycamilla.set_config_value
+      - pycamilla.error_semantics
+    notes: >
+      New WebSocket features often appear in pycamilladsp before or alongside
+      the GUI.  A new next5 branch here is a strong CamillaDSP 5 release-readiness
+      signal.
+
+  # ── Priority B — Reference and Future Removal Signals ───────────────────
+  # §56.1 CamillaDSP Controller (reference-only, not a production dependency)
+
+  - id: camilladsp-controller-main
+    repo: HEnquist/camilladsp-controller
+    ref: main
+    priority: high
+    local_dir: upstream/camilladsp-controller/main
+    paths:
+      - alsa_listener.py
+      - controller.py
+      - config_provider.py
+    capabilities:
+      - reference.alsa_listener
+      - reference.aloop.snapshot
+      - reference.debounce
+      - reference.rate_switch
+      - reference.config_provider
+    notes: >
+      Reference implementation of ALSA HCTL monitoring and debounce.  Never
+      copy code wholesale; compare approaches only.  If upstream introduces a
+      more robust loopback strategy, review is required.
+
+  # §56.2 ALSA Userspace
+
+  - id: alsa-lib-master
+    repo: alsa-project/alsa-lib
+    ref: master
+    priority: high
+    local_dir: upstream/alsa-lib/master
+    paths:
+      - src/pcm/pcm_plug.c
+      - src/pcm/pcm_plug.h
+      - src/control/**
+      - include/**
+      - doc/asoundrc.txt
+    capabilities:
+      - alsa.plug.format
+      - alsa.plug.channels
+      - alsa.plug.rate_unchanged
+      - alsa.plug.route_policy
+      - alsa.hctl
+      - alsa.control.events
+    notes: >
+      Monitor: plug negotiation changes, `rate unchanged` semantics, channel
+      routing, HCTL/event API.  piCoreCDSP depends on `type plug` + `rate
+      unchanged` + HCTL.
+
+  # §56.3 Linux snd-aloop — canonical upstream
+
+  - id: linux-aloop-master
+    repo: torvalds/linux
+    ref: master
+    priority: high
+    local_dir: upstream/linux-aloop/master
+    paths:
+      - sound/drivers/aloop.c
+      - Documentation/sound/alsa-configuration.rst
+    capabilities:
+      - kernel.aloop.active
+      - kernel.aloop.rate
+      - kernel.aloop.format
+      - kernel.aloop.channels
+      - kernel.aloop.pcm_notify
+      - kernel.aloop.release_semantics
+    notes: >
+      Canonical kernel source.  Tells us what Linux CAN do; does not automatically
+      reflect the pCP kernel build.  Changes to aloop.c warrant a cross-check
+      against the pCP kernel fork below.
+
+  # ── Priority A for the Real Target Platform ─────────────────────────────
+  # §57.1 piCorePlayer Linux Kernel
+
+  - id: pcp-linux-aloop
+    repo: piCorePlayer/linux
+    ref: auto
+    priority: critical
+    local_dir: upstream/pcp-linux-aloop/current
+    paths:
+      - sound/drivers/aloop.c
+    capabilities:
+      - pcp.kernel.aloop.active
+      - pcp.kernel.aloop.rate
+      - pcp.kernel.aloop.pcm_notify
+      - pcp.kernel.version
+    notes: >
+      More relevant for production decisions than torvalds/linux alone.
+      `ref: auto` resolves to the repo's current default/production branch.
+      Cross-check against linux-aloop-master on changes.
+
+  # §57.2 piCorePlayer Kernel Config / Symbols
+
+  - id: pcp-kernels
+    repo: piCorePlayer/pCP-Kernels
+    ref: main
+    priority: critical
+    local_dir: upstream/pcp-kernels/current
+    paths:
+      - "**/*.config"
+      - "**/*.txt"
+      - README.md
+    capabilities:
+      - pcp.snd_aloop.available
+    notes: >
+      `CONFIG_SND_ALOOP` availability, module packaging, architecture support.
+      Installer gate: snd-aloop unavailable → abort.
+
+  # §57.3 piCorePlayer Releases
+
+  - id: pcp-releases
+    repo: piCorePlayer/pCP-Releases
+    ref: main
+    priority: medium
+    local_dir: upstream/pcp-releases/current
+    paths:
+      - "*.md"
+      - "*.txt"
+      - releases/**
+    capabilities:
+      - pcp.kernel.version
+      - pcp.snd_aloop.available
+    notes: >
+      New pCP versions, image/architecture changes, kernel version bumps.
+      Primary release-watch signal for the target platform.

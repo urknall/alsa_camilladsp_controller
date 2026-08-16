@@ -296,7 +296,7 @@ impl CamillaStateEvents for CamillaDspV5StateEvents {
             .await;
 
             if let Err(e) = result {
-                eprintln!("CamillaDSP v5 state subscription ended: {e}");
+                log::warn!("CamillaDSP v5 state subscription ended: {e}");
             }
         });
 

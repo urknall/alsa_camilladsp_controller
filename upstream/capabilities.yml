@@ -189,3 +189,436 @@ capabilities:
     roadmap_section: "§24"
     matrix_row: |
       | v5 wire format migration | — | — | in progress | protocol_v4 / protocol_v5 |
+
+# ─────────────────────────────────────────────────────────────────────────────
+# § 61 — Upstream Capability Tracking (roadmap §61, Gate 14)
+#
+# Every entry below maps a named upstream capability to:
+#   used_now:       piCoreCDSP currently relies on this being available/correct.
+#   wanted_future:  piCoreCDSP would use this if upstream provided it.
+#   local_code:     The local code that exists because this capability is missing
+#                   or because it implements a workaround for the gap.
+#   current_fallback: What piCoreCDSP does instead (when capability is absent).
+#   removal_when:   The precise upstream condition that lets local_code be deleted.
+#   sources:        Which manifest.yml source IDs inform this capability.
+#
+# When a capability probe flips FAIL→PASS, the upstream-removal-check.yml
+# workflow opens an issue listing the local_code candidates.
+# ─────────────────────────────────────────────────────────────────────────────
+
+upstream_capabilities:
+
+  # ── CamillaDSP WebSocket API ─────────────────────────────────────────────
+
+  - key: camilla.websocket.protocol
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/camilla/protocol_v4.rs
+      - src/camilla/protocol_v5.rs
+      - src/camilla/control.rs
+    current_fallback: []
+    removal_when: >
+      n/a — the WebSocket protocol is the only supported integration interface.
+      Breakage here is a blocker, not a removal candidate.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: null
+
+  - key: camilla.state.events
+    used_now: true
+    wanted_future: true
+    local_code:
+      - src/rate_sync/mod.rs          # PollingTrigger (fallback for 4.1)
+    current_fallback:
+      - polling_trigger               # see state_push_events workaround entry
+    removal_when: >
+      Production pin confirmed on 4.2+ or 5.x with stable SubscribeState.
+      Confirmed via probe_key state_push_events FAIL→PASS.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: state_push_events
+
+  - key: camilla.runtime.active_config
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # DspSnapshot::authoritative_config()
+      - src/camilla/control.rs        # get_config()
+    current_fallback: []
+    removal_when: >
+      n/a — GetConfig is a core API.  A breaking change here requires a
+      protocol adapter update, not a workaround deletion.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: null
+
+  - key: camilla.runtime.previous_config
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # GetPreviousConfig path in authoritative_config()
+      - src/rate_sync/config_patch.rs # PreviousConfig read before SetConfig
+    current_fallback: []
+    removal_when: >
+      When camilla.source_rate.override lands: the PreviousConfig read-before-write
+      in config_patch.rs can be deleted.  GetPreviousConfig itself remains useful.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: persistent_source_rate_override
+
+  - key: camilla.runtime.config_path
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # ConfigFilePath state truth
+      - src/rate_sync/config_patch.rs # ConfigFilePath stability check
+    current_fallback: []
+    removal_when: >
+      When camilla.config.revision lands: ConfigFilePath stability check can be
+      replaced by a CAS/revision check.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: config_revision_cas
+
+  - key: camilla.config.set
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/rate_sync/config_patch.rs # SetConfig call for inactive-state rate patch
+      - src/camilla/control.rs        # set_config()
+    current_fallback: []
+    removal_when: >
+      When camilla.source_rate.override lands: SetConfig in config_patch.rs
+      for inactive-state rate sync → DELETE.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: persistent_source_rate_override
+
+  - key: camilla.config.set_value
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/rate_sync/config_patch.rs # SetConfigValue for running-state rate patch
+      - src/camilla/control.rs        # set_config_value()
+    current_fallback: []
+    removal_when: >
+      When camilla.source_rate.override lands: SetConfigValue in config_patch.rs
+      for running-state rate sync → DELETE.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: set_config_value
+
+  - key: camilla.source_rate.override
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/rate_sync/config_patch.rs # entire file is the workaround
+      - src/rate_sync/mod.rs          # SourceRateSynchronizer trait
+    current_fallback:
+      - config_patch_rate_synchronizer
+    removal_when: >
+      CamillaDSP provides a persistent source-rate override satisfying all six
+      conditions in the persistent_source_rate_override workaround entry.
+      See persistent_source_rate_override.removal_when for the full list.
+    sources:
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: persistent_source_rate_override
+
+  - key: camilla.alsa.loopback.active
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/source/alsa_loopback.rs   # HCTL-based active detection
+      - src/source/observer.rs        # SourceObserver trait
+    current_fallback:
+      - alsa_hctl_source_observer
+    removal_when: >
+      CamillaDSP natively detects snd-aloop loopback active/inactive; see
+      native_aloop_rate_following.removal_when conditions 1 and 4.
+    sources:
+      - camilladsp-next5
+      - pcp-linux-aloop
+    probe_key: native_aloop_rate_following
+
+  - key: camilla.alsa.loopback.rate
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/source/alsa_loopback.rs   # HCTL rate observation
+      - src/rate_sync/               # entire rate_sync module
+    current_fallback:
+      - alsa_hctl_source_observer
+      - config_patch_rate_synchronizer
+    removal_when: >
+      CamillaDSP reads the current source sample rate from the loopback device;
+      see native_aloop_rate_following.removal_when conditions 2 and 3.
+    sources:
+      - camilladsp-next5
+      - pcp-linux-aloop
+    probe_key: native_aloop_rate_following
+
+  - key: camilla.alsa.loopback.lifecycle
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/source/alsa_loopback.rs
+      - src/rate_sync/
+      - src/reconcile.rs
+    current_fallback:
+      - alsa_hctl_source_observer
+      - config_patch_rate_synchronizer
+      - reconcile_loop
+    removal_when: >
+      CamillaDSP has a full native aloop rate lifecycle; see
+      native_aloop_rate_following.removal_when (all five conditions).
+      When met: rate_sync/ + large parts of reconcile.rs → DELETE.
+    sources:
+      - camilladsp-next5
+      - linux-aloop-master
+      - pcp-linux-aloop
+    probe_key: native_aloop_rate_following
+
+  - key: camilla.stop_on_inactive
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # WaitingForSourceStop path
+    current_fallback: []
+    removal_when: >
+      n/a — piCoreCDSP relies on stop_on_inactive; it is correctly configured
+      by the installer.  A semantic change here requires a reconciler update.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: null
+
+  - key: camilla.config.revision
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/rate_sync/config_patch.rs # fresh-read-before-write race mitigation
+      - src/reconcile.rs              # fresh snapshot on every trigger
+    current_fallback:
+      - fresh_read_before_write_race_mitigation
+    removal_when: >
+      CamillaDSP provides a config generation counter, revision number, or CAS;
+      see config_revision_cas.removal_when.
+    sources:
+      - camilladsp-next5
+    probe_key: config_revision_cas
+
+  - key: camilla.token.samplerate
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/camilla/config_document.rs  # has_samplerate_token() guard
+      - src/rate_sync/config_patch.rs   # pre-patch token check
+    current_fallback:
+      - samplerate_token_guard
+    removal_when: >
+      CamillaDSP provides a token-aware source-rate override; see
+      samplerate_token_reresolution.removal_when.
+    sources:
+      - camilladsp-next5
+    probe_key: samplerate_token_reresolution
+
+  - key: camilla.statefile
+    used_now: true
+    wanted_future: false
+    local_code:
+      - install_picorecdsp.sh           # statefile configured at install time
+    current_fallback: []
+    removal_when: >
+      n/a — statefile is a core CamillaDSP feature used as-is.
+    sources:
+      - camilladsp-master
+      - camilladsp-next4.2.0
+      - camilladsp-next5
+    probe_key: null
+
+  - key: camilla.process.lifecycle
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # run_loop WebSocket reconnect / backoff
+    current_fallback: []
+    removal_when: >
+      n/a — CamillaDSP is always a separate process; piCoreCDSP manages
+      reconnection if it crashes.  A native supervision option might simplify
+      run_loop but is not a deletion criterion.
+    sources:
+      - camilladsp-master
+    probe_key: null
+
+  # ── CamillaGUI capabilities ──────────────────────────────────────────────
+
+  - key: gui.apply
+    used_now: true
+    wanted_future: false
+    local_code: []
+    current_fallback: []
+    removal_when: >
+      n/a — Apply is a user-facing operation piCoreCDSP is designed around.
+      Semantic changes here may require reconciler updates.
+    sources:
+      - camillagui-backend-master
+      - camillagui-backend-next4.2.0
+    probe_key: null
+
+  - key: gui.save
+    used_now: true
+    wanted_future: false
+    local_code: []
+    current_fallback: []
+    removal_when: >
+      n/a — Save is a user-facing operation.  The Save != Apply invariant must
+      hold; changes that break this require a reconciler update.
+    sources:
+      - camillagui-backend-master
+    probe_key: null
+
+  - key: gui.statefile.integration
+    used_now: true
+    wanted_future: false
+    local_code:
+      - install_picorecdsp.sh         # shared_statefile configured at install
+    current_fallback: []
+    removal_when: >
+      n/a — statefile integration is a feature, not a workaround.
+    sources:
+      - camillagui-backend-master
+    probe_key: null
+
+  - key: gui.active_config.path
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # ConfigFilePath state truth
+    current_fallback: []
+    removal_when: >
+      n/a — piCoreCDSP reads ConfigFilePath from CamillaDSP, not from CamillaGUI.
+    sources:
+      - camillagui-backend-master
+    probe_key: null
+
+  - key: gui.runtime_vs_saved_config
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/reconcile.rs              # Apply-without-Save / Save-without-Apply handling
+    current_fallback: []
+    removal_when: >
+      n/a — this is a fundamental design invariant, not a workaround.
+    sources:
+      - camillagui-backend-master
+    probe_key: null
+
+  # ── ALSA capabilities ────────────────────────────────────────────────────
+
+  - key: alsa.plug.rate_unchanged
+    used_now: true
+    wanted_future: false
+    local_code:
+      - configs/pcm.picorecdsp.conf   # rate unchanged in the ALSA plug definition
+      - src/source/alsa_loopback.rs   # CANONICAL_ASOUND_CONF contract
+    current_fallback: []
+    removal_when: >
+      n/a — rate unchanged is a required contract.  A semantic change in
+      alsa-lib's plug implementation that breaks "rate unchanged" would require
+      a piCoreCDSP architecture review.
+    sources:
+      - alsa-lib-master
+    probe_key: null
+
+  - key: alsa.hctl
+    used_now: true
+    wanted_future: false
+    local_code:
+      - src/source/alsa_loopback.rs   # HCTL-based source observer (Gate 11 impl)
+      - src/source/observer.rs        # SourceObserver trait
+    current_fallback: []
+    removal_when: >
+      When camilla.alsa.loopback.lifecycle lands: the Rust HCTL observer
+      can be deleted entirely.
+    sources:
+      - alsa-lib-master
+    probe_key: native_aloop_rate_following
+
+  # ── Linux kernel / snd-aloop capabilities ───────────────────────────────
+
+  - key: kernel.aloop.pcm_notify
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/source/alsa_loopback.rs   # HCTL polling/event workaround
+    current_fallback:
+      - alsa_hctl_source_observer
+    removal_when: >
+      The pCP kernel ships with pcm_notify or equivalent reliable rate-change
+      notification in snd-aloop; see pcp.kernel.aloop.pcm_notify.
+      When available and validated: the HCTL polling fallback → DELETE.
+    sources:
+      - linux-aloop-master
+      - pcp-linux-aloop
+    probe_key: native_aloop_rate_following
+
+  - key: pcp.snd_aloop.available
+    used_now: true
+    wanted_future: false
+    local_code:
+      - install_picorecdsp.sh         # hard abort if snd-aloop not available
+    current_fallback: []
+    removal_when: >
+      n/a — snd-aloop availability is a hard installer requirement.
+    sources:
+      - pcp-kernels
+      - pcp-releases
+    probe_key: null
+
+  - key: pcp.kernel.aloop.pcm_notify
+    used_now: false
+    wanted_future: true
+    local_code:
+      - src/source/alsa_loopback.rs   # HCTL workaround
+    current_fallback:
+      - alsa_hctl_source_observer
+    removal_when: >
+      The pCP production kernel validates pcm_notify or equivalent, and
+      CamillaDSP is confirmed to use it natively; see
+      camilla.alsa.loopback.lifecycle removal criteria.
+    sources:
+      - pcp-linux-aloop
+    probe_key: native_aloop_rate_following
+
+  # ── pyCamillaDSP ─────────────────────────────────────────────────────────
+
+  - key: pycamilla.protocol.version
+    used_now: false
+    wanted_future: false
+    local_code: []
+    current_fallback: []
+    removal_when: >
+      n/a — piCoreCDSP talks to CamillaDSP directly, not via pycamilladsp.
+      Tracked as a release-readiness signal: a new pycamilladsp next5 branch
+      indicates CamillaDSP 5 ecosystem is maturing.
+    sources:
+      - pycamilladsp-master
+    probe_key: null
+
