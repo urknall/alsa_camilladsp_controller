@@ -54,6 +54,7 @@ async fn main() {
     #[cfg(target_os = "linux")]
     let result = run_loop(&camilla, &source_observer, &rate_sync, &mut trigger, &cfg).await;
 
+    #[cfg(target_os = "linux")]
     match result {
         Ok(infallible) => match infallible {},
         Err(e) => {
