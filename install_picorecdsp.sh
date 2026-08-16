@@ -36,21 +36,24 @@
 #   chmod +x install_picorecdsp.sh
 #   ./install_picorecdsp.sh [--playback-device hw:X,Y] [--dry-run]
 #
-# Pinned stack (set at Gate 12 hardware validation — update these variables).
-# Leave as GATE12_PIN_REQUIRED to auto-detect the latest GitHub release.
-#   CAMILLA_VERSION      CamillaDSP release tag (e.g. "v2.0.3")
-#   CAMILLA_GUI_VERSION  CamillaGUI release tag
-#   PICORECDSP_VERSION   piCoreCDSP release tag
+# Pinned stack — override via environment variables if needed.
+#   CAMILLA_VERSION        CamillaDSP release tag  (default: v4.1.3)
+#   CAMILLA_GUI_VERSION    CamillaGUI release tag   (default: v4.1.0)
+#   PICORECDSP_RELEASE_TAG piCoreCDSP rolling release tag (default: installer-latest)
 #   CAMILLA_SHA256_AARCH64 / CAMILLA_SHA256_ARMV7
-#   GUI_SHA256_AARCH64   / GUI_SHA256_ARMV7
-#   PICORECDSP_SHA256_AARCH64 / PICORECDSP_SHA256_ARMV7
+#   GUI_SHA256_AARCH64     / GUI_SHA256_ARMV7
 
 set -eu
 
-# ── Version pins (Gate 12 fills these in; leave unset to auto-detect) ────────
-CAMILLA_VERSION="${CAMILLA_VERSION:-GATE12_PIN_REQUIRED}"
-CAMILLA_GUI_VERSION="${CAMILLA_GUI_VERSION:-GATE12_PIN_REQUIRED}"
-PICORECDSP_VERSION="${PICORECDSP_VERSION:-GATE12_PIN_REQUIRED}"
+# ── Version pins ──────────────────────────────────────────────────────────────
+# Override via environment variables; defaults are the tested/pinned versions.
+CAMILLA_VERSION="${CAMILLA_VERSION:-v4.1.3}"
+CAMILLA_GUI_VERSION="${CAMILLA_GUI_VERSION:-v4.1.0}"
+# piCoreCDSP is downloaded from the rolling installer-latest release on GitHub.
+# There is no separate version pin — the installer always fetches the latest
+# successful build from main.  Override PICORECDSP_RELEASE_TAG to pin to a
+# specific release tag if needed.
+PICORECDSP_RELEASE_TAG="${PICORECDSP_RELEASE_TAG:-installer-latest}"
 
 # SHA256 checksums for the pinned download archives.
 # Update these whenever the version pins change.
@@ -58,8 +61,6 @@ CAMILLA_SHA256_AARCH64="${CAMILLA_SHA256_AARCH64:-}"
 CAMILLA_SHA256_ARMV7="${CAMILLA_SHA256_ARMV7:-}"
 GUI_SHA256_AARCH64="${GUI_SHA256_AARCH64:-}"
 GUI_SHA256_ARMV7="${GUI_SHA256_ARMV7:-}"
-PICORECDSP_SHA256_AARCH64="${PICORECDSP_SHA256_AARCH64:-}"
-PICORECDSP_SHA256_ARMV7="${PICORECDSP_SHA256_ARMV7:-}"
 
 # ── Installation paths ────────────────────────────────────────────────────────
 INSTALL_BIN="/usr/local/bin"
@@ -226,23 +227,8 @@ preflight_checks() {
         [ -n "$_avail" ] && ok "Disk space OK (${_avail} MB free)."
     fi
 
-    # Version pins — auto-detect latest from GitHub if not explicitly set.
-    if [ "$CAMILLA_VERSION" = "GATE12_PIN_REQUIRED" ]; then
-        info "CAMILLA_VERSION not set — auto-detecting latest CamillaDSP release..."
-        CAMILLA_VERSION=$(fetch_latest_release "HEnquist/camilladsp")
-        info "Auto-detected CamillaDSP: ${CAMILLA_VERSION}"
-    fi
-    if [ "$CAMILLA_GUI_VERSION" = "GATE12_PIN_REQUIRED" ]; then
-        info "CAMILLA_GUI_VERSION not set — auto-detecting latest CamillaGUI release..."
-        CAMILLA_GUI_VERSION=$(fetch_latest_release "HEnquist/camillagui-backend")
-        info "Auto-detected CamillaGUI: ${CAMILLA_GUI_VERSION}"
-    fi
-    if [ "$PICORECDSP_VERSION" = "GATE12_PIN_REQUIRED" ]; then
-        info "PICORECDSP_VERSION not set — auto-detecting latest piCoreCDSP release..."
-        PICORECDSP_VERSION=$(fetch_latest_release "urknall/piCoreCDSP")
-        info "Auto-detected piCoreCDSP: ${PICORECDSP_VERSION}"
-    fi
-    ok "Version pins set: CamillaDSP=${CAMILLA_VERSION}  CamillaGUI=${CAMILLA_GUI_VERSION}  piCoreCDSP=${PICORECDSP_VERSION}"
+    # Version pins — already defaulted in the variables section above.
+    ok "Version pins set: CamillaDSP=${CAMILLA_VERSION}  CamillaGUI=${CAMILLA_GUI_VERSION}  piCoreCDSP=${PICORECDSP_RELEASE_TAG}"
 }
 
 # ── Step 3: Playback device detection ────────────────────────────────────────
@@ -585,7 +571,7 @@ EOF
 # ── Step 9: Install piCoreCDSP Rust binary ────────────────────────────────────
 install_picorecdsp_binary() {
     echo ""
-    echo "=== Step 9: Install piCoreCDSP daemon ${PICORECDSP_VERSION} ==="
+    echo "=== Step 9: Install piCoreCDSP daemon (${PICORECDSP_RELEASE_TAG}) ==="
 
     TARGET_BIN="${INSTALL_BIN}/picorecdsp"
 
@@ -595,30 +581,37 @@ install_picorecdsp_binary() {
 
     _arch=$(uname -m)
     case "$_arch" in
-        aarch64|arm64) _rel_arch="aarch64-unknown-linux-musl"; _sha="$PICORECDSP_SHA256_AARCH64" ;;
-        armv7l)        _rel_arch="armv7-unknown-linux-musleabihf"; _sha="$PICORECDSP_SHA256_ARMV7" ;;
-        x86_64)        _rel_arch="x86_64-unknown-linux-musl"; _sha="" ;;
+        aarch64|arm64) _bin_suffix="aarch64" ;;
+        armv7l)        _bin_suffix="armv7" ;;
+        x86_64)        _bin_suffix="aarch64" ;;  # dev/CI: fall back to aarch64 for smoke tests
         *) abort "Unsupported architecture: $_arch" ;;
     esac
 
-    _url="https://github.com/urknall/piCoreCDSP/releases/download/${PICORECDSP_VERSION}/picorecdsp-${PICORECDSP_VERSION}-${_rel_arch}.tar.gz"
+    _base_url="https://github.com/urknall/piCoreCDSP/releases/download/${PICORECDSP_RELEASE_TAG}"
+    _bin_name="picorecdsp-${_bin_suffix}"
     _tmp=$(mktemp -d)
     trap 'rm -rf "$_tmp"' EXIT
 
-    download_file "$_url" "${_tmp}/picorecdsp.tar.gz" "$_sha"
+    # Download binary and its companion SHA256 file, then verify integrity.
+    download_file "${_base_url}/${_bin_name}" "${_tmp}/picorecdsp" ""
+    download_file "${_base_url}/${_bin_name}.sha256" "${_tmp}/picorecdsp.sha256" ""
 
     if [ "$DRY_RUN" -eq 0 ]; then
-        tar -xzf "${_tmp}/picorecdsp.tar.gz" -C "$_tmp"
+        _expected=$(awk '{print $1}' "${_tmp}/picorecdsp.sha256")
+        _actual=$(sha256sum "${_tmp}/picorecdsp" | awk '{print $1}')
+        if [ "$_actual" != "$_expected" ]; then
+            abort "SHA256 mismatch for picorecdsp binary. Expected: $_expected  Got: $_actual"
+        fi
         srun install -m 0755 "${_tmp}/picorecdsp" "$TARGET_BIN"
     else
-        echo "  [DRY ]  Would extract and install picorecdsp to $TARGET_BIN"
+        echo "  [DRY ]  Would install picorecdsp to $TARGET_BIN"
     fi
 
     rm -rf "$_tmp"
     trap - EXIT
 
     add_to_backup_list "$TARGET_BIN"
-    ok "piCoreCDSP ${PICORECDSP_VERSION} installed at $TARGET_BIN."
+    ok "piCoreCDSP (${PICORECDSP_RELEASE_TAG}) installed at $TARGET_BIN."
 }
 
 # ── Step 10: Smoke-test binaries before committing system config ───────────────
