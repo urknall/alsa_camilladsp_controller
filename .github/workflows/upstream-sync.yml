@@ -65,6 +65,16 @@ jobs:
           git diff --quiet upstream/ && echo "changed=false" >> "$GITHUB_OUTPUT" \
             || echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure 'upstream' label exists
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "upstream" \
+            --description "Tracks changes from upstream projects" \
+            --color "0075ca" \
+            || true   # label may already exist; ignore the error
+
       - name: Create sync branch and open PR
         if: steps.diff.outputs.changed == 'true'
         env:
