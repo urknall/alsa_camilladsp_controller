@@ -31,12 +31,13 @@
 #   ✗  No shadow config file.
 #   ✗  No Python, no pip, no tce-load for Python.
 #
-# Usage:
+# Usage (runs as a normal user; sudo is used only for system-path writes):
 #   wget https://github.com/urknall/piCoreCDSP/releases/download/vX.Y.Z/install_picorecdsp.sh
 #   chmod +x install_picorecdsp.sh
 #   ./install_picorecdsp.sh [--playback-device hw:X,Y] [--dry-run]
 #
-# Pinned stack (set at Gate 12 hardware validation — update these variables):
+# Pinned stack (set at Gate 12 hardware validation — update these variables).
+# Leave as GATE12_PIN_REQUIRED to auto-detect the latest GitHub release.
 #   CAMILLA_VERSION      CamillaDSP release tag (e.g. "v2.0.3")
 #   CAMILLA_GUI_VERSION  CamillaGUI release tag
 #   PICORECDSP_VERSION   piCoreCDSP release tag
@@ -46,7 +47,7 @@
 
 set -eu
 
-# ── Version pins (Gate 12 fills these in after hardware validation) ───────────
+# ── Version pins (Gate 12 fills these in; leave unset to auto-detect) ────────
 CAMILLA_VERSION="${CAMILLA_VERSION:-GATE12_PIN_REQUIRED}"
 CAMILLA_GUI_VERSION="${CAMILLA_GUI_VERSION:-GATE12_PIN_REQUIRED}"
 PICORECDSP_VERSION="${PICORECDSP_VERSION:-GATE12_PIN_REQUIRED}"
@@ -102,10 +103,32 @@ run() {
     fi
 }
 
-require_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        abort "This installer must be run as root (sudo ./install_picorecdsp.sh)."
+# Run a command with sudo only when not already root.
+# Also respects DRY_RUN (prints the command without executing).
+srun() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  [DRY ]  (sudo) $*"
+        return
     fi
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# Fetch the latest release tag from GitHub for a given owner/repo.
+# Uses wget + basic text parsing (no jq dependency).
+fetch_latest_release() {
+    _repo="$1"
+    _tag=$(wget -qO- "https://api.github.com/repos/${_repo}/releases/latest" \
+        | grep '"tag_name"' \
+        | head -1 \
+        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$_tag" ]; then
+        abort "Could not auto-detect latest release for ${_repo}. Set the version explicitly via the environment variable."
+    fi
+    echo "$_tag"
 }
 
 file_is_absent_or_empty() {
@@ -167,7 +190,7 @@ preflight_checks() {
     # snd-aloop
     if grep -q "^snd.aloop\|^snd_aloop" /proc/modules 2>/dev/null; then
         ok "snd-aloop module is loaded."
-    elif modprobe snd-aloop 2>/dev/null; then
+    elif srun modprobe snd-aloop 2>/dev/null; then
         ok "snd-aloop loaded successfully."
     else
         abort "snd-aloop is not available in this kernel. piCoreCDSP v2 requires snd-aloop."
@@ -203,13 +226,22 @@ preflight_checks() {
         [ -n "$_avail" ] && ok "Disk space OK (${_avail} MB free)."
     fi
 
-    # Version pins
-    for _var in CAMILLA_VERSION CAMILLA_GUI_VERSION PICORECDSP_VERSION; do
-        _val=$(eval echo "\$$_var")
-        if [ "$_val" = "GATE12_PIN_REQUIRED" ]; then
-            abort "$_var is not set. Hardware validation (Gate 12) must pin the version before this installer can run. Set: export $_var=v<x.y.z>"
-        fi
-    done
+    # Version pins — auto-detect latest from GitHub if not explicitly set.
+    if [ "$CAMILLA_VERSION" = "GATE12_PIN_REQUIRED" ]; then
+        info "CAMILLA_VERSION not set — auto-detecting latest CamillaDSP release..."
+        CAMILLA_VERSION=$(fetch_latest_release "HEnquist/camilladsp")
+        info "Auto-detected CamillaDSP: ${CAMILLA_VERSION}"
+    fi
+    if [ "$CAMILLA_GUI_VERSION" = "GATE12_PIN_REQUIRED" ]; then
+        info "CAMILLA_GUI_VERSION not set — auto-detecting latest CamillaGUI release..."
+        CAMILLA_GUI_VERSION=$(fetch_latest_release "HEnquist/camillagui-backend")
+        info "Auto-detected CamillaGUI: ${CAMILLA_GUI_VERSION}"
+    fi
+    if [ "$PICORECDSP_VERSION" = "GATE12_PIN_REQUIRED" ]; then
+        info "PICORECDSP_VERSION not set — auto-detecting latest piCoreCDSP release..."
+        PICORECDSP_VERSION=$(fetch_latest_release "urknall/piCoreCDSP")
+        info "Auto-detected piCoreCDSP: ${PICORECDSP_VERSION}"
+    fi
     ok "Version pins set: CamillaDSP=${CAMILLA_VERSION}  CamillaGUI=${CAMILLA_GUI_VERSION}  piCoreCDSP=${PICORECDSP_VERSION}"
 }
 
@@ -306,9 +338,9 @@ pcm.picorecdsp {
 # END piCoreCDSP
 PCM_BLOCK
 
-        touch "$ASOUND_CONF"
-        chmod 664 "$ASOUND_CONF"
-        cp "$_tmp" "$ASOUND_CONF"
+        srun touch "$ASOUND_CONF"
+        srun chmod 664 "$ASOUND_CONF"
+        srun cp "$_tmp" "$ASOUND_CONF"
         rm -f "$_tmp"
         trap - EXIT
     else
@@ -347,7 +379,7 @@ install_camilladsp() {
 
     if [ "$DRY_RUN" -eq 0 ]; then
         tar -xzf "${_tmp}/camilladsp.tar.gz" -C "$_tmp"
-        install -m 0755 "${_tmp}/camilladsp" "$TARGET_BIN"
+        srun install -m 0755 "${_tmp}/camilladsp" "$TARGET_BIN"
     else
         echo "  [DRY ]  Would extract and install camilladsp to $TARGET_BIN"
     fi
@@ -385,14 +417,14 @@ install_camillagui() {
     download_file "$_url" "${_tmp}/camillagui.tar.gz" "$_sha"
 
     if [ "$DRY_RUN" -eq 0 ]; then
-        run mkdir -p "$CAMILLA_GUI_DIR"
-        tar -xzf "${_tmp}/camillagui.tar.gz" -C "$CAMILLA_GUI_DIR"
+        srun mkdir -p "$CAMILLA_GUI_DIR"
+        srun tar -xzf "${_tmp}/camillagui.tar.gz" -C "$CAMILLA_GUI_DIR"
 
         # Verify the binary is present after extraction.
         if [ ! -f "${CAMILLA_GUI_DIR}/camillagui_backend" ]; then
             abort "CamillaGUI binary not found after extraction at ${CAMILLA_GUI_DIR}/camillagui_backend."
         fi
-        chmod -R 775 "$CAMILLA_GUI_DIR"
+        srun chmod -R 775 "$CAMILLA_GUI_DIR"
     else
         echo "  [DRY ]  Would extract bundle to $CAMILLA_GUI_DIR"
     fi
@@ -577,7 +609,7 @@ install_picorecdsp_binary() {
 
     if [ "$DRY_RUN" -eq 0 ]; then
         tar -xzf "${_tmp}/picorecdsp.tar.gz" -C "$_tmp"
-        install -m 0755 "${_tmp}/picorecdsp" "$TARGET_BIN"
+        srun install -m 0755 "${_tmp}/picorecdsp" "$TARGET_BIN"
     else
         echo "  [DRY ]  Would extract and install picorecdsp to $TARGET_BIN"
     fi
@@ -628,7 +660,7 @@ register_startup() {
 
     # snd-aloop
     if ! grep -q "snd-aloop" "$BOOTLOCAL" 2>/dev/null; then
-        run sh -c "printf 'modprobe snd-aloop\n' >> '$BOOTLOCAL'"
+        srun sh -c "printf 'modprobe snd-aloop\n' >> '$BOOTLOCAL'"
         ok "Added: modprobe snd-aloop"
     else
         ok "snd-aloop already in bootlocal.sh."
@@ -639,7 +671,7 @@ register_startup() {
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "  [DRY ]  Would append CamillaDSP supervisor to ${BOOTLOCAL}"
         else
-            cat >> "$BOOTLOCAL" <<EOF
+            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
 
 # CamillaDSP v2 supervisor — started by piCoreCDSP installer
 sudo -u tc sh -c '
@@ -670,7 +702,7 @@ EOF
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "  [DRY ]  Would append CamillaGUI supervisor to ${BOOTLOCAL}"
         else
-            cat >> "$BOOTLOCAL" <<EOF
+            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
 
 # CamillaGUI v2 supervisor — started by piCoreCDSP installer
 sudo -u tc sh -c '
@@ -694,7 +726,7 @@ EOF
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "  [DRY ]  Would append piCoreCDSP supervisor to ${BOOTLOCAL}"
         else
-            cat >> "$BOOTLOCAL" <<EOF
+            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
 
 # piCoreCDSP v2 daemon supervisor — started by piCoreCDSP installer
 sudo -u tc sh -c '
@@ -748,7 +780,7 @@ route_pcp_output() {
         printf 'OUTPUT="picorecdsp"\n' >> "$_staged"
     fi
 
-    cp "$_staged" "$PCP_CONFIG"
+    srun cp "$_staged" "$PCP_CONFIG"
     rm -f "$_staged"
     trap - EXIT
 
@@ -770,10 +802,10 @@ run_backup() {
     echo ""
     echo "=== Step 14: pCP backup ==="
     if command -v pcp >/dev/null 2>&1; then
-        run pcp backup
+        srun pcp backup
         ok "pCP backup complete."
     elif command -v filetool.sh >/dev/null 2>&1; then
-        run filetool.sh -b
+        srun filetool.sh -b
         ok "pCP backup complete (filetool.sh)."
     else
         warn "Neither pcp nor filetool.sh found — skipping backup."
@@ -813,9 +845,9 @@ prompt_reboot() {
     if [ ! -t 0 ]; then
         info "Non-interactive mode: rebooting now."
         if command -v pcp >/dev/null 2>&1; then
-            pcp reboot
+            srun pcp reboot
         else
-            reboot
+            srun reboot
         fi
         return
     fi
@@ -826,9 +858,9 @@ prompt_reboot() {
     case "$ANSWER" in
         y|Y|yes|YES)
             if command -v pcp >/dev/null 2>&1; then
-                pcp reboot
+                srun pcp reboot
             else
-                reboot
+                srun reboot
             fi
             ;;
         *)
@@ -851,7 +883,6 @@ main() {
     fi
     echo ""
 
-    require_root
     check_platform
     preflight_checks
     detect_playback_device
