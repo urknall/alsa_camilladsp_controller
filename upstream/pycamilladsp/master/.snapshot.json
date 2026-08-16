@@ -3,7 +3,7 @@
   "repo": "HEnquist/pycamilladsp",
   "ref": "master",
   "sha": "fdc0d163e02dd73206a493402b43c83502ad83d7",
-  "fetched_at": "2026-08-16T19:01:29.580935+00:00",
+  "fetched_at": "2026-08-16T19:06:35.349987+00:00",
   "files": [
     "camilladsp/__init__.py",
     "camilladsp/camilladsp.py",
