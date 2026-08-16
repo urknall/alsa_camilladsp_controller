@@ -12,32 +12,91 @@ item off because it is merely planned.
 
 ## Gate 0 — Repository Reset & Legacy Isolation
 
-- [ ] Decide Option A (git-tag-only reset) vs. Option B (temporary `reference/v1-legacy/` subfolder) per roadmap §0.
+- [x] Decide Option A (git-tag-only reset) vs. Option B (temporary `reference/v1-legacy/` subfolder) per roadmap §0.
+
+  **Decision record:** **Option A — git-tag-only reset** is adopted. Rationale: a permanent (or even
+  long-lived "temporary") `reference/v1-legacy/` subfolder stays part of `main`'s working tree and remains
+  visible to CI, IDE search, and any agent reading the repo for context — exactly the risk §0/§50 warn about,
+  since it would make it easy to silently interleave v1 patterns into v2 modules. A `v1-final` tag (plus an
+  optional `v1-archive` branch) keeps the full v1 tree permanently retrievable via `git checkout`/`git diff`
+  without it ever being part of `main`'s working tree, matching the "git is the archive" rule (roadmap §50, §53)
+  and the Core Philosophy that v2 replaces v1 rather than living beside it.
+
 - [ ] Tag current `main` HEAD as `v1-final`.
+
+  **Status:** not yet executed. Tagging (and pushing the tag) requires repository push/tag rights that this
+  agent session does not have — this must be done by a maintainer with push access, on the `main` commit that
+  immediately precedes the v1-tree removal below, before that removal is merged.
+
 - [ ] (If desired) cut a `v1-archive` branch from `v1-final`.
 - [ ] If Option B chosen: move `src/`, `picoredsp-ioplug/`, `benches/`, `scripts/`, `install_picoredsp.sh`,
       `CONFIG_MIGRATION.md` into a clearly named, non-buildable reference folder, excluded from the Cargo
       workspace and CI.
+
+  N/A — Option B was not chosen.
+
 - [ ] If Option A chosen: remove the v1 source tree from `main` once v2 implementation is ready to start.
-- [ ] `.github/copilot-instructions.md` updated to reference only `piCoreCDSP_v2_Roadmap.md` and this checklist
+
+  **Status:** intentionally deferred, not merged as part of this pass. Removing `src/`, `picoredsp-ioplug/`,
+  `benches/`, `scripts/`, `install_picoredsp.sh`, and the current release CI takes the currently working,
+  installable piCorePlayer product off `main` until v2 reaches equivalent functionality (Gates 2–12). That is a
+  deliberate, one-way cutover and should be executed as its own explicitly-confirmed change — once the
+  `v1-final` tag above exists and v2 scaffolding is ready to land — not bundled silently into unrelated
+  groundwork commits.
+
+- [x] `.github/copilot-instructions.md` updated to reference only `piCoreCDSP_v2_Roadmap.md` and this checklist
       (done as part of the planning change that introduced this file).
-- [ ] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded (done as part of the same
+- [x] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded (done as part of the same
       planning change).
-- [ ] No new v2 code is added to `src/` until the reset decision above is executed.
+- [x] No new v2 code is added to `src/` until the reset decision above is executed.
+
+  The reset **decision** is now recorded (Option A), but its **execution** (tag + v1 removal) is still pending
+  per the two items above — so, per this rule, v2 source code must still not be added to `src/` yet.
+
 - [ ] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
       reference.
+
+  Not yet — pending the `v1-final` tag and v1-tree removal described above.
 
 ---
 
 ## Gate 1 — Strategic & Process Architecture Decisions Recorded
 
-- [ ] Production stack pin policy defined: CamillaDSP 5 if hardware-validated in time, otherwise CamillaDSP 4.2 (roadmap §1).
-- [ ] No permanent multi-version compatibility policy documented and agreed.
-- [ ] "Workaround needs a removal criterion" rule adopted as a contribution requirement (e.g. PR template / lint).
-- [ ] Fixed process architecture confirmed: CamillaDSP stays a separate process; no `camillalib` embedding (roadmap §2, §25).
-- [ ] Crash-isolation requirement recorded: CamillaDSP crash must not take down piCoreCDSP and vice versa.
-- [ ] Long-term end goal (installer + ALSA setup + configs + packaging only) recorded as the target shape (roadmap §3).
-- [ ] ✅ **Gate 1 passed**: architecture decisions are written down and agreed before any reconciler code is written.
+- [x] Production stack pin policy defined: CamillaDSP 5 if hardware-validated in time, otherwise CamillaDSP 4.2 (roadmap §1).
+
+  Recorded in roadmap §1 ("Guiding rule: design for CamillaDSP 5 semantics, ship only against a pinned and
+  hardware-validated release stack") and confirmed as agreed policy; final pin selection itself happens at
+  Gate 12 once hardware validation results are known.
+
+- [x] No permanent multi-version compatibility policy documented and agreed.
+
+  Recorded in roadmap §1: exactly one CamillaDSP/CamillaGUI combination is pinned before the first v2 release;
+  development adapters for superseded versions are deleted after an upgrade, never kept running in parallel.
+
+- [x] "Workaround needs a removal criterion" rule adopted as a contribution requirement (e.g. PR template / lint).
+
+  Implemented as `.github/PULL_REQUEST_TEMPLATE.md`, which requires every PR introducing a workaround/compatibility
+  bridge to state its removal criterion (and, once `upstream/capabilities.yml` exists per Gate 14, its entry
+  there), consistent with roadmap §16–§22 and §61.
+
+- [x] Fixed process architecture confirmed: CamillaDSP stays a separate process; no `camillalib` embedding (roadmap §2, §25).
+
+  Recorded in roadmap §2 and mirrored in `.github/copilot-instructions.md`'s Non-Negotiable Architecture Rules.
+
+- [x] Crash-isolation requirement recorded: CamillaDSP crash must not take down piCoreCDSP and vice versa.
+
+  Recorded in roadmap §2 ("A CamillaDSP crash must not automatically take down piCoreCDSP" / "A piCoreCDSP crash
+  must not take down CamillaDSP") and in the Gate 7 error-model items; enforcement lands in code at Gate 7.
+
+- [x] Long-term end goal (installer + ALSA setup + configs + packaging only) recorded as the target shape (roadmap §3).
+
+  Recorded in roadmap §3 and §52 (Long-Term Deletion Stages) as the explicit end state piCoreCDSP shrinks toward.
+
+- [x] ✅ **Gate 1 passed**: architecture decisions are written down and agreed before any reconciler code is written.
+
+  All six items above are documented in the roadmap and/or enforced via `.github/PULL_REQUEST_TEMPLATE.md` and
+  `.github/copilot-instructions.md`. No reconciler code exists yet (see Gate 0 status) — consistent with this gate
+  being satisfied purely by decisions-on-record, ahead of any implementation.
 
 ---
 
