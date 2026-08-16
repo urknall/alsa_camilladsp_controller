@@ -1,4 +1,6 @@
-#!/usr/bin/env sh
+#!/bin/sh -e
+
+###############################################################################
 # piCoreCDSP v2 — Installer for piCorePlayer (roadmap §43, Gate 11)
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
@@ -6,21 +8,13 @@
 # │  Run this exactly once on a clean pCP image.                            │
 # └─────────────────────────────────────────────────────────────────────────┘
 #
-# What this installer does (roadmap §43):
-#   1.  Abort if not running on piCorePlayer.
-#   2.  Abort if snd-aloop is not available in the kernel.
-#   3.  Detect the physical playback device (once; stored for config generation).
-#   4.  Install the pcm.picorecdsp ALSA plug definition.
-#   5.  Install the pinned CamillaDSP binary.
-#   6.  Install the pinned CamillaGUI backend (pre-built native bundle, no Python).
-#   7.  Configure the shared native statefile.
-#   8.  Generate Bypass.yml and Null.yml (only if absent; never overwrites).
-#   9.  Install the piCoreCDSP v2 Rust daemon binary.
-#  10.  Register all components for pCP startup (bootlocal.sh) with supervisor loops.
-#  11.  Route piCorePlayer audio output to pcm.picorecdsp.
-#  12.  Add installed files to pCP backup list.
-#  13.  Run pCP backup.
-#  14.  Prompt for reboot.
+# What this installer does:
+#   1.  Install piCoreCDSP, CamillaDSP, CamillaGUI as a single .tcz extension.
+#   2.  Install the pcm.picorecdsp ALSA plug definition (/etc/asound.conf).
+#   3.  Configure the shared native statefile.
+#   4.  Generate Bypass.yml and Null.yml (only if absent; never overwrites).
+#   5.  Route piCorePlayer audio output to pcm.picorecdsp.
+#   6.  Run pCP backup and reboot.
 #
 # What this installer does NOT do:
 #   ✗  No reinstall / migration path.
@@ -31,476 +25,536 @@
 #   ✗  No shadow config file.
 #   ✗  No Python, no pip, no tce-load for Python.
 #
-# Usage (runs as a normal user; sudo is used only for system-path writes):
-#   wget https://github.com/urknall/piCoreCDSP/releases/download/vX.Y.Z/install_picorecdsp.sh
+# Usage (run as the normal piCorePlayer user "tc"):
 #   chmod +x install_picorecdsp.sh
-#   ./install_picorecdsp.sh [--playback-device hw:X,Y] [--dry-run]
+#   ./install_picorecdsp.sh [-k|--keep-downloads] [--playback-device hw:X,Y] [--dry-run]
 #
-# Pinned stack — override via environment variables if needed.
-#   CAMILLA_VERSION        CamillaDSP release tag  (default: v4.1.3)
-#   CAMILLA_GUI_VERSION    CamillaGUI release tag   (default: v4.1.0)
-#   PICORECDSP_RELEASE_TAG piCoreCDSP rolling release tag (default: installer-latest)
-#   CAMILLA_SHA256_AARCH64 / CAMILLA_SHA256_ARMV7
-#   GUI_SHA256_AARCH64     / GUI_SHA256_ARMV7
+# IMPORTANT: Do NOT run with sudo. Privileged operations use sudo internally.
+###############################################################################
 
-set -eu
+###############################################################################
+# User check — MUST happen before any modification
+###############################################################################
 
-# ── Version pins ──────────────────────────────────────────────────────────────
-# Override via environment variables; defaults are the tested/pinned versions.
-CAMILLA_VERSION="${CAMILLA_VERSION:-v4.1.3}"
-CAMILLA_GUI_VERSION="${CAMILLA_GUI_VERSION:-v4.1.0}"
-# piCoreCDSP is downloaded from the rolling installer-latest release on GitHub.
-# There is no separate version pin — the installer always fetches the latest
-# successful build from main.  Override PICORECDSP_RELEASE_TAG to pin to a
-# specific release tag if needed.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "ERROR: Do not run this installer with sudo."
+    echo
+    echo "Run it as the normal piCorePlayer user:"
+    echo
+    echo "  ./install_picorecdsp.sh"
+    echo
+    exit 1
+fi
+
+###############################################################################
+# Versions
+###############################################################################
+
+EXTENSION_NAME="piCoreCDSP"
+
+CDSP_VERSION="v4.1.3"
+CAMILLA_GUI_VERSION="v4.1.0"
+
 PICORECDSP_RELEASE_TAG="${PICORECDSP_RELEASE_TAG:-installer-latest}"
+PICORECDSP_REPO="urknall/piCoreCDSP"
 
-# SHA256 checksums for the pinned download archives.
-# Update these whenever the version pins change.
-CAMILLA_SHA256_AARCH64="${CAMILLA_SHA256_AARCH64:-}"
-CAMILLA_SHA256_ARMV7="${CAMILLA_SHA256_ARMV7:-}"
-GUI_SHA256_AARCH64="${GUI_SHA256_AARCH64:-}"
-GUI_SHA256_ARMV7="${GUI_SHA256_ARMV7:-}"
+# Expected SHA256 checksums for the pinned CamillaDSP and CamillaGUI archives.
+# Update these values whenever CDSP_VERSION or CAMILLA_GUI_VERSION changes.
+CDSP_SHA256_AARCH64="${CDSP_SHA256_AARCH64:-d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a}"
+CDSP_SHA256_ARMV7="${CDSP_SHA256_ARMV7:-dd1af57129e078383e2a1d5dc28cc13f3f02a78dce9247eb7d9232731b8f7609}"
+GUI_SHA256_AARCH64="${GUI_SHA256_AARCH64:-9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7}"
+GUI_SHA256_ARMV7="${GUI_SHA256_ARMV7:-22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1}"
 
-# ── Installation paths ────────────────────────────────────────────────────────
-INSTALL_BIN="/usr/local/bin"
-CAMILLA_CONFIG_DIR="/mnt/mmcblk0p2/tce/camilladsp/configs"
-CAMILLA_COEFF_DIR="/mnt/mmcblk0p2/tce/camilladsp/coeffs"
-CAMILLA_DATA_DIR="/mnt/mmcblk0p2/tce/camilladsp"
-CAMILLA_STATEFILE="${CAMILLA_DATA_DIR}/camilladsp_statefile.yml"
-CAMILLA_GUI_DIR="/usr/local/camillagui_backend"
-ASOUND_CONF="/etc/asound.conf"
-BOOTLOCAL="/opt/bootlocal.sh"
+###############################################################################
+# Paths
+###############################################################################
+
+BUILD_DIR="/tmp/${EXTENSION_NAME}"
+CACHE_DIR="/mnt/mmcblk0p2/tce/${EXTENSION_NAME}-cache"
+
+DATA_DIR="/mnt/mmcblk0p2/tce/camilladsp"
+CONFIG_DIR="${DATA_DIR}/configs"
+COEFF_DIR="${DATA_DIR}/coeffs"
+
+BYPASS_CONFIG="${CONFIG_DIR}/Bypass.yml"
+NULL_CONFIG="${CONFIG_DIR}/Null.yml"
+STATEFILE="${DATA_DIR}/camilladsp_statefile.yml"
+
 PCP_CONFIG="/usr/local/etc/pcp/pcp.cfg"
-FILETOOL_LST="/home/tc/.filetool.lst"
+PCP_STAGED="/tmp/pcp.cfg.picorecdsp.$$"
+ASOUND_STAGED="/tmp/asound.conf.picorecdsp.$$"
+TCZ_TMP="/tmp/${EXTENSION_NAME}.tcz"
 
-# Required free space in MB before downloading
-REQUIRED_SPACE_MB=350
+OPTIONAL_DIR="/etc/sysconfig/tcedir/optional"
+ONBOOT_LIST="/etc/sysconfig/tcedir/onboot.lst"
+FINAL_TCZ="${OPTIONAL_DIR}/${EXTENSION_NAME}.tcz"
 
-# ── Flags ─────────────────────────────────────────────────────────────────────
-DRY_RUN=0
-PLAYBACK_DEVICE=""
+PICORECDSP_BIN="${BUILD_DIR}/usr/local/bin/picorecdsp"
 
-while [ $# -gt 0 ]; do
+COMMIT_STARTED=false
+INSTALL_COMMITTED=false
+DATA_DIR_WAS_PRESENT=false
+
+if [ -d "${DATA_DIR}" ]; then
+    DATA_DIR_WAS_PRESENT=true
+fi
+
+###############################################################################
+# Cleanup / rollback
+###############################################################################
+
+backup_path() {
+    source_path="$1"
+    backup_name="$2"
+
+    mkdir -p "${ROLLBACK_DIR}"
+
+    if [ -L "${source_path}" ] || [ -e "${source_path}" ]; then
+        sudo cp -pP "${source_path}" "${ROLLBACK_DIR}/${backup_name}"
+        echo present > "${ROLLBACK_DIR}/${backup_name}.state"
+    else
+        echo absent > "${ROLLBACK_DIR}/${backup_name}.state"
+    fi
+}
+
+restore_path() {
+    target_path="$1"
+    backup_name="$2"
+
+    state=$(cat "${ROLLBACK_DIR}/${backup_name}.state" 2>/dev/null || echo absent)
+    sudo rm -f "${target_path}" 2>/dev/null || true
+
+    if [ "${state}" = present ]; then
+        sudo cp -pP "${ROLLBACK_DIR}/${backup_name}" "${target_path}" 2>/dev/null || true
+    fi
+}
+
+prepare_rollback() {
+    ROLLBACK_DIR="/tmp/${EXTENSION_NAME}-rollback.$$"
+    rm -rf "${ROLLBACK_DIR}"
+    mkdir -p "${ROLLBACK_DIR}"
+
+    backup_path "${PCP_CONFIG}"       pcp.cfg
+    backup_path /etc/asound.conf      asound.conf
+    backup_path "${ONBOOT_LIST}"      onboot.lst
+    backup_path "${BYPASS_CONFIG}"    Bypass.yml
+    backup_path "${NULL_CONFIG}"      Null.yml
+    backup_path "${STATEFILE}"        statefile.yml
+}
+
+rollback_install() {
+    echo
+    echo "ERROR: Installation failed during the commit phase. Rolling back changes..."
+
+    restore_path "${PCP_CONFIG}"  pcp.cfg
+    restore_path /etc/asound.conf asound.conf
+    restore_path "${ONBOOT_LIST}" onboot.lst
+
+    sudo rm -f "${FINAL_TCZ}" 2>/dev/null || true
+
+    if [ "${DATA_DIR_WAS_PRESENT}" = true ]; then
+        restore_path "${BYPASS_CONFIG}" Bypass.yml
+        restore_path "${NULL_CONFIG}"   Null.yml
+        restore_path "${STATEFILE}"     statefile.yml
+    else
+        sudo rm -rf "${DATA_DIR}" 2>/dev/null || true
+    fi
+
+    pcp backup >/dev/null 2>&1 || true
+
+    echo "Rollback complete. piCorePlayer routing/configuration was restored."
+}
+
+cleanup_temp() {
+    rm -rf "${BUILD_DIR}" 2>/dev/null || true
+    rm -f "${PCP_STAGED}" "${ASOUND_STAGED}" "${TCZ_TMP}" 2>/dev/null || true
+    if [ -n "${ROLLBACK_DIR:-}" ]; then
+        rm -rf "${ROLLBACK_DIR}" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    rc=$?
+    trap - EXIT HUP INT TERM
+
+    if [ "${COMMIT_STARTED}" = true ] && [ "${INSTALL_COMMITTED}" != true ]; then
+        rollback_install
+    fi
+
+    cleanup_temp
+    exit "${rc}"
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+###############################################################################
+# Helpers
+###############################################################################
+
+install_temporarily_if_missing() {
+    pkg="$1"
+    if ! command -v "${pkg}" >/dev/null 2>&1; then
+        echo "Installing ${pkg} temporarily..."
+        tce-load -wi "${pkg}"
+    fi
+}
+
+download_and_extract_tar_gz() {
+    localFileName="$1"
+    url="$2"
+    expected_sha256="$3"
+
+    echo "Downloading ${url}"
+
+    if $keepDownloads; then
+        mkdir -p "${CACHE_DIR}"
+
+        if [ ! -f "${CACHE_DIR}/${localFileName}" ]; then
+            wget -O "${CACHE_DIR}/${localFileName}.part" "${url}"
+            if ! tar -tzf "${CACHE_DIR}/${localFileName}.part" >/dev/null 2>&1; then
+                rm -f "${CACHE_DIR}/${localFileName}.part"
+                echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+                exit 1
+            fi
+            mv "${CACHE_DIR}/${localFileName}.part" "${CACHE_DIR}/${localFileName}"
+        else
+            echo "Using cached ${CACHE_DIR}/${localFileName}"
+        fi
+
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${CACHE_DIR}/${localFileName}" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${CACHE_DIR}/${localFileName}"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
+        fi
+
+        tar -xzf "${CACHE_DIR}/${localFileName}"
+    else
+        wget -O "${localFileName}.part" "${url}"
+        if ! tar -tzf "${localFileName}.part" >/dev/null 2>&1; then
+            rm -f "${localFileName}.part"
+            echo "ERROR: Downloaded archive ${localFileName} is corrupt."
+            exit 1
+        fi
+        if [ -n "${expected_sha256}" ]; then
+            _actual=$(sha256sum "${localFileName}.part" | awk '{print $1}')
+            if [ "${_actual}" != "${expected_sha256}" ]; then
+                echo "ERROR: SHA256 mismatch for ${localFileName}."
+                echo "  Expected: ${expected_sha256}"
+                echo "  Got:      ${_actual}"
+                rm -f "${localFileName}.part"
+                exit 1
+            fi
+            echo "SHA256 verified: ${localFileName}: ${_actual}"
+        fi
+        mv "${localFileName}.part" "${localFileName}"
+        tar -xzf "${localFileName}"
+        rm -f "${localFileName}"
+    fi
+}
+
+###############################################################################
+# Architecture
+###############################################################################
+
+case "$(uname -m)" in
+    aarch64)
+        architecture="aarch64"
+        CDSP_SHA256="${CDSP_SHA256_AARCH64}"
+        GUI_SHA256="${GUI_SHA256_AARCH64}"
+        ;;
+    armv7l|armv7*)
+        architecture="armv7"
+        CDSP_SHA256="${CDSP_SHA256_ARMV7}"
+        GUI_SHA256="${GUI_SHA256_ARMV7}"
+        ;;
+    *)
+        echo "ERROR: Unsupported architecture: $(uname -m)"
+        echo "Supported: aarch64, armv7"
+        exit 1
+        ;;
+esac
+
+###############################################################################
+# Command line
+###############################################################################
+
+show_usage() {
+    echo "Usage: $0 [-k|--keep-downloads] [--playback-device hw:X,Y] [--dry-run]"
+    echo
+    echo "  -k, --keep-downloads         Keep downloaded archives in ${CACHE_DIR}"
+    echo "      --playback-device DEV    Physical DAC device (e.g. hw:0,0)"
+    echo "      --dry-run                Print actions without executing them"
+}
+
+keepDownloads=false
+DRY_RUN=false
+PLAYBACK_DEVICE_OVERRIDE=""
+
+while [ "$#" -gt 0 ]
+do
     case "$1" in
-        --dry-run)           DRY_RUN=1; shift ;;
-        --playback-device)   PLAYBACK_DEVICE="$2"; shift 2 ;;
-        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+        -k|--keep-downloads)
+            keepDownloads=true
+            ;;
+        --playback-device)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "ERROR: --playback-device requires a value."
+                show_usage
+                exit 1
+            fi
+            PLAYBACK_DEVICE_OVERRIDE="$1"
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
     esac
+    shift
 done
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+###############################################################################
+# Dry-run wrapper
+###############################################################################
 
-info()  { echo "  [INFO]  $*"; }
-ok()    { echo "  [ OK ]  $*"; }
-warn()  { echo "  [WARN]  $*" >&2; }
-abort() { echo "  [FAIL]  $*" >&2; exit 1; }
-
-run() {
-    if [ "$DRY_RUN" -eq 1 ]; then
+drun() {
+    if $DRY_RUN; then
         echo "  [DRY ]  $*"
     else
         "$@"
     fi
 }
 
-# Run a command with sudo only when not already root.
-# Also respects DRY_RUN (prints the command without executing).
-srun() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY ]  (sudo) $*"
-        return
+###############################################################################
+# Pre-flight
+###############################################################################
+
+if [ -f "${FINAL_TCZ}" ]; then
+    echo "ERROR: ${EXTENSION_NAME}.tcz is already installed."
+    echo
+    echo "Uninstall the existing extension and reboot before reinstalling."
+    exit 1
+fi
+
+if [ -e "/usr/local/tce.installed/${EXTENSION_NAME}" ]; then
+    echo "ERROR: piCoreCDSP is still loaded in RAM. Reboot first."
+    echo
+    echo "Reboot piCorePlayer before reinstalling."
+    exit 1
+fi
+
+_running_procs=""
+if pgrep -x picorecdsp >/dev/null 2>&1; then
+    _running_procs="${_running_procs} picorecdsp"
+fi
+if pgrep -x camilladsp >/dev/null 2>&1; then
+    _running_procs="${_running_procs} camilladsp"
+fi
+if pgrep -x camillagui_backend >/dev/null 2>&1; then
+    _running_procs="${_running_procs} camillagui_backend"
+fi
+
+if [ -n "${_running_procs}" ]; then
+    echo "ERROR: Existing piCoreCDSP runtime processes are still running:"
+    echo " ${_running_procs}"
+    echo
+    echo "Reboot piCorePlayer before reinstalling."
+    exit 1
+fi
+
+if ! [ -f "${PCP_CONFIG}" ]; then
+    echo "ERROR: piCorePlayer config not found: ${PCP_CONFIG}"
+    exit 1
+fi
+
+requiredSpaceInMB=350
+availableSpaceInMB=$(
+    /bin/df -m /dev/mmcblk0p2 2>/dev/null |
+        awk 'NR==2 { print $4 }'
+)
+if [ -z "${availableSpaceInMB}" ] ||
+   [ "${availableSpaceInMB}" -le "${requiredSpaceInMB}" ]; then
+    echo "ERROR: Not enough free space on /dev/mmcblk0p2."
+    echo "At least ${requiredSpaceInMB} MB free space is required."
+    exit 1
+fi
+
+if [ -d "${BUILD_DIR}" ]; then
+    echo "ERROR: Build directory ${BUILD_DIR} already exists."
+    echo "Remove it or reboot before running the installer again."
+    exit 1
+fi
+
+mkdir -p "${BUILD_DIR}"
+
+###############################################################################
+# Test ALSA Loopback support
+###############################################################################
+
+echo "Testing ALSA Loopback support..."
+
+if ! sudo modprobe snd-aloop; then
+    echo
+    echo "ERROR: snd-aloop could not be loaded."
+    echo "This piCorePlayer kernel/image needs ALSA Loopback support."
+    exit 1
+fi
+
+i=0
+while [ "${i}" -lt 10 ]
+do
+    if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+        break
     fi
-    if [ "$(id -u)" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
+    i=$((i + 1))
+    sleep 1
+done
 
-# Fetch the latest release tag from GitHub for a given owner/repo.
-# Uses wget + basic text parsing (no jq dependency).
-fetch_latest_release() {
-    _repo="$1"
-    _tag=$(wget -qO- "https://api.github.com/repos/${_repo}/releases/latest" \
-        | grep '"tag_name"' \
-        | head -1 \
-        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-    if [ -z "$_tag" ]; then
-        abort "Could not auto-detect latest release for ${_repo}. Set the version explicitly via the environment variable."
-    fi
-    echo "$_tag"
-}
+if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+    echo
+    echo "ERROR: snd-aloop loaded, but the Loopback card did not appear."
+    exit 1
+fi
 
-file_is_absent_or_empty() {
-    [ ! -f "$1" ] || [ ! -s "$1" ]
-}
+echo "ALSA Loopback is available."
 
-add_to_backup_list() {
-    _entry="$1"
-    if ! grep -qxF "$_entry" "$FILETOOL_LST" 2>/dev/null; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would add $_entry to pCP backup list."
-        else
-            printf '%s\n' "$_entry" >> "$FILETOOL_LST"
-            info "Added $_entry to pCP backup list."
-        fi
-    fi
-}
+###############################################################################
+# Resolve the physical playback device
+###############################################################################
 
-# Download url → local path, verify SHA256 (optional), atomic (.part rename).
-download_file() {
-    _url="$1"
-    _dest="$2"
-    _expected_sha256="${3:-}"
-
-    _part="${_dest}.part"
-    info "Downloading $(basename "$_dest") ..."
-    run wget -q -O "$_part" "$_url" || abort "Download failed: $_url"
-
-    if [ -n "$_expected_sha256" ] && [ "$DRY_RUN" -eq 0 ]; then
-        _actual=$(sha256sum "$_part" | awk '{print $1}')
-        if [ "$_actual" != "$_expected_sha256" ]; then
-            rm -f "$_part"
-            abort "SHA256 mismatch for $(basename "$_dest"). Expected: $_expected_sha256  Got: $_actual"
-        fi
-        info "SHA256 verified: $(basename "$_dest")"
-    fi
-
-    run mv "$_part" "$_dest"
-}
-
-# ── Step 1: Platform check ────────────────────────────────────────────────────
-check_platform() {
-    echo ""
-    echo "=== Step 1: Platform check ==="
-    if [ ! -f /etc/os-release ] && [ ! -f /usr/share/doc/pcp/version ]; then
-        if ! grep -qi 'picore\|tinycore\|picoreplayer' /etc/issue 2>/dev/null &&
-           ! grep -qi 'picore\|tinycore\|picoreplayer' /proc/version 2>/dev/null; then
-            abort "Not running on piCorePlayer / TinyCore Linux. Aborting."
-        fi
-    fi
-    ok "piCorePlayer detected."
-}
-
-# ── Step 2: Pre-flight checks ─────────────────────────────────────────────────
-preflight_checks() {
-    echo ""
-    echo "=== Step 2: Pre-flight checks ==="
-
-    # snd-aloop
-    if grep -q "^snd.aloop\|^snd_aloop" /proc/modules 2>/dev/null; then
-        ok "snd-aloop module is loaded."
-    elif srun modprobe snd-aloop 2>/dev/null; then
-        ok "snd-aloop loaded successfully."
-    else
-        abort "snd-aloop is not available in this kernel. piCoreCDSP v2 requires snd-aloop."
-    fi
-
-    # Loopback card appearance
-    _i=0
-    while [ "$_i" -lt 10 ]; do
-        grep -q "Loopback" /proc/asound/cards 2>/dev/null && break
-        _i=$((_i + 1))
-        sleep 1
-    done
-    grep -q "Loopback" /proc/asound/cards 2>/dev/null \
-        || abort "snd-aloop loaded but Loopback card did not appear in /proc/asound/cards."
-    ok "ALSA Loopback card is visible."
-
-    # Running process conflicts
-    _procs=""
-    pgrep -x camilladsp       >/dev/null 2>&1 && _procs="$_procs camilladsp"
-    pgrep -x camillagui_backend >/dev/null 2>&1 && _procs="$_procs camillagui_backend"
-    pgrep -x picorecdsp       >/dev/null 2>&1 && _procs="$_procs picorecdsp"
-    if [ -n "$_procs" ]; then
-        abort "Existing runtime processes are still running:$_procs — reboot before installing."
-    fi
-    ok "No conflicting processes running."
-
-    # Disk space
-    if command -v df >/dev/null 2>&1; then
-        _avail=$(df -m /dev/mmcblk0p2 2>/dev/null | awk 'NR==2{print $4}' || echo "")
-        if [ -n "$_avail" ] && [ "$_avail" -lt "$REQUIRED_SPACE_MB" ]; then
-            abort "Not enough free space on /dev/mmcblk0p2. Need ${REQUIRED_SPACE_MB} MB, have ${_avail} MB."
-        fi
-        [ -n "$_avail" ] && ok "Disk space OK (${_avail} MB free)."
-    fi
-
-    # Version pins — already defaulted in the variables section above.
-    ok "Version pins set: CamillaDSP=${CAMILLA_VERSION}  CamillaGUI=${CAMILLA_GUI_VERSION}  piCoreCDSP=${PICORECDSP_RELEASE_TAG}"
-}
-
-# ── Step 3: Playback device detection ────────────────────────────────────────
-detect_playback_device() {
-    echo ""
-    echo "=== Step 3: Physical playback device detection ==="
-
-    if [ -n "$PLAYBACK_DEVICE" ]; then
-        ok "Using provided playback device: $PLAYBACK_DEVICE"
-        return
-    fi
-
-    # Try to recover from existing pcp.cfg (reinstall: OUTPUT may already be
-    # pcm.picorecdsp, so we look at the last-known device file too).
-    if [ -f "$PCP_CONFIG" ]; then
-        _pcp_out=$(awk '/^OUTPUT=/{v=$0; sub(/^OUTPUT=/,"",v); gsub(/"/,"",v); print v; exit}' "$PCP_CONFIG")
-        case "$_pcp_out" in
-            ""|*picorecdsp*|*camilladsp*|*Loopback*|*loopback*) ;;
-            *) PLAYBACK_DEVICE="$_pcp_out"; ok "Detected playback device from pcp.cfg: $PLAYBACK_DEVICE"; return ;;
-        esac
-    fi
-
-    # Auto-detect from aplay
-    if command -v aplay >/dev/null 2>&1; then
-        _detected=$(aplay -l 2>/dev/null \
-            | grep "^card " \
-            | grep -v -i "loopback" \
-            | head -1 \
-            | sed 's/card \([0-9]*\): .*, device \([0-9]*\):.*/hw:\1,\2/' \
-            || true)
-        if [ -n "$_detected" ]; then
-            PLAYBACK_DEVICE="$_detected"
-            ok "Detected playback device: $PLAYBACK_DEVICE"
-            return
-        fi
-    fi
-
-    warn "No non-loopback playback device detected. Falling back to hw:0,0."
-    warn "Pass --playback-device hw:X,Y if this is wrong."
-    PLAYBACK_DEVICE="hw:0,0"
-}
-
-# ── Step 4: Install pcm.picorecdsp ALSA plug ─────────────────────────────────
-install_alsa_plug() {
-    echo ""
-    echo "=== Step 4: Install pcm.picorecdsp ALSA plug ==="
-
-    if [ -f "$ASOUND_CONF" ] && grep -q "pcm.picorecdsp" "$ASOUND_CONF"; then
-        ok "$ASOUND_CONF already contains pcm.picorecdsp — skipping."
-        return
-    fi
-
-    # Strip any existing piCoreCDSP block (idempotent reinstall safety),
-    # then append the current canonical definition.
-    if [ "$DRY_RUN" -eq 0 ]; then
-        _tmp=$(mktemp)
-        trap 'rm -f "$_tmp"' EXIT
-
-        # Strip old block if present, pass rest through unchanged.
-        if [ -f "$ASOUND_CONF" ]; then
-            awk '
-                /^# BEGIN piCoreCDSP$/ { skip=1; next }
-                /^# END piCoreCDSP$/   { skip=0; next }
-                !skip { print }
-            ' "$ASOUND_CONF" > "$_tmp"
-        fi
-
-        cat >> "$_tmp" <<'PCM_BLOCK'
-
-# BEGIN piCoreCDSP
-# pcm.picorecdsp ALSA plug — generated by piCoreCDSP installer.
-# CANONICAL definition: src/source/alsa_loopback.rs (CANONICAL_ASOUND_CONF).
-# If the slave PCM changes, update both places and re-run contract tests.
-#
-# Contract invariants:
-#   format   = S32_LE   (producers honour or auto-convert via plug)
-#   channels = 2        (stereo only)
-#   rate     = unchanged (no plug-level resampling; rate negotiated end-to-end)
-
-pcm.picorecdsp {
-    type plug
-    slave {
-        pcm "hw:Loopback,1,0"
-        format S32_LE
-        channels 2
-        rate unchanged
+read_pcp_output() {
+    awk '
+    /^OUTPUT=/ {
+        value = $0
+        sub(/^OUTPUT=/, "", value)
+        sub(/^"/, "", value)
+        sub(/"$/, "", value)
+        print value
+        exit
     }
-    hint {
-        show on
-        description "piCoreCDSP ALSA Loopback input"
-    }
-}
-# END piCoreCDSP
-PCM_BLOCK
-
-        srun touch "$ASOUND_CONF"
-        srun chmod 664 "$ASOUND_CONF"
-        srun cp "$_tmp" "$ASOUND_CONF"
-        rm -f "$_tmp"
-        trap - EXIT
-    else
-        echo "  [DRY ]  Would write pcm.picorecdsp block to $ASOUND_CONF"
-    fi
-
-    add_to_backup_list "$ASOUND_CONF"
-    ok "pcm.picorecdsp installed in $ASOUND_CONF."
+    ' "${PCP_CONFIG}"
 }
 
-# ── Step 5: Install CamillaDSP ────────────────────────────────────────────────
-install_camilladsp() {
-    echo ""
-    echo "=== Step 5: Install CamillaDSP ${CAMILLA_VERSION} ==="
+is_usable_playback_device() {
+    candidate="$1"
 
-    TARGET_BIN="${INSTALL_BIN}/camilladsp"
-
-    if [ -f "$TARGET_BIN" ]; then
-        _ver=$("$TARGET_BIN" --version 2>/dev/null | head -1 || echo "unknown")
-        abort "CamillaDSP already installed ($_ver). Fresh-install-only. Remove $TARGET_BIN manually to reinstall."
-    fi
-
-    _arch=$(uname -m)
-    case "$_arch" in
-        aarch64|arm64) _rel_arch="aarch64-unknown-linux-musl"; _sha="$CAMILLA_SHA256_AARCH64" ;;
-        armv7l)        _rel_arch="armv7-unknown-linux-musleabihf"; _sha="$CAMILLA_SHA256_ARMV7" ;;
-        x86_64)        _rel_arch="x86_64-unknown-linux-musl"; _sha="" ;;
-        *) abort "Unsupported architecture: $_arch" ;;
+    case "${candidate}" in
+        ""|null|*Loopback*|*loopback*)
+            return 1
+            ;;
     esac
 
-    _url="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_VERSION}/camilladsp-${CAMILLA_VERSION}-${_rel_arch}.tar.gz"
-    _tmp=$(mktemp -d)
-    trap 'rm -rf "$_tmp"' EXIT
-
-    download_file "$_url" "${_tmp}/camilladsp.tar.gz" "$_sha"
-
-    if [ "$DRY_RUN" -eq 0 ]; then
-        tar -xzf "${_tmp}/camilladsp.tar.gz" -C "$_tmp"
-        srun install -m 0755 "${_tmp}/camilladsp" "$TARGET_BIN"
-    else
-        echo "  [DRY ]  Would extract and install camilladsp to $TARGET_BIN"
+    if printf '%s\n' "${candidate}" | grep -Eqi 'picorecdsp|picoredsp|camilladsp'; then
+        return 1
     fi
 
-    rm -rf "$_tmp"
-    trap - EXIT
-
-    add_to_backup_list "$TARGET_BIN"
-    ok "CamillaDSP ${CAMILLA_VERSION} installed at $TARGET_BIN."
+    return 0
 }
 
-# ── Step 6: Install CamillaGUI (pre-built native binary bundle, no Python) ───
-install_camillagui() {
-    echo ""
-    echo "=== Step 6: Install CamillaGUI ${CAMILLA_GUI_VERSION} (native binary bundle) ==="
+if [ -n "${PLAYBACK_DEVICE_OVERRIDE}" ]; then
+    PLAYBACK_DEVICE="${PLAYBACK_DEVICE_OVERRIDE}"
+    echo "Using provided playback device: ${PLAYBACK_DEVICE}"
+else
+    PCP_OUTPUT=$(read_pcp_output)
 
-    if [ -d "$CAMILLA_GUI_DIR" ]; then
-        abort "CamillaGUI directory already exists at $CAMILLA_GUI_DIR. Fresh-install-only. Remove it manually to reinstall."
-    fi
-
-    _arch=$(uname -m)
-    case "$_arch" in
-        aarch64|arm64) _bundle_arch="aarch64"; _sha="$GUI_SHA256_AARCH64" ;;
-        armv7l)        _bundle_arch="armv7";   _sha="$GUI_SHA256_ARMV7" ;;
-        x86_64)        _bundle_arch="x86_64";  _sha="" ;;
-        *) abort "Unsupported architecture: $_arch" ;;
-    esac
-
-    # CamillaGUI ships a self-contained PyInstaller bundle — native binary,
-    # no Python runtime required on the target system.
-    _url="https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${_bundle_arch}.tar.gz"
-    _tmp=$(mktemp -d)
-    trap 'rm -rf "$_tmp"' EXIT
-
-    download_file "$_url" "${_tmp}/camillagui.tar.gz" "$_sha"
-
-    if [ "$DRY_RUN" -eq 0 ]; then
-        srun mkdir -p "$CAMILLA_GUI_DIR"
-        srun tar -xzf "${_tmp}/camillagui.tar.gz" -C "$CAMILLA_GUI_DIR"
-
-        # Verify the binary is present after extraction.
-        if [ ! -f "${CAMILLA_GUI_DIR}/camillagui_backend" ]; then
-            abort "CamillaGUI binary not found after extraction at ${CAMILLA_GUI_DIR}/camillagui_backend."
-        fi
-        srun chmod -R 775 "$CAMILLA_GUI_DIR"
+    if is_usable_playback_device "${PCP_OUTPUT}"; then
+        PLAYBACK_DEVICE="${PCP_OUTPUT}"
+        echo "CamillaDSP playback device: ${PLAYBACK_DEVICE} (from piCorePlayer config)"
     else
-        echo "  [DRY ]  Would extract bundle to $CAMILLA_GUI_DIR"
+        echo
+        echo "ERROR: piCorePlayer does not currently have a usable playback output."
+        echo "Current OUTPUT: ${PCP_OUTPUT:-<empty>}"
+        echo
+        echo "Select the real DAC/output in piCorePlayer Squeezelite settings,"
+        echo "then run the installer again, or pass --playback-device hw:X,Y."
+        exit 1
     fi
+fi
 
-    rm -rf "$_tmp"
-    trap - EXIT
+###############################################################################
+# Download piCoreCDSP daemon
+###############################################################################
 
-    add_to_backup_list "$CAMILLA_GUI_DIR"
-    ok "CamillaGUI ${CAMILLA_GUI_VERSION} installed at $CAMILLA_GUI_DIR (no Python required)."
-}
+PICORECDSP_RELEASE_URL="https://github.com/${PICORECDSP_REPO}/releases/download/${PICORECDSP_RELEASE_TAG}/picorecdsp-${architecture}"
 
-# ── Step 7: Configure shared native statefile ─────────────────────────────────
-configure_statefile() {
-    echo ""
-    echo "=== Step 7: Configure shared native statefile ==="
+echo "Downloading picorecdsp ${PICORECDSP_RELEASE_TAG} for ${architecture}..."
 
-    run mkdir -p "$CAMILLA_DATA_DIR" "$CAMILLA_CONFIG_DIR" "$CAMILLA_COEFF_DIR"
+mkdir -p "${BUILD_DIR}/usr/local/bin"
 
-    if [ -f "$CAMILLA_STATEFILE" ]; then
-        ok "Statefile already exists at $CAMILLA_STATEFILE — not overwriting."
+if $keepDownloads; then
+    mkdir -p "${CACHE_DIR}"
+    CACHED_BIN="${CACHE_DIR}/picorecdsp-${architecture}-${PICORECDSP_RELEASE_TAG}"
+    # Never use a stale cache for a mutable rolling tag — always re-download.
+    if [ "${PICORECDSP_RELEASE_TAG}" = "installer-latest" ]; then
+        echo "Rolling tag ${PICORECDSP_RELEASE_TAG}: skipping cache, re-downloading."
+        wget -O "${CACHED_BIN}" "${PICORECDSP_RELEASE_URL}"
+    elif [ ! -f "${CACHED_BIN}" ]; then
+        wget -O "${CACHED_BIN}" "${PICORECDSP_RELEASE_URL}"
     else
-        run touch "$CAMILLA_STATEFILE"
-        add_to_backup_list "$CAMILLA_STATEFILE"
-        ok "Statefile placeholder created at $CAMILLA_STATEFILE."
-        info "(CamillaDSP will populate this on first run.)"
+        echo "Using cached ${CACHED_BIN}"
     fi
+    cp "${CACHED_BIN}" "${PICORECDSP_BIN}"
+else
+    wget -O "${PICORECDSP_BIN}" "${PICORECDSP_RELEASE_URL}"
+fi
 
-    # Write CamillaGUI config into the bundle's config directory.
-    # The bundle expects its config at _internal/config/camillagui.yml.
-    _gui_conf_dir="${CAMILLA_GUI_DIR}/_internal/config"
-    _gui_conf="${_gui_conf_dir}/camillagui.yml"
+chmod 755 "${PICORECDSP_BIN}"
 
-    if [ -f "$_gui_conf" ] && [ "$DRY_RUN" -eq 0 ]; then
-        ok "CamillaGUI config already present at $_gui_conf — skipping."
-        return
-    fi
+# Verify SHA256 against the published companion file.
+_sha256_tmp="/tmp/picorecdsp-${architecture}.sha256.$$"
+wget -O "${_sha256_tmp}" "${PICORECDSP_RELEASE_URL}.sha256" \
+    || { echo "ERROR: Failed to download SHA256 for picorecdsp-${architecture}."; exit 1; }
+_expected_hash=$(awk '{print $1; exit}' "${_sha256_tmp}")
+_actual_hash=$(sha256sum "${PICORECDSP_BIN}" | awk '{print $1}')
+rm -f "${_sha256_tmp}"
+if [ "${_expected_hash}" != "${_actual_hash}" ]; then
+    echo "ERROR: SHA256 mismatch for picorecdsp-${architecture}."
+    echo "  Expected: ${_expected_hash}"
+    echo "  Got:      ${_actual_hash}"
+    exit 1
+fi
+echo "picorecdsp SHA256 verified: ${_actual_hash}"
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY ]  Would write ${_gui_conf}"
-        return
-    fi
+if [ ! -x "${PICORECDSP_BIN}" ]; then
+    echo "ERROR: picorecdsp binary was not downloaded."
+    exit 1
+fi
 
-    mkdir -p "$_gui_conf_dir"
-    cat > "$_gui_conf" <<EOF
-# CamillaGUI config — generated by piCoreCDSP installer.
-camilla_host: "127.0.0.1"
-camilla_port: 1234
+###############################################################################
+# Stage CamillaDSP configs
+###############################################################################
 
-bind_address: "0.0.0.0"
-port: 5000
+STAGE_DATA_DIR="/tmp/${EXTENSION_NAME}-data.$$"
+STAGE_CONFIG_DIR="${STAGE_DATA_DIR}/configs"
+STAGE_BYPASS_CONFIG="${STAGE_CONFIG_DIR}/Bypass.yml"
+STAGE_NULL_CONFIG="${STAGE_CONFIG_DIR}/Null.yml"
 
-ssl_certificate: null
-ssl_private_key: null
+mkdir -p "${STAGE_CONFIG_DIR}"
+trap 'rm -rf "${STAGE_DATA_DIR}" 2>/dev/null || true; cleanup' EXIT
 
-config_dir: "${CAMILLA_CONFIG_DIR}"
-coeff_dir: "${CAMILLA_COEFF_DIR}"
-default_config: "${CAMILLA_CONFIG_DIR}/Bypass.yml"
-statefile_path: "${CAMILLA_STATEFILE}"
-log_file: "/tmp/camilladsp_rCURRENT.log"
-
-supported_capture_types:
-  - "Alsa"
-
-supported_playback_types:
-  - "Alsa"
-EOF
-    ok "CamillaGUI config written to $_gui_conf."
-}
-
-# ── Step 8: Generate Bypass.yml and Null.yml ──────────────────────────────────
-generate_configs() {
-    echo ""
-    echo "=== Step 8: Generate Bypass.yml / Null.yml ==="
-
-    add_to_backup_list "$CAMILLA_CONFIG_DIR"
-
-    _bypass="${CAMILLA_CONFIG_DIR}/Bypass.yml"
-    _null="${CAMILLA_CONFIG_DIR}/Null.yml"
-
-    if [ -f "$_bypass" ]; then
-        ok "Bypass.yml already exists — not overwriting (user-owned)."
-    else
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would write ${_bypass}"
-        else
-            cat > "$_bypass" <<EOF
+# Bypass.yml — transparent pass-through.
+cat > "${STAGE_BYPASS_CONFIG}" <<EOF
 # Bypass.yml — generated by piCoreCDSP v2 installer.
 # User-owned after installation: the installer never overwrites this file.
 #
-# CamillaDSP version: ${CAMILLA_VERSION}
+# CamillaDSP version: ${CDSP_VERSION}
 # Generated for playback device: ${PLAYBACK_DEVICE}
 
 devices:
@@ -525,21 +579,11 @@ filters: {}
 mixers: {}
 pipeline: []
 EOF
-        fi
-        ok "Bypass.yml generated."
-    fi
 
-    if [ -f "$_null" ]; then
-        ok "Null.yml already exists — not overwriting (user-owned)."
-    else
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would write ${_null}"
-        else
-            cat > "$_null" <<EOF
+# Null.yml — routes audio to /dev/null; diagnostic use only.
+cat > "${STAGE_NULL_CONFIG}" <<'EOF'
 # Null.yml — generated by piCoreCDSP v2 installer.
 # Routes audio to /dev/null (silence). Diagnostic use only.
-#
-# CamillaDSP version: ${CAMILLA_VERSION}
 
 devices:
   samplerate: 44100
@@ -563,334 +607,454 @@ filters: {}
 mixers: {}
 pipeline: []
 EOF
-        fi
-        ok "Null.yml generated."
-    fi
-}
 
-# ── Step 9: Install piCoreCDSP Rust binary ────────────────────────────────────
-install_picorecdsp_binary() {
-    echo ""
-    echo "=== Step 9: Install piCoreCDSP daemon (${PICORECDSP_RELEASE_TAG}) ==="
+###############################################################################
+# Download CamillaDSP
+###############################################################################
 
-    TARGET_BIN="${INSTALL_BIN}/picorecdsp"
+cd "${BUILD_DIR}/usr/local"
 
-    if [ -f "$TARGET_BIN" ]; then
-        abort "piCoreCDSP already installed at $TARGET_BIN. Fresh-install-only. Remove it manually to reinstall."
-    fi
+download_and_extract_tar_gz \
+    "camilladsp-${CDSP_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camilladsp/releases/download/${CDSP_VERSION}/camilladsp-linux-${architecture}.tar.gz" \
+    "${CDSP_SHA256}"
 
-    _arch=$(uname -m)
-    case "$_arch" in
-        aarch64|arm64) _bin_suffix="aarch64" ;;
-        armv7l)        _bin_suffix="armv7" ;;
-        x86_64)        _bin_suffix="aarch64" ;;  # dev/CI: fall back to aarch64 for smoke tests
-        *) abort "Unsupported architecture: $_arch" ;;
-    esac
+if [ ! -f "${BUILD_DIR}/usr/local/camilladsp" ]; then
+    echo "ERROR: CamillaDSP binary was not found after extraction."
+    exit 1
+fi
 
-    _base_url="https://github.com/urknall/piCoreCDSP/releases/download/${PICORECDSP_RELEASE_TAG}"
-    _bin_name="picorecdsp-${_bin_suffix}"
-    _tmp=$(mktemp -d)
-    trap 'rm -rf "$_tmp"' EXIT
+chmod 755 "${BUILD_DIR}/usr/local/camilladsp"
 
-    # Download binary and its companion SHA256 file, then verify integrity.
-    download_file "${_base_url}/${_bin_name}" "${_tmp}/picorecdsp" ""
-    download_file "${_base_url}/${_bin_name}.sha256" "${_tmp}/picorecdsp.sha256" ""
+if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--wait'; then
+    echo "ERROR: Downloaded CamillaDSP does not support --wait."
+    exit 1
+fi
 
-    if [ "$DRY_RUN" -eq 0 ]; then
-        _expected=$(awk '{print $1}' "${_tmp}/picorecdsp.sha256")
-        _actual=$(sha256sum "${_tmp}/picorecdsp" | awk '{print $1}')
-        if [ "$_actual" != "$_expected" ]; then
-            abort "SHA256 mismatch for picorecdsp binary. Expected: $_expected  Got: $_actual"
-        fi
-        srun install -m 0755 "${_tmp}/picorecdsp" "$TARGET_BIN"
-    else
-        echo "  [DRY ]  Would install picorecdsp to $TARGET_BIN"
-    fi
+if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--no_config'; then
+    echo "ERROR: Downloaded CamillaDSP does not support --no_config."
+    exit 1
+fi
 
-    rm -rf "$_tmp"
-    trap - EXIT
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}" >/dev/null
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}"   >/dev/null
 
-    add_to_backup_list "$TARGET_BIN"
-    ok "piCoreCDSP (${PICORECDSP_RELEASE_TAG}) installed at $TARGET_BIN."
-}
+echo "CamillaDSP configuration validation OK."
 
-# ── Step 10: Smoke-test binaries before committing system config ───────────────
-smoke_test_binaries() {
-    echo ""
-    echo "=== Step 10: Binary smoke tests ==="
+###############################################################################
+# Download CamillaGUI
+###############################################################################
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY ]  Skipping smoke tests in dry-run mode."
-        return
-    fi
+cd "${BUILD_DIR}/usr/local"
 
-    # CamillaDSP: validate both generated configs.
-    "${INSTALL_BIN}/camilladsp" --check "${CAMILLA_CONFIG_DIR}/Bypass.yml" \
-        || abort "CamillaDSP config validation failed for Bypass.yml."
-    ok "CamillaDSP validated Bypass.yml."
+download_and_extract_tar_gz \
+    "camillagui-${CAMILLA_GUI_VERSION}-${architecture}.tar.gz" \
+    "https://github.com/HEnquist/camillagui-backend/releases/download/${CAMILLA_GUI_VERSION}/bundle_linux_${architecture}.tar.gz" \
+    "${GUI_SHA256}"
 
-    "${INSTALL_BIN}/camilladsp" --check "${CAMILLA_CONFIG_DIR}/Null.yml" \
-        || abort "CamillaDSP config validation failed for Null.yml."
-    ok "CamillaDSP validated Null.yml."
+if [ ! -f "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ]; then
+    echo "ERROR: CamillaGUI backend was not found after extraction."
+    exit 1
+fi
 
-    # CamillaGUI binary executes.
-    "${CAMILLA_GUI_DIR}/camillagui_backend" --help >/dev/null 2>&1 || true
-    [ -x "${CAMILLA_GUI_DIR}/camillagui_backend" ] \
-        || abort "CamillaGUI binary is not executable at ${CAMILLA_GUI_DIR}/camillagui_backend."
-    ok "CamillaGUI binary is executable."
+chmod -R 775 "${BUILD_DIR}/usr/local/camillagui_backend"
 
-    # piCoreCDSP daemon executes.
-    "${INSTALL_BIN}/picorecdsp" --help >/dev/null 2>&1 || true
-    [ -x "${INSTALL_BIN}/picorecdsp" ] \
-        || abort "piCoreCDSP binary is not executable at ${INSTALL_BIN}/picorecdsp."
-    ok "piCoreCDSP binary is executable."
-}
+###############################################################################
+# CamillaGUI configuration
+###############################################################################
 
-# ── Step 11: Register startup with supervisor loops ───────────────────────────
-register_startup() {
-    echo ""
-    echo "=== Step 11: Register startup (bootlocal.sh) ==="
+GUI_CONFIG_DIR="${BUILD_DIR}/usr/local/camillagui_backend/_internal/config"
 
-    # snd-aloop
-    if ! grep -q "snd-aloop" "$BOOTLOCAL" 2>/dev/null; then
-        srun sh -c "printf 'modprobe snd-aloop\n' >> '$BOOTLOCAL'"
-        ok "Added: modprobe snd-aloop"
-    else
-        ok "snd-aloop already in bootlocal.sh."
-    fi
+if [ ! -d "${GUI_CONFIG_DIR}" ]; then
+    echo "ERROR: CamillaGUI bundle config directory not found:"
+    echo "  ${GUI_CONFIG_DIR}"
+    exit 1
+fi
 
-    # CamillaDSP supervisor loop
-    if ! grep -q "camilladsp" "$BOOTLOCAL" 2>/dev/null; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would append CamillaDSP supervisor to ${BOOTLOCAL}"
-        else
-            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
+cat > "${GUI_CONFIG_DIR}/camillagui.yml" <<EOF
+camilla_host: "127.0.0.1"
+camilla_port: 1234
 
-# CamillaDSP v2 supervisor — started by piCoreCDSP installer
-sudo -u tc sh -c '
-  exec >> /tmp/camilladsp-supervisor.log 2>&1
-  _log=/tmp/camilladsp-supervisor.log
-  while :; do
-    ${INSTALL_BIN}/camilladsp \\\\
-      --wait \\\\
-      --no_config \\\\
-      -p 1234 \\\\
-      -s "${CAMILLA_STATEFILE}" \\\\
-      --logfile /tmp/camilladsp.log \\\\
-      --log_rotate_size 262144 \\\\
-      --log_keep_nbr 1
-    echo "\$(date): CamillaDSP exited \$?; restarting" >> /tmp/picorecdsp-startup.log
-    sleep 2
-  done
-' &
+bind_address: "0.0.0.0"
+port: 5000
+
+ssl_certificate: null
+ssl_private_key: null
+
+gui_config_file: null
+
+config_dir: "${CONFIG_DIR}"
+coeff_dir: "${COEFF_DIR}"
+default_config: "${BYPASS_CONFIG}"
+statefile_path: "${STATEFILE}"
+log_file: "/tmp/camilladsp_rCURRENT.log"
+
+supported_capture_types:
+  - "Alsa"
+
+supported_playback_types:
+  - "Alsa"
 EOF
-        fi
-        ok "CamillaDSP supervisor registered."
-    else
-        ok "CamillaDSP entry already in bootlocal.sh."
+
+###############################################################################
+# Stage ALSA configuration
+###############################################################################
+
+ASOUND_SOURCE=/dev/null
+if [ -f /etc/asound.conf ]; then
+    ASOUND_SOURCE=/etc/asound.conf
+fi
+
+awk '
+BEGIN {
+    newblock = 0
+    oldblock = 0
+    found_end = 1
+    found_old_end = 1
+}
+
+/^# BEGIN piCoreCDSP$/ {
+    newblock = 1
+    found_end = 0
+    next
+}
+
+/^# END piCoreCDSP$/ {
+    newblock = 0
+    found_end = 1
+    next
+}
+
+/^# For more info about this configuration see: .*alsa_cdsp/ {
+    oldblock = 1
+    found_old_end = 0
+    next
+}
+
+oldblock && /^# pcm\.camilladsp$/ {
+    oldblock = 0
+    found_old_end = 1
+    next
+}
+
+!newblock && !oldblock {
+    print
+}
+
+END {
+    if (!found_end) {
+        print "ERROR: /etc/asound.conf contains a \"# BEGIN piCoreCDSP\" marker without a" \
+              " matching \"# END piCoreCDSP\" marker." > "/dev/stderr"
+        print "The file may be corrupted. Remove or repair the incomplete block before reinstalling." \
+              > "/dev/stderr"
+        exit 1
+    }
+    if (!found_old_end) {
+        print "ERROR: /etc/asound.conf contains an old alsa_cdsp block that is missing its" \
+              " closing \"# pcm.camilladsp\" marker." > "/dev/stderr"
+        print "The file may be corrupted. Remove or repair the incomplete block before reinstalling." \
+              > "/dev/stderr"
+        exit 1
+    }
+}
+' "${ASOUND_SOURCE}" > "${ASOUND_STAGED}" || {
+    echo "ERROR: Failed to process /etc/asound.conf — see message above."
+    exit 1
+}
+
+cat >> "${ASOUND_STAGED}" <<'ASOUND_BLOCK'
+
+# BEGIN piCoreCDSP
+# pcm.picorecdsp — generated by piCoreCDSP v2 installer.
+# CANONICAL definition: src/source/alsa_loopback.rs (CANONICAL_ASOUND_CONF).
+
+pcm.picorecdsp {
+    type plug
+    slave {
+        pcm "hw:Loopback,1,0"
+        format S32_LE
+        channels 2
+        rate unchanged
+    }
+    hint {
+        show on
+        description "piCoreCDSP ALSA Loopback input"
+    }
+}
+# END piCoreCDSP
+ASOUND_BLOCK
+
+###############################################################################
+# Stage piCorePlayer routing
+###############################################################################
+
+cp "${PCP_CONFIG}" "${PCP_STAGED}"
+
+sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|'          -i "${PCP_STAGED}"
+sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="picorecdsp"|' -i "${PCP_STAGED}"
+sed 's|^SHAIRPORT_CONTROL=.*|SHAIRPORT_CONTROL=""|'   -i "${PCP_STAGED}"
+sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="picorecdsp"|' -i "${PCP_STAGED}"
+
+if ! grep -qx 'OUTPUT="picorecdsp"' "${PCP_STAGED}"; then
+    echo "ERROR: Could not stage piCorePlayer OUTPUT routing."
+    exit 1
+fi
+
+###############################################################################
+# Pre-commit validation
+###############################################################################
+
+if [ ! -s "${STAGE_BYPASS_CONFIG}" ] || \
+   [ ! -s "${STAGE_NULL_CONFIG}" ]   || \
+   [ ! -s "${ASOUND_STAGED}" ]       || \
+   [ ! -s "${PCP_STAGED}" ]; then
+    echo "ERROR: One or more staged installation files are missing."
+    exit 1
+fi
+
+if [ ! -x "${BUILD_DIR}/usr/local/camilladsp" ] || \
+   [ ! -x "${BUILD_DIR}/usr/local/camillagui_backend/camillagui_backend" ] || \
+   [ ! -x "${PICORECDSP_BIN}" ]; then
+    echo "ERROR: Staged runtime is incomplete."
+    exit 1
+fi
+
+echo
+echo "All downloads and validations completed successfully."
+echo "Committing piCoreCDSP changes to piCorePlayer..."
+
+###############################################################################
+# tce.installed boot hook
+###############################################################################
+
+mkdir -p "${BUILD_DIR}/usr/local/tce.installed"
+
+cat > "${BUILD_DIR}/usr/local/tce.installed/${EXTENSION_NAME}" <<'TCEEOF'
+#!/bin/sh
+
+STATEFILE="/mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml"
+STARTUP_LOG="/tmp/picorecdsp-startup.log"
+
+echo "$(date): piCoreCDSP startup" >> "${STARTUP_LOG}"
+
+###############################################################################
+# Load snd-aloop
+###############################################################################
+
+if ! modprobe snd-aloop; then
+    echo "$(date): unable to load snd-aloop" >> "${STARTUP_LOG}"
+    exit 1
+fi
+
+i=0
+while [ "${i}" -lt 20 ]
+do
+    if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+        break
     fi
+    i=$((i + 1))
+    sleep 1
+done
 
-    # CamillaGUI supervisor loop (native binary — no Python)
-    if ! grep -q "camillagui" "$BOOTLOCAL" 2>/dev/null; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would append CamillaGUI supervisor to ${BOOTLOCAL}"
-        else
-            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
+if ! grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+    echo "$(date): Loopback card did not appear" >> "${STARTUP_LOG}"
+    exit 1
+fi
 
-# CamillaGUI v2 supervisor — started by piCoreCDSP installer
+###############################################################################
+# CamillaDSP supervisor
+###############################################################################
+
 sudo -u tc sh -c '
-  exec >> /tmp/camillagui-backend.log 2>&1
-  _log=/tmp/camillagui-backend.log
-  while :; do
-    ${CAMILLA_GUI_DIR}/camillagui_backend
-    echo "\$(date): CamillaGUI exited \$?; restarting" >> /tmp/picorecdsp-startup.log
+exec >> /tmp/camilladsp-supervisor.log 2>&1
+while :
+do
+    /usr/local/camilladsp \
+        --wait \
+        --no_config \
+        --port 1234 \
+        --address 127.0.0.1 \
+        --logfile /tmp/camilladsp.log \
+        --log_rotate_size 262144 \
+        --log_keep_nbr 1 \
+        --statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml
+
+    rc=$?
+    echo "$(date): CamillaDSP exited with ${rc}; restarting" \
+        >> /tmp/picorecdsp-startup.log
     sleep 2
-  done
+done
 ' &
-EOF
-        fi
-        ok "CamillaGUI supervisor registered."
-    else
-        ok "CamillaGUI entry already in bootlocal.sh."
-    fi
 
-    # piCoreCDSP daemon supervisor loop
-    if ! grep -q "picorecdsp" "$BOOTLOCAL" 2>/dev/null; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-            echo "  [DRY ]  Would append piCoreCDSP supervisor to ${BOOTLOCAL}"
-        else
-            srun tee -a "$BOOTLOCAL" >/dev/null <<EOF
+###############################################################################
+# piCoreCDSP daemon supervisor
+###############################################################################
 
-# piCoreCDSP v2 daemon supervisor — started by piCoreCDSP installer
 sudo -u tc sh -c '
-  exec >> /tmp/picorecdsp-daemon.log 2>&1
-  _log=/tmp/picorecdsp-daemon.log
-  sleep 3
-  while :; do
-    ${INSTALL_BIN}/picorecdsp
-    echo "\$(date): piCoreCDSP daemon exited \$?; restarting" >> /tmp/picorecdsp-startup.log
+exec >> /tmp/picorecdsp-daemon.log 2>&1
+sleep 3
+while :
+do
+    /usr/local/bin/picorecdsp
+
+    rc=$?
+    echo "$(date): piCoreCDSP daemon exited with ${rc}; restarting" \
+        >> /tmp/picorecdsp-startup.log
     sleep 2
-  done
+done
 ' &
-EOF
-        fi
-        ok "piCoreCDSP daemon supervisor registered."
-    else
-        ok "piCoreCDSP daemon entry already in bootlocal.sh."
-    fi
 
-    add_to_backup_list "$BOOTLOCAL"
-}
+###############################################################################
+# CamillaGUI supervisor
+###############################################################################
 
-# ── Step 12: Route piCorePlayer audio output to pcm.picorecdsp ───────────────
-route_pcp_output() {
-    echo ""
-    echo "=== Step 12: Route piCorePlayer output to pcm.picorecdsp ==="
+sudo -u tc sh -c '
+exec >> /tmp/camillagui-backend.log 2>&1
+while :
+do
+    /usr/local/camillagui_backend/camillagui_backend
 
-    if [ ! -f "$PCP_CONFIG" ]; then
-        warn "pcp.cfg not found at $PCP_CONFIG — skipping OUTPUT routing."
-        warn "Set OUTPUT=\"picorecdsp\" in pcp.cfg manually before rebooting."
-        return
-    fi
+    rc=$?
+    echo "$(date): CamillaGUI exited with ${rc}; restarting" \
+        >> /tmp/picorecdsp-startup.log
+    sleep 2
+done
+' &
 
-    if grep -q 'OUTPUT="picorecdsp"' "$PCP_CONFIG" 2>/dev/null; then
-        ok "pcp.cfg OUTPUT already set to picorecdsp — skipping."
-        return
-    fi
+exit 0
+TCEEOF
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY ]  Would set OUTPUT=\"picorecdsp\" in $PCP_CONFIG"
-        return
-    fi
+chmod 775 "${BUILD_DIR}/usr/local/tce.installed/${EXTENSION_NAME}"
 
-    # Stage the change atomically.
-    _staged=$(mktemp)
-    trap 'rm -f "$_staged"' EXIT
-    sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|' "$PCP_CONFIG" > "$_staged"
+###############################################################################
+# Build Tiny Core extension
+###############################################################################
 
-    if ! grep -q 'OUTPUT="picorecdsp"' "$_staged"; then
-        # OUTPUT line was absent — append it.
-        printf 'OUTPUT="picorecdsp"\n' >> "$_staged"
-    fi
+install_temporarily_if_missing squashfs-tools
 
-    srun cp "$_staged" "$PCP_CONFIG"
-    rm -f "$_staged"
-    trap - EXIT
+rm -f "${TCZ_TMP}"
 
-    add_to_backup_list "$PCP_CONFIG"
-    ok "pcp.cfg OUTPUT set to picorecdsp."
-}
+mksquashfs "${BUILD_DIR}" "${TCZ_TMP}" -noappend
 
-# ── Step 13: Finalize pCP backup list ─────────────────────────────────────────
-finalize_backup_list() {
-    echo ""
-    echo "=== Step 13: Finalize pCP backup list ==="
-    add_to_backup_list "$FILETOOL_LST"
-    add_to_backup_list "$CAMILLA_DATA_DIR"
-    ok "Backup list updated."
-}
+if [ ! -s "${TCZ_TMP}" ]; then
+    echo "ERROR: TCZ build did not produce a valid file."
+    exit 1
+fi
 
-# ── Step 14: Run pCP backup ───────────────────────────────────────────────────
-run_backup() {
-    echo ""
-    echo "=== Step 14: pCP backup ==="
-    if command -v pcp >/dev/null 2>&1; then
-        srun pcp backup
-        ok "pCP backup complete."
-    elif command -v filetool.sh >/dev/null 2>&1; then
-        srun filetool.sh -b
-        ok "pCP backup complete (filetool.sh)."
-    else
-        warn "Neither pcp nor filetool.sh found — skipping backup."
-    fi
-}
+# piCoreCDSP has no Tiny Core runtime dependency beyond libraries already
+# present in the piCorePlayer ALSA stack. No .tcz.dep is installed.
 
-# ── Step 15: Reboot prompt ────────────────────────────────────────────────────
-prompt_reboot() {
-    echo ""
-    echo "=== Step 15: Reboot ==="
-    echo ""
-    echo "  Installation complete. A reboot is required to:"
-    echo "    • Apply the new ALSA configuration."
-    echo "    • Start CamillaDSP, CamillaGUI, and piCoreCDSP via bootlocal.sh."
-    echo "    • Apply the new piCorePlayer output routing."
-    echo ""
-    echo "  Audio path after reboot:"
-    echo "    Squeezelite / AirPlay → pcm.picorecdsp → hw:Loopback,1,0"
-    echo "                         → snd-aloop → hw:Loopback,0,0"
-    echo "                         → CamillaDSP → ${PLAYBACK_DEVICE}"
-    echo ""
-    echo "  CamillaGUI: http://pcp.local:5000"
-    echo ""
-    echo "  Logs:"
-    echo "    /tmp/picorecdsp-startup.log"
-    echo "    /tmp/camilladsp-supervisor.log"
-    echo "    /tmp/camillagui-backend.log"
-    echo "    /tmp/picorecdsp-daemon.log"
-    echo ""
+###############################################################################
+# Transactional commit
+###############################################################################
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "  [DRY ]  Dry-run complete. No changes were made."
-        return
-    fi
+if $DRY_RUN; then
+    echo "  [DRY ]  Would commit: install ${FINAL_TCZ}, update onboot.lst, asound.conf, pcp.cfg, configs, statefile."
+    INSTALL_COMMITTED=true
+    COMMIT_STARTED=false
+    cleanup_temp
+    trap - EXIT HUP INT TERM
+    echo
+    echo "Dry run complete — no changes written."
+    exit 0
+fi
 
-    # Non-interactive (piped stdin): auto-reboot.
-    if [ ! -t 0 ]; then
-        info "Non-interactive mode: rebooting now."
-        if command -v pcp >/dev/null 2>&1; then
-            srun pcp reboot
-        else
-            srun reboot
-        fi
-        return
-    fi
+prepare_rollback
+COMMIT_STARTED=true
 
-    printf "  Reboot now? [y/N] "
-    # shellcheck disable=SC2162
-    read ANSWER
-    case "$ANSWER" in
-        y|Y|yes|YES)
-            if command -v pcp >/dev/null 2>&1; then
-                srun pcp reboot
-            else
-                srun reboot
-            fi
-            ;;
-        *)
-            echo "  Skipping reboot. Remember to reboot before using piCoreCDSP."
-            ;;
-    esac
-}
+# Persistent CamillaDSP data.
+sudo mkdir -p "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+if [ ! -f "${BYPASS_CONFIG}" ]; then
+    sudo cp -f "${STAGE_BYPASS_CONFIG}" "${BYPASS_CONFIG}"
+fi
 
-main() {
-    echo ""
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║  piCoreCDSP v2 Installer                                     ║"
-    echo "║  CamillaDSP-native architecture (roadmap §43)                ║"
-    echo "╚══════════════════════════════════════════════════════════════╝"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo ""
-        echo "  *** DRY-RUN MODE — no changes will be made ***"
-    fi
-    echo ""
+if [ ! -f "${NULL_CONFIG}" ]; then
+    sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
+fi
 
-    check_platform
-    preflight_checks
-    detect_playback_device
-    install_alsa_plug
-    install_camilladsp
-    install_camillagui
-    configure_statefile
-    generate_configs
-    install_picorecdsp_binary
-    smoke_test_binaries
-    register_startup
-    route_pcp_output
-    finalize_backup_list
-    run_backup
-    prompt_reboot
-}
+# Statefile — create a placeholder so CamillaDSP can populate it on first run.
+if [ ! -f "${STATEFILE}" ]; then
+    sudo touch "${STATEFILE}"
+fi
 
-main "$@"
+# Install extension before routing live audio to it.
+sudo mv -f "${TCZ_TMP}" "${FINAL_TCZ}"
+
+if ! grep -qx "${EXTENSION_NAME}.tcz" "${ONBOOT_LIST}" 2>/dev/null; then
+    echo "${EXTENSION_NAME}.tcz" | sudo tee -a "${ONBOOT_LIST}" >/dev/null
+fi
+
+# Commit ALSA PCM definition.
+sudo touch /etc/asound.conf
+sudo chmod 664 /etc/asound.conf
+sudo chown root:staff /etc/asound.conf
+sudo cp "${ASOUND_STAGED}" /etc/asound.conf
+
+# Route pCP sources to pcm.picorecdsp LAST, when extension/config are in place.
+sudo cp "${PCP_STAGED}" "${PCP_CONFIG}"
+
+# Ownership/permissions on persistent data.
+for _d in "${DATA_DIR}" "${CONFIG_DIR}" "${COEFF_DIR}"; do
+    sudo chown tc:staff "${_d}" 2>/dev/null || true
+    sudo chmod u+rwx,g+rwx "${_d}" 2>/dev/null || true
+done
+for _f in "${BYPASS_CONFIG}" "${NULL_CONFIG}" "${STATEFILE}"; do
+    [ -f "${_f}" ] || continue
+    sudo chown tc:staff "${_f}" 2>/dev/null || true
+    sudo chmod u+rw,g+rw "${_f}" 2>/dev/null || true
+done
+
+pcp backup
+
+INSTALL_COMMITTED=true
+
+COMMIT_STARTED=false
+cleanup_temp
+trap - EXIT HUP INT TERM
+
+###############################################################################
+# Summary
+###############################################################################
+
+echo
+echo "Installation complete."
+echo
+echo "Audio path:"
+echo
+echo "  Squeezelite / AirPlay / Bluetooth"
+echo "                |"
+echo "                v"
+echo "         pcm.picorecdsp"
+echo "                |"
+echo "                v"
+echo "        hw:Loopback,1,0"
+echo "                |"
+echo "            snd-aloop"
+echo "                |"
+echo "                v"
+echo "        hw:Loopback,0,0"
+echo "                |"
+echo "                v"
+echo "           CamillaDSP"
+echo "                |"
+echo "                v"
+echo "               DAC"
+echo "  (${PLAYBACK_DEVICE})"
+echo
+echo "CamillaGUI after reboot:"
+echo "  http://pcp.local:5000"
+echo
+echo "Logs after reboot:"
+echo "  /tmp/picorecdsp-startup.log"
+echo "  /tmp/picorecdsp-daemon.log"
+echo "  /tmp/camilladsp-supervisor.log"
+echo "  /tmp/camilladsp_rCURRENT.log"
+echo "  /tmp/camillagui-backend.log"
+echo
+
+###############################################################################
+# Reboot
+###############################################################################
+
+pcp reboot
