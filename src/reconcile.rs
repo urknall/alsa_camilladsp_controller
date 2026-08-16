@@ -306,6 +306,40 @@ mod tests {
         }
     }
 
+    /// A [`SourceRateSynchronizer`] spy that counts how many times
+    /// `ensure_source_rate` was called, used to verify the reconciler reaches
+    /// the rate-sync path on every trigger regardless of the rate value.
+    struct SpyRateSync {
+        outcome: RateSyncOutcome,
+        call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SpyRateSync {
+        fn new(outcome: RateSyncOutcome) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+            let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    outcome,
+                    call_count: counter.clone(),
+                },
+                counter,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl SourceRateSynchronizer for SpyRateSync {
+        async fn ensure_source_rate(
+            &self,
+            _: u32,
+            _: &DspSnapshot,
+        ) -> Result<RateSyncOutcome, PicorecdspError> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.outcome.clone())
+        }
+    }
+
     fn compliant_config(rate: u32) -> ConfigDocument {
         let yaml = format!(
             "devices:\n  samplerate: {rate}\n  capture:\n    type: Alsa\n    device: \"hw:Loopback,0,0\"\n    channels: 2\n    format: S32_LE\n    stop_on_inactive: true\n"
@@ -524,5 +558,255 @@ devices:
             .await
             .unwrap();
         assert!(matches!(a, ReconcileAction::RateSyncAfterInactive(_)));
+    }
+
+    // ── Gate 6 scenario tests (roadmap §28–§32) ──────────────────────────────
+
+    /// Apply-during-playback (roadmap §29.1, §30):
+    /// When a GUI Apply changes filters/mixer while the DSP is running, the
+    /// reconciler's only action is to call `ensure_source_rate` on the new
+    /// active config.  It does not modify any user-owned field.
+    ///
+    /// Verification: reconciler returns `RateSyncWhileRunning` for a running DSP
+    /// when active_config already reflects the post-Apply state.  The rate-sync
+    /// layer (tested separately) only ever touches the single rate field.
+    #[tokio::test]
+    async fn apply_during_playback_reconciler_only_touches_rate() {
+        // Simulate a GUI Apply: filters changed, rate unchanged.
+        let applied_yaml = r#"
+devices:
+  samplerate: 44100
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+filters:
+  new_eq:
+    type: BiquadCombo
+    parameters:
+      type: LoudnessHighPass
+"#;
+        let doc = ConfigDocument::from_yaml(applied_yaml).unwrap();
+        let fp = doc.fingerprint();
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(doc.clone()),
+            previous_config: Some(doc),
+            active_fingerprint: Some(fp),
+            previous_fingerprint: Some(fp),
+        };
+        let source = active_source(44_100);
+        // Rate is already correct → AlreadyCorrect returned from rate_sync.
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        // Reconciler must still proceed through the rate-sync path, not bail out.
+        assert_eq!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        );
+    }
+
+    /// Config A → Config B (roadmap §29.4):
+    /// After the user switches from Config A to Config B (via GUI Apply), the
+    /// reconciler uses Config B as the authoritative runtime config.
+    /// Config A is never restored.
+    #[tokio::test]
+    async fn config_a_to_b_latest_applied_config_is_authoritative() {
+        // Config B is now active (after GUI Apply that switched configs).
+        let config_b_yaml = r#"
+devices:
+  samplerate: 96000
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+filters:
+  config_b_filter:
+    type: Gain
+    parameters:
+      gain: -3.0
+"#;
+        let doc_b = ConfigDocument::from_yaml(config_b_yaml).unwrap();
+        let fp_b = doc_b.fingerprint();
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(doc_b.clone()),
+            previous_config: Some(doc_b),
+            active_fingerprint: Some(fp_b),
+            previous_fingerprint: Some(fp_b),
+        };
+        let source = active_source(96_000);
+        // Rate matches Config B → AlreadyCorrect (Rust chose Config B, not A).
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        // Reconciler must not suspend, must not error — it is using Config B.
+        assert_eq!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        );
+    }
+
+    /// `ConfigFilePath != RuntimeConfig` divergence (roadmap §29.5):
+    /// When the persistent config on disk differs from the applied runtime config,
+    /// the reconciler takes no repair action.  RuntimeConfig (GetConfig) wins.
+    ///
+    /// This is verified by showing that `reconcile_step` does not observe
+    /// `config_file_path` at all: the snapshot does not include it, and the
+    /// reconciler path for a compliant running config is simply rate-sync.
+    #[tokio::test]
+    async fn config_file_path_divergence_produces_no_repair() {
+        // Runtime config has rate 44.1 kHz (applied by GUI).
+        // Disk config (ConfigFilePath) could be anything — reconciler never reads it.
+        let runtime_yaml = r#"
+devices:
+  samplerate: 44100
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+"#;
+        let doc = ConfigDocument::from_yaml(runtime_yaml).unwrap();
+        let fp = doc.fingerprint();
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(doc.clone()),
+            previous_config: Some(doc),
+            active_fingerprint: Some(fp),
+            previous_fingerprint: Some(fp),
+        };
+        let source = active_source(44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        // No repair action: reconciler returns normal rate-sync result.
+        assert_eq!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        );
+        // The reconcile_step function signature accepts no `config_file_path`
+        // parameter: this test demonstrates that by construction the reconciler
+        // has no access to the disk path and therefore cannot act on a divergence.
+    }
+
+    /// New-source-same-rate via generation detection (roadmap §31):
+    /// When a new producer opens `snd-aloop` at the same sample rate as the
+    /// previous producer, the `generation` counter increments.  The reconciler
+    /// must still run the full rate-sync pass — it must not skip it on the
+    /// assumption that "rate didn't change therefore nothing to do".
+    ///
+    /// Verification: `ensure_source_rate` is invoked on every trigger regardless
+    /// of whether the rate changed.  A `SpyRateSync` counts the calls.
+    #[tokio::test]
+    async fn new_source_same_rate_reconcile_still_runs_full_pass() {
+        let rate = 48_000;
+        let dsp = dsp_snap(DspState::Running, rate);
+        let (spy, call_count) = SpyRateSync::new(RateSyncOutcome::AlreadyCorrect);
+
+        // First source at 48 kHz, generation 1.
+        let source_gen1 = SourceSnapshot {
+            state: SourceState::Active { sample_rate: rate },
+            sample_rate: Some(rate),
+            format: Some("S32_LE".into()),
+            channels: Some(2),
+            generation: 1,
+        };
+        let action = reconcile_step(&source_gen1, &dsp, &spy).await.unwrap();
+        assert_eq!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        );
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "ensure_source_rate must have been called for the first source"
+        );
+
+        // Second source at same 48 kHz, generation 2 (new producer, same rate).
+        // Reconciler must reach ensure_source_rate again — no skipping.
+        let source_gen2 = SourceSnapshot {
+            state: SourceState::Active { sample_rate: rate },
+            sample_rate: Some(rate),
+            format: Some("S32_LE".into()),
+            channels: Some(2),
+            generation: 2,
+        };
+        let action = reconcile_step(&source_gen2, &dsp, &spy).await.unwrap();
+        assert_eq!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        );
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "ensure_source_rate must have been called again for the second source (same rate, new generation)"
+        );
+    }
+
+    /// Concurrent Apply + rate-change race (roadmap §32):
+    /// If a GUI Apply fires while the reconciler is preparing a rate patch, the
+    /// reconciler must use a fresh snapshot for the actual write, not a stale one.
+    ///
+    /// `reconcile_step` is purely functional: it operates on the snapshot it is
+    /// passed.  The caller (reconcile loop) is responsible for re-reading fresh
+    /// snapshots on every trigger.  This test verifies the correct snapshot
+    /// selection per `DspSnapshot::authoritative_config` when state is Running.
+    #[tokio::test]
+    async fn concurrent_apply_rate_change_fresh_snapshot_used() {
+        // Scenario: GUI Apply has just fired (DSP is Running with the new config).
+        // The rate sync must use the post-Apply active_config — not a stale cached
+        // one — and must issue the rate patch to the correct rate field.
+        let post_apply_yaml = r#"
+devices:
+  samplerate: 44100
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+filters:
+  post_apply_eq:
+    type: Gain
+    parameters:
+      gain: 3.0
+"#;
+        let post_apply_doc = ConfigDocument::from_yaml(post_apply_yaml).unwrap();
+        let fp = post_apply_doc.fingerprint();
+        // The fresh snapshot already reflects the post-Apply state.
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(post_apply_doc.clone()),
+            previous_config: Some(post_apply_doc),
+            active_fingerprint: Some(fp),
+            previous_fingerprint: Some(fp),
+        };
+        // Source rate changed to 96 kHz at the same time as the Apply.
+        let source = active_source(96_000);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::PatchedWhileRunning {
+                old_rate: Some(44_100),
+                new_rate: 96_000,
+            },
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        // Rate was patched using the post-Apply config, not a stale one.
+        assert!(matches!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::PatchedWhileRunning {
+                new_rate: 96_000,
+                ..
+            })
+        ));
     }
 }

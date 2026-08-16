@@ -104,7 +104,7 @@ impl ConfigDocument {
             ));
         }
         let mut cloned = self.inner.clone();
-        set_path(&mut cloned, path, value).map_err(|e| ConfigDocumentError(e))?;
+        set_path(&mut cloned, path, value).map_err(ConfigDocumentError)?;
         Ok(Self { inner: cloned })
     }
 

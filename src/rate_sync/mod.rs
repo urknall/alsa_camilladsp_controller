@@ -29,7 +29,6 @@ pub mod config_patch;
 pub use config_patch::ConfigPatchRateSynchronizer;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use crate::{
     camilla::{control::DspState, ConfigDocument},

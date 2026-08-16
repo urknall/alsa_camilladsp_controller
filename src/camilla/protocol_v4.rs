@@ -78,7 +78,7 @@ impl CamillaDspV4 {
             .await
             .map_err(|e| PicorecdspError::WebSocketOffline(format!("{e}")))?;
 
-        ws.send(Message::Text(text.into()))
+        ws.send(Message::Text(text))
             .await
             .map_err(|e| PicorecdspError::WebSocketOffline(format!("send failed: {e}")))?;
 
@@ -127,7 +127,7 @@ fn parse_version(v: &Value) -> Result<Version, PicorecdspError> {
         PicorecdspError::ProtocolError("GetVersion result is not a string".into())
     })?;
     s.parse::<Version>()
-        .map_err(|e| PicorecdspError::ProtocolError(e))
+        .map_err(PicorecdspError::ProtocolError)
 }
 
 /// Parse a DSP state string as returned by `GetState`.
@@ -288,7 +288,7 @@ impl CamillaStateEvents for CamillaDspV4StateEvents {
                 // Send SubscribeState command.
                 let cmd = serde_json::to_string(&json!({"SubscribeState": null}))
                     .map_err(|e| e.to_string())?;
-                ws.send(Message::Text(cmd.into()))
+                ws.send(Message::Text(cmd))
                     .await
                     .map_err(|e| e.to_string())?;
 
