@@ -39,14 +39,14 @@ jobs:
           - next4.2.0   # upcoming 4.2 series
           - next5       # CamillaDSP 5 canary
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Clone CamillaDSP at the target branch.  The branch may not exist yet
       # on an older upstream — we tolerate that and skip the probe gracefully.
       - name: Checkout CamillaDSP ${{ matrix.branch }}
         id: clone-camilla
         continue-on-error: true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: HEnquist/camilladsp
           ref: ${{ matrix.branch }}
@@ -111,7 +111,7 @@ jobs:
 
       # Upload the raw JSON so it can be diffed over time.
       - name: Upload probe results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         continue-on-error: true
         with:
           name: probe-results-${{ matrix.branch }}
@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: List open camillagui-backend branches
         run: |
           echo "## CamillaGUI backend open branches" >> "$GITHUB_STEP_SUMMARY"
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check latest pycamilladsp release
         run: |
           echo "## Latest pycamilladsp release" >> "$GITHUB_STEP_SUMMARY"

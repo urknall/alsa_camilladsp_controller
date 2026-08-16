@@ -43,12 +43,12 @@ jobs:
           - next4.2.0
           - next5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Checkout CamillaDSP ${{ matrix.branch }}
         id: clone
         continue-on-error: true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: HEnquist/camilladsp
           ref: ${{ matrix.branch }}
@@ -104,7 +104,7 @@ jobs:
           fi
 
       - name: Upload probe results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         continue-on-error: true
         with:
           name: probe-results-${{ matrix.branch }}
@@ -121,10 +121,10 @@ jobs:
       contents: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all probe results
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           pattern: probe-results-*

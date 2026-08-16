@@ -34,7 +34,7 @@ jobs:
     name: Sync upstream snapshots
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0    # full history so we can push a new branch
 
