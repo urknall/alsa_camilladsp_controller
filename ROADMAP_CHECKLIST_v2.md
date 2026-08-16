@@ -350,6 +350,14 @@ item off because it is merely planned.
 
 ## Gate 12 — Hardware Gate
 
+> **Pre-requisites now satisfied:** `main.rs` is fully wired — the binary reads
+> `PICORECDSP_CAMILLA_URL` (default `ws://127.0.0.1:1234`), initialises a real
+> `env_logger` backend (controlled by `PICORECDSP_LOG` / `RUST_LOG`), constructs
+> `CamillaDspV4` + `ConfigPatchRateSynchronizer` + `AlsaLoopbackObserver` (reads
+> `/proc/asound/Loopback/pcm1p/sub0/`), and runs `run_loop` in the tokio runtime.
+> The logging backend is live: every reconcile action, rate patch, WebSocket
+> reconnect, and error now emits a structured log line to stderr.
+
 - [ ] Validated on real pCP target version and real Raspberry Pi target hardware.
 - [ ] Validated with real USB DACs and I2S DAC where relevant.
 - [ ] Validated with multiple producers and both rate families.

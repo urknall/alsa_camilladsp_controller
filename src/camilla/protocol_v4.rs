@@ -43,15 +43,6 @@ use crate::{
     error::PicorecdspError,
 };
 
-/// Minimal logging shim: use `tracing` if available, otherwise eprintln.
-/// This avoids pulling in the full tracing stack as a hard dependency just for
-/// one diagnostic line.
-macro_rules! tracing_or_eprintln {
-    ($($arg:tt)*) => {
-        eprintln!($($arg)*);
-    };
-}
-
 // ── V4 adapter struct ─────────────────────────────────────────────────────────
 
 /// CamillaDSP 4.x WebSocket adapter.
@@ -315,7 +306,7 @@ impl CamillaStateEvents for CamillaDspV4StateEvents {
             .await;
 
             if let Err(e) = result {
-                tracing_or_eprintln!("CamillaDSP v4 state subscription ended: {e}");
+                log::warn!("CamillaDSP v4 state subscription ended: {e}");
             }
         });
 

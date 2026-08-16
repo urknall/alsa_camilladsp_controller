@@ -182,6 +182,7 @@ pub async fn reconcile_step(
         // Normal stop lifecycle (roadmap §12): Rust performs no stop of its own.
         // CamillaDSP's `stop_on_inactive` handles the capture release.
         // Rust gives CamillaDSP its grace phase and then checks real state.
+        log::debug!("reconcile: source inactive — waiting for stop_on_inactive");
         return Ok(ReconcileAction::WaitingForSourceStop);
     }
 
@@ -200,27 +201,39 @@ pub async fn reconcile_step(
                     reason: e.to_string(),
                 });
             }
-            Ok(transport) => match validate_transport_contract(&transport) {
-                Ok(()) => {}
-                Err(violations) => {
-                    let reason = violations
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    return Ok(ReconcileAction::ManagedModeSuspended { reason });
+            Ok(transport) => {
+                match validate_transport_contract(&transport) {
+                    Ok(()) => {}
+                    Err(violations) => {
+                        let reason = violations
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        log::warn!("reconcile: transport contract violated — managed mode suspended: {reason}");
+                        return Ok(ReconcileAction::ManagedModeSuspended { reason });
+                    }
                 }
-            },
+            }
         }
     }
 
     // ── Step 3: DSP transitional — wait ───────────────────────────────────
     if dsp.state.is_transitional() {
+        log::debug!(
+            "reconcile: DSP in transitional state {:?} — deferring",
+            dsp.state
+        );
         return Ok(ReconcileAction::DspTransitioning);
     }
 
     // ── Step 4: DSP error / stalled — classify, bounded retry ─────────────
     if matches!(dsp.state, DspState::Stalled | DspState::Failed) {
+        log::warn!(
+            "reconcile: DSP in error state {:?} (stop_reason: {:?})",
+            dsp.state,
+            dsp.stop_reason
+        );
         return Ok(ReconcileAction::DspError {
             state: dsp.state,
             stop_reason: dsp.stop_reason.clone(),
@@ -314,6 +327,8 @@ pub async fn run_loop(
     // Consecutive DSP error count — reset to 0 whenever any non-error action is taken.
     let mut dsp_error_count: u32 = 0;
 
+    log::info!("run_loop: starting reconciliation loop");
+
     loop {
         // ── Wait for next reconcile trigger ───────────────────────────────────
         // A trigger error propagates directly to signal shutdown (e.g. the trigger
@@ -328,10 +343,17 @@ pub async fn run_loop(
         let dsp = loop {
             match read_dsp_snapshot(camilla).await {
                 Ok(snap) => {
+                    if ws_backoff > cfg.ws_initial_backoff {
+                        log::info!("run_loop: CamillaDSP WebSocket reconnected");
+                    }
                     ws_backoff = cfg.ws_initial_backoff;
                     break snap;
                 }
-                Err(PicorecdspError::WebSocketOffline(_)) => {
+                Err(PicorecdspError::WebSocketOffline(ref msg)) => {
+                    log::warn!(
+                        "run_loop: CamillaDSP WebSocket offline ({msg}), retrying in {:.1}s",
+                        ws_backoff.as_secs_f32()
+                    );
                     tokio::time::sleep(ws_backoff).await;
                     ws_backoff = (ws_backoff * 2).min(cfg.ws_max_backoff);
                     // Continue retrying within this trigger cycle.
@@ -345,8 +367,17 @@ pub async fn run_loop(
         // wait for the next trigger.
         let source_snap = match source_observer.snapshot().await {
             Ok(s) => s,
-            Err(_) => continue,
+            Err(e) => {
+                log::warn!("run_loop: source observer error (skipping cycle): {e}");
+                continue;
+            }
         };
+
+        log::debug!(
+            "run_loop: snapshot — source={:?} dsp={:?}",
+            source_snap.state,
+            dsp.state
+        );
 
         // ── Run one reconcile step ────────────────────────────────────────────
         let action = match reconcile_step(&source_snap, &dsp, rate_sync).await {
@@ -354,14 +385,15 @@ pub async fn run_loop(
             // Invalid config (structurally malformed YAML at the paths we need):
             // do not repair; suspend managed mode; wait for user to fix via GUI.
             Err(PicorecdspError::ConfigRead(reason)) => {
+                log::warn!("run_loop: config read error — waiting for user fix: {reason}");
                 ReconcileAction::WaitingForUserFix { reason }
             }
             // $samplerate$ token guard: also surfaces as WaitingForUserFix — the
             // user must switch to a fixed-rate + resampler setup.
             Err(PicorecdspError::SamplerateTokenGuard { detail }) => {
-                ReconcileAction::WaitingForUserFix {
-                    reason: format!("$samplerate$ token in active config: {detail}"),
-                }
+                let reason = format!("$samplerate$ token in active config: {detail}");
+                log::warn!("run_loop: $samplerate$ token guard — waiting for user fix: {detail}");
+                ReconcileAction::WaitingForUserFix { reason }
             }
             // WebSocket went offline mid-step: reset backoff, skip this cycle,
             // and let the inner reconnect loop handle it on the next trigger.
@@ -371,6 +403,38 @@ pub async fn run_loop(
             }
             Err(e) => return Err(e),
         };
+
+        // Log the action taken.
+        match &action {
+            ReconcileAction::RateSyncWhileRunning(outcome) => {
+                log::info!("run_loop: rate sync while running — {outcome:?}");
+            }
+            ReconcileAction::RateSyncAfterInactive(outcome) => {
+                log::info!("run_loop: rate sync after inactive — {outcome:?}");
+            }
+            ReconcileAction::WaitingForUserFix { reason } => {
+                log::warn!("run_loop: waiting for user fix — {reason}");
+            }
+            ReconcileAction::ManagedModeSuspended { reason } => {
+                log::warn!("run_loop: managed mode suspended — {reason}");
+            }
+            ReconcileAction::DspError { state, stop_reason } => {
+                log::warn!(
+                    "run_loop: DSP error (state={state:?}, stop_reason={stop_reason:?}), retry {}/{}",
+                    dsp_error_count + 1,
+                    cfg.max_dsp_error_retries
+                );
+            }
+            ReconcileAction::WaitingForSourceStop => {
+                log::debug!("run_loop: source inactive — waiting for stop");
+            }
+            ReconcileAction::DspTransitioning => {
+                log::debug!("run_loop: DSP transitioning — deferred");
+            }
+            ReconcileAction::Idle => {
+                log::debug!("run_loop: idle (no action needed)");
+            }
+        }
 
         // ── Post-step: bounded DSP error retry (roadmap §33 — stalled / DAC) ──
         // If the action is DspError, back off and retry up to max_dsp_error_retries

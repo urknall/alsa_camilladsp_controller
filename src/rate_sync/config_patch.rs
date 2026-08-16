@@ -79,11 +79,18 @@ impl SourceRateSynchronizer for ConfigPatchRateSynchronizer<'_> {
             .map(|v| v as u32);
 
         if current_rate == Some(source_rate) {
+            log::debug!("rate_sync: {rate_path} already at {source_rate} Hz — no patch needed");
             return Ok(RateSyncOutcome::AlreadyCorrect);
         }
 
         if dsp.state.is_active() {
             // DSP is Running or Paused → use SetConfigValue for a targeted patch.
+            log::info!(
+                "rate_sync: patching {rate_path} {} → {source_rate} Hz (DSP running/paused)",
+                current_rate
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "?".into())
+            );
             self.camilla
                 .set_config_value(rate_path, Value::Number(source_rate.into()))
                 .await?;
@@ -122,6 +129,12 @@ impl SourceRateSynchronizer for ConfigPatchRateSynchronizer<'_> {
             .with_path_value(rate_path, Value::Number(source_rate.into()))
             .map_err(|e| PicorecdspError::ConfigRead(e.to_string()))?;
 
+        log::info!(
+            "rate_sync: SetConfig with {rate_path} {} → {source_rate} Hz (DSP inactive)",
+            old_rate
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "?".into())
+        );
         self.camilla.set_config(&patched).await?;
 
         Ok(RateSyncOutcome::SetConfigAfterInactive {
