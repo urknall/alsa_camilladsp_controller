@@ -218,6 +218,7 @@ mod tests {
             previous_config: Some(doc),
             active_fingerprint: Some(fp),
             previous_fingerprint: Some(fp),
+            stop_reason: None,
         }
     }
 
@@ -271,6 +272,7 @@ mod tests {
             previous_config: Some(doc),
             active_fingerprint: None,
             previous_fingerprint: Some(fp),
+            stop_reason: None,
         };
 
         let outcome = sync.ensure_source_rate(96_000, &snap).await.unwrap();
@@ -320,6 +322,7 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: None,
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
 
         // Simulate 44.1 → 96 kHz.
@@ -364,6 +367,7 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: Some(doc.fingerprint()),
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
         let camilla = FakeCamilla::default();
         let sync = ConfigPatchRateSynchronizer::new(&camilla);
@@ -416,6 +420,7 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: None,
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
 
         // New source at 96 kHz.
@@ -482,6 +487,7 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: None,
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
         sync.ensure_source_rate(96_000, &snap).await.unwrap();
 
@@ -514,6 +520,7 @@ filters:
             previous_config: Some(doc2.clone()),
             active_fingerprint: None,
             previous_fingerprint: Some(doc2.fingerprint()),
+            stop_reason: None,
         };
         sync2.ensure_source_rate(48_000, &snap2).await.unwrap();
 

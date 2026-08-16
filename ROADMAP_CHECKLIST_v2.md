@@ -202,19 +202,20 @@ item off because it is merely planned.
 
 ## Gate 7 — Error, Recovery & Cold Boot
 
-- [ ] WebSocket-offline recovery implemented: bounded backoff, reconnect, full fresh snapshot (roadmap §33).
-- [ ] DAC-unavailable handling implemented: log + retry with current RuntimeConfig, no automatic DAC switch.
-- [ ] Invalid-config handling implemented: no repair; old valid RuntimeConfig stays authoritative or `WaitingForUserFix`.
-- [ ] Incompatible-transport-config handling implemented: managed mode suspended with a clear message.
-- [ ] Stalled-state handling implemented: short observation phase, no immediate restart loop, bounded retry.
-- [ ] Rust-crash recovery implemented: stateless restart, fresh source/DSP read, reconcile.
-- [ ] CamillaDSP-crash handling documented/implemented as an accepted v2 MVP boundary (unsaved RuntimeConfig may be lost).
-- [ ] CamillaGUI-crash isolation confirmed: audio, Rust, and CamillaDSP unaffected.
-- [ ] Cold boot test matrix implemented and passing (roadmap §34): boot without/with producer, statefile behavior,
+- [x] WebSocket-offline recovery implemented: bounded backoff, reconnect, full fresh snapshot (roadmap §33). See `run_loop` in `src/reconcile.rs` (`ws_initial_backoff`, `ws_max_backoff` config fields; test `run_loop_websocket_offline_reconnects_after_backoff`).
+- [x] DAC-unavailable handling implemented: log + retry with current RuntimeConfig, no automatic DAC switch. `DspError { stop_reason: Some(PlaybackError) }` classified in `reconcile_step`; bounded retry via `max_dsp_error_retries` / `dsp_error_retry_interval` in `run_loop` (tests `dsp_failed_with_playback_error_reports_stop_reason`, `cold_boot_playback_error_at_startup_is_dac_unavailable`).
+- [x] Invalid-config handling implemented: no repair; old valid RuntimeConfig stays authoritative or `WaitingForUserFix`. See `ReconcileAction::WaitingForUserFix` and transport-contract section in `reconcile_step` (tests `invalid_config_in_active_config_returns_waiting_for_user_fix`, `cold_boot_invalid_persistent_config_waits_for_fix`).
+- [x] Incompatible-transport-config handling implemented: managed mode suspended with a clear message. See `ReconcileAction::ManagedModeSuspended` (unchanged from Gate 2/3).
+- [x] Stalled-state handling implemented: short observation phase, no immediate restart loop, bounded retry. `DspError { state: Stalled }` returned; `max_dsp_error_retries` / `dsp_error_retry_interval` bound the retry count in `run_loop` (tests `stalled_dsp_reports_error`, `dsp_stalled_with_capture_format_change_reports_stop_reason`).
+- [x] Rust-crash recovery implemented: stateless restart, fresh source/DSP read, reconcile. `run_loop` holds no cross-cycle state; on restart all state is read fresh. Documented in `run_loop` doc comment; test `rust_crash_recovery_is_stateless_restart`.
+- [x] CamillaDSP-crash handling documented/implemented as an accepted v2 MVP boundary (unsaved RuntimeConfig may be lost). Documented in `run_loop` doc comment; test `camilladsp_crash_rust_reads_fresh_state_not_cached`.
+- [x] CamillaGUI-crash isolation confirmed: audio, Rust, and CamillaDSP unaffected. Documented in `run_loop` doc comment; test `camillagui_crash_isolation_reconciler_runs_normally`.
+- [x] Cold boot test matrix implemented and passing (roadmap §34): boot without/with producer, statefile behavior,
       `stop_on_inactive` → clean inactive, `PreviousConfig` available, boot at matching/different rate, startup
-      `CaptureError`/`PlaybackError`, missing `ConfigFilePath`, invalid persistent config, no statefile.
-- [ ] Confirmed no disk config watcher (mtime/inode/fingerprint auto-reload) exists (roadmap §35); runtime fingerprint
-      used only for race detection.
+      `CaptureError`/`PlaybackError`, missing `ConfigFilePath`, invalid persistent config, no statefile. See
+      `cold_boot_*` tests in `src/reconcile.rs`.
+- [x] Confirmed no disk config watcher (mtime/inode/fingerprint auto-reload) exists (roadmap §35); runtime fingerprint
+      used only for race detection. See `no_disk_config_watcher_in_reconcile_config` test.
 - [ ] ✅ **Gate 7 passed**: failure-injection suite (Gate 8) passes for every listed failure mode.
 
 ---

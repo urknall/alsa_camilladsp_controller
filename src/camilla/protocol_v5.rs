@@ -113,8 +113,7 @@ fn parse_version_v5(v: &Value) -> Result<Version, PicorecdspError> {
     let s = v.as_str().ok_or_else(|| {
         PicorecdspError::ProtocolError("GetVersion result is not a string".into())
     })?;
-    s.parse::<Version>()
-        .map_err(PicorecdspError::ProtocolError)
+    s.parse::<Version>().map_err(PicorecdspError::ProtocolError)
 }
 
 /// CamillaDSP 5.x state string mapping.  `"Inactive"` is the canonical name in
