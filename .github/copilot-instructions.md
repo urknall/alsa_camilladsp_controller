@@ -13,9 +13,11 @@ The following files are the authoritative reference for all **new** work in this
   — the original uploaded plan the roadmap above formalizes; consult it if a roadmap section needs more detail
   than the condensed version provides.
 
-`piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` describe the **superseded v1** dual-backend
-(`snd-aloop` + custom `ioplug`) architecture. They are frozen/archival. **Never use them to plan or justify new
-work.** Do not resurrect v1 concepts (backend switching, custom ioplug, `RuntimeConfig`/runtime YAML, dual-backend
+`piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` described the **superseded v1** dual-backend
+(`snd-aloop` + custom `ioplug`) architecture. Per Gate 0 of `ROADMAP_CHECKLIST_v2.md`, the v1 source tree, its
+CI, and these v1 planning docs have been removed from `main` entirely; they remain reachable only via the
+`v1-final` tag and `v1-archive` branch. **Never resurrect them, or use them to plan or justify new work.** Do not
+resurrect v1 concepts (backend switching, custom ioplug, `RuntimeConfig`/runtime YAML, dual-backend
 abstractions) inside v2 code.
 
 **Before writing any code, always:**

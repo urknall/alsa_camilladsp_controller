@@ -3,8 +3,9 @@
 Generated from [`piCoreCDSP_v2_Roadmap.md`](piCoreCDSP_v2_Roadmap.md), which formalizes the uploaded plan at
 [`docs/new plan/piCoreCDSP_v2_complete_roadmap(1).md`](docs/new%20plan/piCoreCDSP_v2_complete_roadmap%281%29.md).
 
-This checklist **replaces** [`ROADMAP_CHECKLIST.md`](ROADMAP_CHECKLIST.md) (v1, dual-backend) as the tracker for new work.
-The v1 checklist is frozen/archival and must not be used to plan v2 work. Each section below maps to a gate or
+This checklist **replaces** `ROADMAP_CHECKLIST.md` (v1, dual-backend) as the tracker for new work. Following the
+Gate 0 cutover below, the v1 checklist and roadmap no longer exist on `main` — they are reachable only via the
+`v1-final` tag / `v1-archive` branch — and must not be used to plan v2 work. Each section below maps to a gate or
 milestone in the v2 roadmap. Check items off only after they are actually implemented and verified — do not check an
 item off because it is merely planned.
 
@@ -36,30 +37,35 @@ item off because it is merely planned.
 
   N/A — Option B was not chosen.
 
-- [ ] If Option A chosen: remove the v1 source tree from `main` once v2 implementation is ready to start.
+- [x] If Option A chosen: remove the v1 source tree from `main` once v2 implementation is ready to start.
 
-  **Status:** intentionally deferred, not merged as part of this pass. Removing `src/`, `picoredsp-ioplug/`,
-  `benches/`, `scripts/`, `install_picoredsp.sh`, and the current release CI takes the currently working,
-  installable piCorePlayer product off `main` until v2 reaches equivalent functionality (Gates 2–12). That is a
-  deliberate, one-way cutover and should be executed as its own explicitly-confirmed change — once the
-  `v1-final` tag above exists and v2 scaffolding is ready to land — not bundled silently into unrelated
-  groundwork commits.
+  **Status:** done, explicitly confirmed by the repository owner. With `v1-final`/`v1-archive` in place as the
+  permanent archive, `src/`, `picoredsp-ioplug/`, `benches/`, `scripts/`, `install_picoredsp.sh`,
+  `CONFIG_MIGRATION.md`, `Cargo.toml`/`Cargo.lock`, `.cargo/config.toml`, the v1 release CI
+  (`.github/workflows/build.yml`), the v1 upstream-tracking CI (`.github/workflows/upstream-tracking.yml`) and
+  its supporting docs (`docs/upstream-tracking.yml`, `docs/ALSA_LIB_TRACKING.md`, `docs/CAMILLADSP_TRACKING.md`,
+  `docs/CAMILLAGUI_TRACKING.md`, `docs/CAMILLADSP_CONTROLLER_TRACKING.md`, `docs/BENCHMARK_FRAMEWORK.md`,
+  `docs/MEASUREMENTS.md`, `docs/GATE0_ACCEPTANCE_SPEC.md`, `docs/GATE14_FIELD_TEST_LOG.md`), and the frozen v1
+  planning docs (`piCoreDSP_Dual_Backend_Roadmap.md`, `ROADMAP_CHECKLIST.md`) are all removed from `main`. This
+  is a deliberate, one-way cutover: `main` no longer builds an installable piCoreCDSP product until v2
+  implementation (Gates 2–12) reaches equivalent functionality. `README.md` was rewritten to target v2
+  exclusively and point at the `v1-final` tag / `v1-archive` branch for the archived implementation.
 
 - [x] `.github/copilot-instructions.md` updated to reference only `piCoreCDSP_v2_Roadmap.md` and this checklist
-      (done as part of the planning change that introduced this file).
-- [x] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded (done as part of the same
-      planning change).
+      (done as part of the planning change that introduced this file; updated again to reflect that the v1 docs
+      are now removed from `main`, not merely frozen in place).
+- [x] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded, then removed from `main`
+      entirely once the v1-tree removal above executed (both remain reachable via `v1-final`/`v1-archive`).
 - [x] No new v2 code is added to `src/` until the reset decision above is executed.
 
-  The reset **decision** is now recorded (Option A), but its **execution** (tag + v1 removal) is still pending
-  per the two items above — so, per this rule, v2 source code must still not be added to `src/` yet.
+  The reset decision (Option A) is recorded and now fully executed (tag + branch + v1 removal). `src/` does not
+  currently exist on `main`; the first v2 code added there must follow Gate 2 onward.
 
-- [ ] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
+- [x] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
       reference.
 
-  Partially — the archive markers (`v1-final` tag, `v1-archive` branch) now exist, but the v1 tree is still
-  present on `main`'s working copy, so `main` still mixes "live" v2 planning docs with the full v1
-  implementation. Gate 0 is fully passed only once the v1-tree removal item above is executed.
+  `main` now contains only the v2 roadmap/checklist/process docs and this README; the entire v1 tree, CI, and
+  planning docs are gone from the working copy and reachable solely via the `v1-final` tag / `v1-archive` branch.
 
 ---
 
@@ -320,16 +326,40 @@ item off because it is merely planned.
 
 ## Gate 13 — Hard v1 → v2 Cleanup
 
+> **Note on sequencing:** this gate's file-removal criteria were executed early, as part of Gate 0's Option A
+> cutover, at the repository owner's explicit confirmation — rather than being deferred until v2 reached feature
+> parity through Gates 2–12 as the roadmap's gate ordering originally implied. As of this change, `main` contains
+> **no v2 implementation code at all** (Gates 2–12 have not started) and also no v1 implementation — only the v2
+> planning/roadmap docs and this README. This gate is "passed" in the narrow sense that no v1 remnants exist on
+> `main`; it does **not** mean v2 has reached functional or hardware parity with the archived v1 product.
+
 - [x] `v1-final` tag exists (from Gate 0) and, if desired, an archive branch.
 
-  Done — `v1-final` (annotated) and `v1-archive` both exist on `origin`, pointing at `72b556d`. The remaining
-  items in this gate (actual v1 code deletion) are still pending; see Gate 0's deferred v1-tree-removal note.
-- [ ] ioplug, C code, IPC, stdin capture, ring buffer, audio worker threads, backend abstraction, backend switcher,
+  Done — `v1-final` (annotated) and `v1-archive` both exist on `origin`, pointing at `72b556d`.
+- [x] ioplug, C code, IPC, stdin capture, ring buffer, audio worker threads, backend abstraction, backend switcher,
       `adaptation.rs`, RuntimeConfig, runtime YAML, reinstall logic, ioplug benchmarks, ioplug CI deleted from `main`.
-- [ ] Obsolete v1 upstream-monitoring code/docs deleted from `main`.
-- [ ] README targets piCoreCDSP v2 exclusively.
-- [ ] No `legacy/`, `deprecated/`, `old_controller/`, or `experimental_ioplug/` directories exist on `main`.
-- [ ] ✅ **Gate 13 passed**: `main` contains only the v2 architecture; v1 is reachable solely via git history/tags.
+
+  Done as part of the Gate 0 v1-tree removal — `picoredsp-ioplug/`, all of `src/` (including `backend.rs`,
+  `backend/aloop.rs`, `backend/ioplug.rs`, `core/adaptation.rs`), `benches/`, and `.github/workflows/build.yml`
+  are removed from `main`.
+- [x] Obsolete v1 upstream-monitoring code/docs deleted from `main`.
+
+  Done — `.github/workflows/upstream-tracking.yml`, `scripts/check_upstream_tracking.py`,
+  `scripts/test_check_upstream_tracking.py`, `docs/upstream-tracking.yml`, `docs/ALSA_LIB_TRACKING.md`,
+  `docs/CAMILLADSP_TRACKING.md`, `docs/CAMILLAGUI_TRACKING.md`, and `docs/CAMILLADSP_CONTROLLER_TRACKING.md` are
+  removed from `main`. A fresh v2 upstream-monitoring infrastructure is still to be built at Gate 14
+  (`upstream/manifest.yml`, `upstream/capabilities.yml`, the `upstream-*.yml` workflows below) — this item only
+  covers deletion of the *v1* tracking setup.
+- [x] README targets piCoreCDSP v2 exclusively.
+
+  Done — `README.md` rewritten to describe only the v2 status/roadmap and point to the `v1-final` tag /
+  `v1-archive` branch for the archived implementation.
+- [x] No `legacy/`, `deprecated/`, `old_controller/`, or `experimental_ioplug/` directories exist on `main`.
+- [x] ✅ **Gate 13 passed**: `main` contains only the v2 architecture; v1 is reachable solely via git history/tags.
+
+  Passed in the file-hygiene sense described in the sequencing note above — there is currently no v2
+  *architecture* (code) on `main` either, only its planning documents. Gates 2–12 remain the actual v2
+  implementation and hardware-validation work.
 
 ---
 

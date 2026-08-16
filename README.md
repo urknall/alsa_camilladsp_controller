@@ -1,382 +1,63 @@
-# piCoreCDSP — dual-backend CamillaDSP controller for piCorePlayer
-
-## Overview
-
-This repository contains the piCoreDSP controller stack for two transport
-backends: the stable `snd-aloop` path and the direct native `ioplug` path.
-
-This repository contains:
-
-| Path | Purpose |
-|------|---------|
-| `install_picoredsp.sh` | Installer script — run once on the piCorePlayer device |
-| `src/` | Rust source for `picoredsp-controller` |
-| `picoredsp-ioplug/` | ALSA ioplug PCM module for the direct experimental backend |
-| `Cargo.toml` | Rust package manifest |
-| `.github/workflows/build.yml` | GitHub Actions CI/CD — builds and releases binaries |
-
-## Supported architectures
-
-| Architecture | Boards |
-|---|---|
-| `aarch64` | Raspberry Pi 3/4/5 running 64-bit piCorePlayer |
-| `armv7` | Raspberry Pi 2/3 running 32-bit piCorePlayer |
-
-## Audio path
-
-```
-Default / recommended backend (aloop):
-
-Squeezelite / AirPlay / Bluetooth
-              │
-              ▼
-        pcm.picoredsp          ← ALSA plug PCM defined by installer
-              │
-              ▼
-       hw:Loopback,1,0
-              │
-          snd-aloop             ← kernel module
-              │
-              ▼
-       hw:Loopback,0,0
-              │
-              ▼
-          CamillaDSP            ← DSP engine
-              │
-              ▼
-             DAC
-```
-
-```
-Experimental backend (direct ioplug):
-
-Squeezelite / AirPlay / Bluetooth
-              │
-              ▼
-        pcm.picoredsp
-              │
-              ▼
-libasound_module_pcm_picoredsp.so
-              │
-              ▼
-      AF_UNIX + stdin pipe
-              │
-              ▼
-          CamillaDSP
-              │
-              ▼
-             DAC
-```
-
-> **Note:** The `pcm.picoredsp` routing is fixed to **stereo (2 channels)**. Only
-> stereo audio sources are supported. The controller rejects ALSA events that
-> indicate a channel count other than 2.
-
-The `picoredsp-controller` binary sits entirely outside the audio path. With
-the default `aloop` backend it monitors the `snd-aloop` ALSA HCTL controls
-(`PCM Slave Active`, `PCM Slave Rate`, `PCM Slave Format`, `PCM Slave Channels`)
-and drives CamillaDSP through its WebSocket API. With the `ioplug` backend it
-manages the plugin handshake, AF_UNIX IPC, and per-stream CamillaDSP lifecycle
-without entering the PCM data path.
-
-## Installation
-
-```sh
-# On piCorePlayer, as user tc:
-wget https://github.com/urknall/alsa_camilladsp_controller/raw/main/install_picoredsp.sh
-chmod +x install_picoredsp.sh
-./install_picoredsp.sh
-# or explicitly:
-./install_picoredsp.sh --backend aloop
-./install_picoredsp.sh --backend ioplug
-```
-
-The installer performs these steps in order:
-
-1. For the `aloop` backend, tests `snd-aloop` availability (the direct `ioplug` backend skips this preflight).
-2. Downloads and SHA256-verifies the pre-built `picoredsp-controller` binary from GitHub Releases.
-3. Downloads and SHA256-verifies the pre-built `libasound_module_pcm_picoredsp.so` ALSA module from GitHub Releases.
-4. For the `aloop` backend, probes the snd-aloop ALSA controls with the downloaded controller binary.
-5. Lets you select the backend (`aloop` by default, `ioplug` optional/experimental).
-6. Detects the physical DAC selected in Squeezelite Settings.
-7. Downloads and SHA256-verifies CamillaDSP and CamillaGUI backend binaries.
-8. Generates default/bypass/null configs, backend selection state, and ALSA PCM definitions.
-9. Validates all staged configs with `camilladsp --check`.
-10. Bundles everything into a Tiny Core `.tcz` extension.
-11. Routes Squeezelite through `pcm.picoredsp` and reboots.
-
-After reboot, CamillaGUI is accessible at `http://pcp.local:5000`.
-
-### Switching backend after installation
-
-The installer stores the selected backend in `/mnt/mmcblk0p2/tce/camilladsp/backend.conf`.
-
-To switch later:
-
-```sh
-/usr/local/bin/picoredsp-switch-backend aloop
-/usr/local/bin/picoredsp-switch-backend ioplug
-```
-
-or run `/usr/local/bin/picoredsp-switch-backend` with no argument for an interactive prompt.
-
-Backend changes are only applied after an explicit reboot. Dynamic in-stream switching is intentionally unsupported.
-
-### Troubleshooting: `syntax error: unexpected newline`
-
-If you see `./install_picoredsp.sh: line N: syntax error: unexpected newline` immediately
-after running the script, the most likely cause is a **stale or corrupt download**.
-Some older piCorePlayer `wget` builds cache redirect responses without following them,
-leaving an HTML error page saved as the script file.
-
-Fix:
-
-```sh
-rm -f install_picoredsp.sh
-wget -O install_picoredsp.sh \
-  https://raw.githubusercontent.com/urknall/alsa_camilladsp_controller/main/install_picoredsp.sh
-chmod +x install_picoredsp.sh
-sh -n install_picoredsp.sh && echo "syntax OK"
-./install_picoredsp.sh
-```
-
-The `sh -n` dry-run will report any remaining parse error before the script actually runs.
-
-## CamillaGUI — Apply without Save
-
-CamillaGUI lets you click **Apply** to send a configuration directly to CamillaDSP
-without clicking **Save**.  When that happens, CamillaDSP is running an in-memory
-config that is not written to disk.
-
-The controller uses the file behind the `active_config.yml` symlink as its source
-of truth.  On the next sample-rate change (or controller restart) it re-reads that
-file, which will be the previously saved version — **not** the unsaved in-memory
-config.
-
-**Recommendation:** always click **Save** (or **Apply and Save**) in CamillaGUI
-before relying on a config change to survive a playback format switch or reboot.
-
-## Baseline config vs. live runtime config
-
-piCoreDSP stores the selected YAML file as a persistent baseline configuration.
-
-The Rust `picoredsp-controller` monitors the selected backend (`snd-aloop`
-HCTL for `aloop`, ioplug IPC for `ioplug`) and adapts the configuration in
-memory when playback starts or the stream format changes. The runtime sample
-rate, capture format and channel count can therefore differ from the values
-stored in the YAML file.
-
-For example, a config file may contain:
-
-    samplerate: 44100
-
-while CamillaGUI's live status shows:
-
-    48000 Hz
-
-This is expected. The live CamillaGUI status reflects the stream currently processed
-by CamillaDSP and is authoritative for current runtime parameters.
-
-Runtime adaptations are not written back to the YAML file. On the ioplug
-backend, `picoredsp-controller` writes each adapted runtime copy to a transient
-file under `/run/picoredsp/` before spawning CamillaDSP, leaving
-`active_config.yml` and its selected baseline target untouched.
-
-Use **Apply and Save** for DSP or filter changes that must persist across sample-rate
-changes or reboots. On piCorePlayer, run:
-
-    pcp backup
-
-after persistent configuration changes and before rebooting, so the current system
-configuration is backed up.
-
-Do not manually use **Apply** just to initialize DSP while playback is stopped.
-The controller automatically loads and adapts the configuration when playback
-becomes active.
-
-
-## Migrating legacy custom configs
-
-Older piCorePlayer/CamillaDSP configs often use a different transport model
-(e.g. fixed capture/playback formats and fixed transport parameters in the
-YAML). The current piCoreDSP setup treats the YAML as a persistent **DSP
-baseline** while the Rust controller injects the active transport details for
-either backend (`snd-aloop` or direct `ioplug`) at runtime.
-
-For the complete old-vs-new flow, config field ownership policy, field-by-field
-migration rules, a recommended `devices:` block, CamillaGUI active-file semantics,
-and the `pcp backup` workflow, see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
-
-## Controller modules
-
-| Module | Contents |
-|--------|---------|
-| `src/core/state_machine.rs` | Main controller state machine for stream events, config reloads, and recovery |
-| `src/core/adaptation.rs` | Runtime CamillaDSP YAML adaptation plus bypass/statefile helpers |
-| `src/core/config.rs`, `src/core/errors.rs`, `src/core/logging.rs` | Config-path handling plus shared error/logging utilities |
-| `src/backend/aloop.rs` | `snd-aloop` event source and stream snapshot handling |
-| `src/backend/ioplug.rs` | Direct ioplug IPC backend and plugin handshake flow |
-| `src/camilladsp/websocket.rs`, `src/camilladsp/supervisor.rs` | CamillaDSP control protocol and process supervision |
-| `src/camilladsp/alsa_capture.rs`, `src/camilladsp/stdin_capture.rs` | Backend-specific capture-format/runtime helpers |
-| `src/ipc/protocol.rs`, `src/ipc/unix_socket.rs` | AF_UNIX protocol types and socket transport for ioplug |
-| `src/benchmark/` | Benchmark-plan schema, parsing, reporting, and collectors |
-| `src/args.rs` | CLI argument parsing, `Mode` enum |
-| `src/main.rs` | Entry point, mode dispatch |
-
-## CI/CD
-
-`.github/workflows/build.yml` runs when controller/build-related files change
-(`src/**`, `Cargo.toml`, `Cargo.lock`, `install_picoredsp.sh`,
-`picoredsp-ioplug/**`, workflow file itself), plus manual dispatch and version
-tags. The current workflow covers:
-
-- Rust formatting, Clippy, MSRV, and unit tests
-- live CamillaDSP compatibility checks against the pinned release, plus a non-blocking latest-upstream check
-- installer shell syntax validation
-- informative Rust/ioplug benchmark jobs
-- native C builds/tests, ASAN/UBSAN/TSAN, and clang-tidy for `picoredsp-ioplug/`
-- ARM cross-builds plus the release/`installer-latest` packaging jobs
-
-Pushes to `main` refresh the rolling `installer-latest` GitHub release used by
-the installer, while pull requests keep the same verification/build scope
-without publishing.
-
-Version tags additionally create an immutable GitHub Release and attach both ARM
-binaries. CI enforces that the tag matches the `version` field in `Cargo.toml`.
-
-The installer downloads `picoredsp-controller` from the rolling `installer-latest` GitHub release, not from workflow artifacts.
-Pushes to `main` refresh that release, while version tags still create immutable `v*.*.*` releases for manual versioned downloads.
-
-## Diagnostics
-
-### Prerequisites
-
-Before running any diagnostic command you need the `picoredsp-controller` binary available on `$PATH` (or provide the full path).  The installer places it at `/usr/local/bin/picoredsp-controller`, so after a successful install the binary is already present.
-
-If you have **not yet run the installer** (e.g. you want to diagnose the system
-first), download the binary manually. The installer normally fetches this
-binary and verifies the published `.sha256` before using it; the manual path
-below is only for diagnostics:
-
-```sh
-# On piCorePlayer, as user tc:
-
-# 1. Detect your architecture (uname -m returns armv7l on 32-bit; releases use armv7)
-ARCH=$(uname -m)
-case "$ARCH" in armv7l) ARCH=armv7 ;; esac
-
-# 2. Download the pre-built binary from the rolling release
-wget -O picoredsp-controller \
-  "https://github.com/urknall/alsa_camilladsp_controller/releases/download/installer-latest/picoredsp-controller-${ARCH}"
-chmod +x picoredsp-controller
-
-# 3. Load snd-aloop if it is not already loaded (required for --probe)
-sudo modprobe snd-aloop
-```
-
-Each diagnostic command has its own runtime prerequisite:
-
-| Command | What must be running / loaded |
-|---------|-------------------------------|
-| `--probe` | `snd-aloop` kernel module loaded (`lsmod \| grep snd_aloop`) |
-| `--ws-check` | CamillaDSP process running and listening on the given host:port |
-| `--adapt-check` | The `active_config.yml` file (or symlink target) must exist on disk |
-| `--make-benchmark-plan` / `--validate-benchmark-plan` | No runtime dependencies |
-
-### Diagnostic commands
-
-```sh
-# Probe snd-aloop controls (requires snd-aloop loaded):
-picoredsp-controller --probe --device hw:Loopback,0
-
-# Check CamillaDSP WebSocket connectivity:
-picoredsp-controller --ws-check --host 127.0.0.1 --port 1234
-
-# Dry-run YAML adaptation, write to stdout:
-picoredsp-controller --adapt-check \
-  --adapt /mnt/mmcblk0p2/tce/camilladsp/active_config.yml \
-  --rate 48000 --format S32_LE --channels 2
-
-# Generate and validate the A/B benchmark plan used for roadmap milestone M12:
-picoredsp-controller --make-benchmark-plan --output benchmark-plan.yml
-picoredsp-controller --validate-benchmark-plan benchmark-plan.yml
-picoredsp-controller --make-benchmark-report benchmark-plan.yml --output benchmark-report.md
-```
-
-See [docs/BENCHMARK_FRAMEWORK.md](docs/BENCHMARK_FRAMEWORK.md) for the benchmark plan schema and validation rules.
-See [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md) for the end-to-end walkthrough of running automatic measurements and generating a report.
-
-## Benchmarking and full local verification
-
-The benchmark CLI provides a **plan generator**, **plan validator**, and
-**benchmark report generator**. CI also runs the Rust benchmark harness with
-automated `aloop` and `ioplug` control-path microbenchmarks.
-
-For **local development on native 64-bit Raspberry Pi /
-`aarch64-unknown-linux-gnu` systems**, use the host linker for Cargo commands:
-
-```sh
-export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
-```
-
-This local-only override applies to `cargo build`, `cargo test`, `cargo run`,
-and `cargo bench`.
-Without it, a native AArch64 GNU system can fail with
-`linker 'aarch64-linux-gnu-gcc' not found` if only the host `gcc` is installed.
-CI cross-builds do **not** use this override; the workflow explicitly sets the
-cross-linker back to `aarch64-linux-gnu-gcc`.
-
-Use it to create a reproducible A/B benchmark record where only the backend changes:
-
-```sh
-cd /path/to/alsa_camilladsp_controller
-
-cargo run -- --make-benchmark-plan --output benchmark-plan.yml
-cargo run -- --validate-benchmark-plan benchmark-plan.yml
-cargo run -- --make-benchmark-report benchmark-plan.yml --output benchmark-report.md
-```
-
-After validation, run the `aloop` and `ioplug` backends under the same Pi /
-piCorePlayer / CamillaDSP / DAC / DSP config / track / chunksize / queuelimit
-conditions, fill in the resulting metrics in the YAML plan, and regenerate the
-report to get Gate 12 coverage, backend comparisons, and latency-tuning hints.
-
-To run a representative local Rust/controller verification subset matching the
-blocking Rust-side CI jobs plus the installer syntax gate:
-
-```sh
-cd /path/to/alsa_camilladsp_controller
-
-sudo apt-get install -y libasound2-dev
-# Only on native 64-bit Raspberry Pi / aarch64-unknown-linux-gnu hosts:
-export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-sh -n install_picoredsp.sh
-dash -n install_picoredsp.sh
-```
-
-Optional MSRV check (matches CI's Rust 1.71 compile gate):
-
-```sh
-cd /path/to/alsa_camilladsp_controller
-cargo +1.71 check --locked
-```
-
-Separate CI jobs also cover pinned/latest CamillaDSP live compatibility, native
-`picoredsp-ioplug/` C builds/tests, sanitizers, clang-tidy, and ARM packaging.
-
-The automated benchmark harness now covers software-visible comparison points in
-CI: the Rust benchmark suite measures `aloop` and `ioplug` control-path
-operations and emits an automated benchmark report artifact. Hardware playback,
-rate-transition, soak, and end-to-end latency measurements still need a real Pi
-/ DAC test rig, and true end-to-end latency should still be externally measured
-where possible rather than inferred purely from software-visible buffers.
+# piCoreCDSP — CamillaDSP-native architecture (v2)
+
+## Status: v2 in development — v1 archived
+
+piCoreCDSP is being rebuilt from scratch as **v2**: a small, CamillaDSP-native
+controller built directly against CamillaDSP's own process/WebSocket/ALSA
+model, rather than a continuation of the previous dual-backend
+(`snd-aloop` + custom `ioplug`) controller.
+
+As of this change, `main` contains **only** the v2 planning/architecture
+documents. There is no installable piCoreCDSP build on `main` yet — the v1
+Rust controller, the native `picoredsp-ioplug` ALSA plugin, the installer,
+benchmarks, and their CI have all been removed from `main`'s working tree as
+part of the deliberate, one-way Gate 0 cutover described in the roadmap below.
+Nothing is lost: the full v1 implementation remains permanently available via
+git.
+
+## Where to look
+
+- [`piCoreCDSP_v2_Roadmap.md`](piCoreCDSP_v2_Roadmap.md) — the v2 roadmap:
+  goals, fixed architecture decisions, ownership model, state model,
+  reconciliation design, protocol strategy, test matrices, cleanup plan, and
+  upstream monitoring strategy. **This is the source of truth for all new
+  work.**
+- [`ROADMAP_CHECKLIST_v2.md`](ROADMAP_CHECKLIST_v2.md) — the gated checklist
+  tracking progress on each v2 roadmap item.
+- [`docs/new plan/piCoreCDSP_v2_complete_roadmap(1).md`](docs/new%20plan/piCoreCDSP_v2_complete_roadmap%281%29.md)
+  — the original uploaded plan the roadmap above formalizes.
+- [`.github/copilot-instructions.md`](.github/copilot-instructions.md) —
+  process rules enforced for any new contribution.
+
+## Where the v1 implementation went
+
+The previous dual-backend (`snd-aloop` + custom `ioplug`) Rust controller,
+`picoredsp-ioplug` native ALSA module, installer script, benchmarks, and their
+CI/upstream-tracking docs are **archived**, not deleted from history:
+
+- Tag [`v1-final`](../../releases/tag/v1-final) — the exact `main` state
+  immediately before this cutover.
+- Branch [`v1-archive`](../../tree/v1-archive) — a long-lived branch pointing
+  at the same commit, for easy `git checkout`/`git diff` without needing the
+  tag.
+
+Per the roadmap's Core Philosophy (§50, §53), v2 replaces v1 rather than
+living beside it: there is no `legacy/`, `reference/`, or `old_controller/`
+directory on `main`. Git history — the tag and branch above — is the sole
+archive.
+
+## Contributing
+
+Read `piCoreCDSP_v2_Roadmap.md` and `ROADMAP_CHECKLIST_v2.md` in full before
+proposing or implementing any change. Do not use the archived v1 planning
+documents (only reachable via the `v1-final` tag / `v1-archive` branch) to
+plan new work — they describe a superseded architecture and are not
+maintained.
 
 ## References
 
 - [HEnquist/camilladsp](https://github.com/HEnquist/camilladsp)
 - [HEnquist/camilladsp-controller](https://github.com/HEnquist/camilladsp-controller)
 - [HEnquist/camillagui-backend](https://github.com/HEnquist/camillagui-backend)
+- [HEnquist/pycamilladsp](https://github.com/HEnquist/pycamilladsp)
 - [JWahle/piCoreCDSP](https://github.com/JWahle/piCoreCDSP) — original ALSA cdsp-plugin based implementation

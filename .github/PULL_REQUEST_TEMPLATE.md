@@ -1,8 +1,9 @@
 <!--
   piCoreCDSP is mid-transition to the v2 architecture. Before filling this in, read
   piCoreCDSP_v2_Roadmap.md and ROADMAP_CHECKLIST_v2.md — they are the source of truth for new work.
-  piCoreDSP_Dual_Backend_Roadmap.md and ROADMAP_CHECKLIST.md are frozen v1 history; do not use them
-  to justify new work.
+  The v1 dual-backend implementation and its planning docs (piCoreDSP_Dual_Backend_Roadmap.md,
+  ROADMAP_CHECKLIST.md) have been removed from `main` and are archived via the `v1-final` tag /
+  `v1-archive` branch; do not resurrect them or use them to justify new work.
 -->
 
 ## Summary
