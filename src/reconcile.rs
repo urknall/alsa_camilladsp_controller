@@ -1120,6 +1120,23 @@ filters:
         }
     }
 
+    /// A [`SourceRateSynchronizer`] that always returns
+    /// [`PicorecdspError::RateLimitExceeded`] — simulates CamillaDSP rejecting a
+    /// config write because it is in a transitional state (roadmap §20, §48 /
+    /// Cliffhanger C).
+    struct RateLimitedSync;
+
+    #[async_trait]
+    impl SourceRateSynchronizer for RateLimitedSync {
+        async fn ensure_source_rate(
+            &self,
+            _: u32,
+            _: &DspSnapshot,
+        ) -> Result<RateSyncOutcome, PicorecdspError> {
+            Err(PicorecdspError::RateLimitExceeded)
+        }
+    }
+
     /// Minimal `ReconcileConfig` with all durations set to 1 ms for fast tests.
     fn fast_cfg() -> ReconcileConfig {
         ReconcileConfig {
@@ -2139,7 +2156,6 @@ filters:
     /// error as a skippable cycle (not a fatal crash), per roadmap §48.
     #[tokio::test]
     async fn failure_injection_loopback_handle_hangs_run_loop_skips_and_continues() {
-        
         use tokio::time::timeout;
 
         // A SourceObserver that fails the first N snapshots (simulates hang + timeout),
@@ -2207,22 +2223,6 @@ filters:
     async fn failure_injection_rate_limit_exceeded_propagates_out_of_reconcile_step() {
         let source = active_source(96_000);
         let dsp = dsp_snap(DspState::Running, 44_100);
-
-        // A rate-sync impl that returns RateLimitExceeded — simulates CamillaDSP
-        // rejecting the SetConfigValue because the process was mid-transition.
-        struct RateLimitedSync;
-
-        #[async_trait]
-        impl SourceRateSynchronizer for RateLimitedSync {
-            async fn ensure_source_rate(
-                &self,
-                _: u32,
-                _: &DspSnapshot,
-            ) -> Result<RateSyncOutcome, PicorecdspError> {
-                Err(PicorecdspError::RateLimitExceeded)
-            }
-        }
-
         let result = reconcile_step(&source, &dsp, &RateLimitedSync).await;
         assert!(
             matches!(result, Err(PicorecdspError::RateLimitExceeded)),
@@ -2237,19 +2237,6 @@ filters:
     #[tokio::test]
     async fn failure_injection_rate_limit_exceeded_in_run_loop_is_fatal() {
         use tokio::time::timeout;
-
-        struct RateLimitedSync;
-
-        #[async_trait]
-        impl SourceRateSynchronizer for RateLimitedSync {
-            async fn ensure_source_rate(
-                &self,
-                _: u32,
-                _: &DspSnapshot,
-            ) -> Result<RateSyncOutcome, PicorecdspError> {
-                Err(PicorecdspError::RateLimitExceeded)
-            }
-        }
 
         let camilla = FakeCamilla {
             state: DspState::Running,
