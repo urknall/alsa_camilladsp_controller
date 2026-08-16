@@ -7,13 +7,17 @@ controller built directly against CamillaDSP's own process/WebSocket/ALSA
 model, rather than a continuation of the previous dual-backend
 (`snd-aloop` + custom `ioplug`) controller.
 
-As of this change, `main` contains **only** the v2 planning/architecture
-documents. There is no installable piCoreCDSP build on `main` yet — the v1
-Rust controller, the native `picoredsp-ioplug` ALSA plugin, the installer,
-benchmarks, and their CI have all been removed from `main`'s working tree as
-part of the deliberate, one-way Gate 0 cutover described in the roadmap below.
-Nothing is lost: the full v1 implementation remains permanently available via
-git.
+The v1 Rust controller, the native `picoredsp-ioplug` ALSA plugin, the
+installer, benchmarks, and their CI have all been removed from `main`'s
+working tree as part of the deliberate, one-way Gate 0 cutover described in
+the roadmap below. Nothing is lost: the full v1 implementation remains
+permanently available via git.
+
+v2 implementation has started against `ROADMAP_CHECKLIST_v2.md`'s gates: the
+`src/` tree currently only carries the Gate 2 scaffolding (ownership model,
+`SourceState`, the ALSA ingress contract, and the CamillaDSP transport
+contract). There is **not yet** an installable piCoreCDSP build — the
+reconciliation loop (Gate 3) and everything after it are still unimplemented.
 
 ## Where to look
 

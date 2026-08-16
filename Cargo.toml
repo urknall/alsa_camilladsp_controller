@@ -1,0 +1,19 @@
+[package]
+name = "picorecdsp"
+version = "0.1.0"
+edition = "2021"
+description = "piCoreCDSP v2 — CamillaDSP-native controller (see piCoreCDSP_v2_Roadmap.md)"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9"
+
+[lib]
+name = "picorecdsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "picorecdsp"
+path = "src/main.rs"
