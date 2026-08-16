@@ -423,12 +423,6 @@ mod tests {
         previous_config: Option<ConfigDocument>,
     }
 
-    impl Default for DspState {
-        fn default() -> Self {
-            DspState::Inactive
-        }
-    }
-
     #[async_trait]
     impl CamillaControl for FakeCamilla {
         async fn version(&self) -> Result<Version, PicorecdspError> {
@@ -1249,7 +1243,7 @@ filters:
         // Camilla is offline for 2 state() calls, then returns Inactive.
         let cfg_doc = compliant_config(44_100);
         let camilla = OfflineThenOnlineCamilla::new(2, DspState::Inactive, Some(cfg_doc));
-        let mut obs = FixedSourceObserver {
+        let obs = FixedSourceObserver {
             snapshot: inactive_source(),
         };
         let sync = FakeRateSync {
@@ -1272,7 +1266,7 @@ filters:
     #[tokio::test]
     async fn run_loop_terminates_cleanly_on_trigger_shutdown() {
         let camilla = FakeCamilla::default();
-        let mut obs = FixedSourceObserver {
+        let obs = FixedSourceObserver {
             snapshot: inactive_source(),
         };
         let sync = FakeRateSync {
@@ -1290,7 +1284,7 @@ filters:
     #[tokio::test]
     async fn run_loop_invalid_config_produces_waiting_for_user_fix_not_crash() {
         let camilla = InvalidConfigCamilla;
-        let mut obs = FixedSourceObserver {
+        let obs = FixedSourceObserver {
             snapshot: active_source(44_100),
         };
         let sync = FakeRateSync {

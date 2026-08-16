@@ -282,14 +282,14 @@ item off because it is merely planned.
 
 ## Gate 9 — Module Structure & Implementation Hygiene
 
-- [ ] `src/` module layout matches roadmap §36 (`main.rs`, `reconcile.rs`, `source/`, `camilla/`, `rate_sync/`,
+- [x] `src/` module layout matches roadmap §36 (`main.rs`, `reconcile.rs`, `source/`, `camilla/`, `rate_sync/`,
       `config_view.rs`, `retry.rs`, `error.rs`, `logging.rs`).
-- [ ] Reconcile loop matches the pseudocode in roadmap §37 (trigger → source/dsp snapshot → branch on state → settle
+- [x] Reconcile loop matches the pseudocode in roadmap §37 (trigger → source/dsp snapshot → branch on state → settle
       → verify).
-- [ ] `cargo fmt` clean.
-- [ ] `cargo clippy --all-targets` clean (or all remaining warnings explicitly triaged).
-- [ ] Full unit + integration test suite green.
-- [ ] ✅ **Gate 9 passed**: module boundaries match the documented deletion boundaries (i.e. `protocol_v4.rs`,
+- [x] `cargo fmt` clean.
+- [x] `cargo clippy --all-targets` clean (or all remaining warnings explicitly triaged).
+- [x] Full unit + integration test suite green.
+- [x] ✅ **Gate 9 passed**: module boundaries match the documented deletion boundaries (i.e. `protocol_v4.rs`,
       `config_patch.rs`, `alsa_loopback.rs` can each be deleted without touching unrelated modules).
 
 ---

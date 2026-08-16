@@ -506,7 +506,7 @@ filters:
             );
             patched_96.to_yaml().unwrap()
         };
-        drop(sync);
+        let _ = sync;
         drop(camilla);
 
         let camilla2 = FakeCamilla::default().with_previous_config(&patched_96_yaml);

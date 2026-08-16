@@ -22,7 +22,7 @@ use crate::{camilla::config_document::ConfigDocument, error::PicorecdspError};
 /// WebSocket API (roadmap §8, State Truth 2).
 ///
 /// Rust never invents or caches this; it is always read fresh from CamillaDSP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DspState {
     /// The engine is in the process of starting up.
     Starting,
@@ -32,6 +32,7 @@ pub enum DspState {
     Paused,
     /// The engine stopped normally — no capture is active, waiting for a
     /// new source.  `GetPreviousConfig` is available after this state.
+    #[default]
     Inactive,
     /// The engine has stalled (e.g. a format change that it could not handle
     /// automatically).
