@@ -1,0 +1,23 @@
+{
+  "source_id": "camilladsp-master",
+  "repo": "HEnquist/camilladsp",
+  "ref": "master",
+  "sha": "05e9cfcdf43c0dfe078ed3feb8af4c8bd701fd74",
+  "fetched_at": "2026-08-16T18:01:16.661638+00:00",
+  "files": [
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "backend_alsa.md",
+    "src/alsa_backend/buffermanager.rs",
+    "src/alsa_backend/device.rs",
+    "src/alsa_backend/mod.rs",
+    "src/alsa_backend/threaded_buffermanager.rs",
+    "src/alsa_backend/threaded_device.rs",
+    "src/alsa_backend/utils.rs",
+    "src/bin.rs",
+    "src/config/mod.rs",
+    "src/config/utils.rs",
+    "src/statefile.rs",
+    "websocket.md"
+  ]
+}
