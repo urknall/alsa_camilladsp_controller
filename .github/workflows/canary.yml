@@ -1,6 +1,6 @@
 # piCoreCDSP v2 — Upstream Canary CI
 #
-# Non-blocking, scheduled canary that builds CamillaDSP at tracked upstream branches,
+# Non-blocking manual canary that builds CamillaDSP at tracked upstream branches,
 # runs the black-box capability probes (roadmap §41–§42), and reports any capability
 # status changes against upstream/capabilities.yml.
 #
@@ -8,13 +8,12 @@
 # "upstream changed something worth investigating", not "the release is broken".
 # continue-on-error: true is set at every job level for that reason.
 #
-# Triggered: daily at 04:00 UTC (off-peak) and manually via workflow_dispatch.
+# Scheduled probes run via upstream-capability-canary.yml (weekly, Mondays 04:00 UTC).
+# This file is kept for manual/ad-hoc probe runs only.
 
 name: Upstream Canary
 
 on:
-  schedule:
-    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       branch:

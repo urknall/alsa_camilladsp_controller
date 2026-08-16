@@ -7,7 +7,7 @@
 # The PR body lists: changed sources, touched capabilities, potentially affected
 # local code, and removal candidate signals.
 #
-# Triggers: daily at 03:00 UTC + manual workflow_dispatch.
+# Triggers: weekly (Mondays 03:00 UTC) + manual workflow_dispatch.
 #
 # IMPORTANT (roadmap §69): this workflow is READ-ONLY with respect to
 # piCoreCDSP source code.  It writes only to the upstream/ subdirectory.
@@ -17,7 +17,7 @@ name: Upstream Sync
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # 03:00 UTC daily (offset from canary's 04:00)
+    - cron: "0 3 * * 1"   # 03:00 UTC every Monday (weekly, offset from canary's 04:00)
   workflow_dispatch:
     inputs:
       source_id:
