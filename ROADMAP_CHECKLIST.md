@@ -1,5 +1,9 @@
 # piCoreDSP Dual-Backend Architecture — Development Checklist
 
+> **SUPERSEDED (v1, frozen/archival).** Tracks the v1 dual-backend architecture only.
+> New work is tracked in [`ROADMAP_CHECKLIST_v2.md`](ROADMAP_CHECKLIST_v2.md) against
+> [`piCoreCDSP_v2_Roadmap.md`](piCoreCDSP_v2_Roadmap.md). Do not add new v2 items here.
+
 Generated from [`piCoreDSP_Dual_Backend_Roadmap.md`](piCoreDSP_Dual_Backend_Roadmap.md).
 Each section maps to a milestone or gate. Check items off as work is completed.
 
