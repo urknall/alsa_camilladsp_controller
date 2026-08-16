@@ -7,14 +7,14 @@
 # a strong CamillaDSP 5 release-readiness signal.  The workflow opens an issue
 # or writes to the step summary.
 #
-# Schedule: daily at 04:15 UTC (offset to avoid rate-limit collisions).
+# Schedule: weekly (Mondays 04:15 UTC).
 # Never auto-merges, never upgrades the production pin.
 
 name: Upstream Branch Watch
 
 on:
   schedule:
-    - cron: "15 4 * * *"
+    - cron: "15 4 * * 1"  # 04:15 UTC every Monday (weekly)
   workflow_dispatch:
 
 permissions:

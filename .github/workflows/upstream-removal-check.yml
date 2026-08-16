@@ -60,6 +60,9 @@ jobs:
       - name: Update status.json with current probe results
         continue-on-error: true
         run: |
+          # status.json stores probe_results for FAIL→PASS flip detection across runs.
+          # We push directly to the default branch here (not via PR) because this file
+          # is CI metadata, not user-visible source.  The [skip ci] tag prevents a loop.
           if git diff --quiet upstream/status.json 2>/dev/null; then
             echo "status.json unchanged — skipping commit."
           else
@@ -143,3 +146,30 @@ jobs:
                   )
           summary_file.close()
           PYEOF
+
+      - name: Regenerate upstream/status.md dashboard
+        continue-on-error: true
+        run: |
+          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
+          python3 scripts/upstream_dashboard.py \
+            --status       upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --probes       $PROBE_FILES \
+            --output       upstream/status.md
+          echo "## Upstream Status Dashboard" >> "$GITHUB_STEP_SUMMARY"
+          cat upstream/status.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Commit updated status.md
+        continue-on-error: true
+        run: |
+          # status.json was already committed above.  Commit status.md if it changed.
+          # Both files are CI-metadata only; [skip ci] prevents a recursive loop.
+          if git diff --quiet upstream/status.md 2>/dev/null; then
+            echo "status.md unchanged — skipping commit."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add upstream/status.md
+            git commit -m "chore: regenerate upstream/status.md [skip ci]"
+            git push origin HEAD || true
+          fi
