@@ -1,0 +1,26 @@
+{
+  "source_id": "camillagui-backend-next4.2.0",
+  "repo": "HEnquist/camillagui-backend",
+  "ref": "next4.2.0",
+  "sha": "f76082a3a792cee4997d09a542d55e655604b678",
+  "fetched_at": "2026-08-16T18:06:02.047278+00:00",
+  "files": [
+    "backend/__init__.py",
+    "backend/convolver_config_import.py",
+    "backend/eqapo_config_import.py",
+    "backend/eventstream.py",
+    "backend/filemanagement.py",
+    "backend/filters.py",
+    "backend/legacy_config_import.py",
+    "backend/routes.py",
+    "backend/settings.py",
+    "backend/settings_schemas.py",
+    "backend/statics.py",
+    "backend/version.py",
+    "backend/views.py",
+    "config/camillagui.yml",
+    "config/gui-config.yml",
+    "main.py",
+    "release_automation/versions.yml"
+  ]
+}

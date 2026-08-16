@@ -1,0 +1,11 @@
+{
+  "source_id": "camilladsp-controller-main",
+  "repo": "HEnquist/camilladsp-controller",
+  "ref": "main",
+  "sha": "e9fde2057d5869e6805a965e9c091bbb9a9e9980",
+  "fetched_at": "2026-08-16T18:06:22.074955+00:00",
+  "files": [
+    "alsa_listener.py",
+    "controller.py"
+  ]
+}

@@ -1,0 +1,122 @@
+[package]
+name = "CamillaDSP"
+version = "5.0.0"
+authors = ["Henrik Enquist <henrik.enquist@gmail.com>"]
+edition = "2024"
+description = "A flexible tool for processing audio"
+rust-version = "1.90"
+license = "GPL-3.0-only OR MPL-2.0"
+readme = "README.crates.md"
+repository = "https://github.com/HEnquist/camilladsp"
+
+[features]
+default = ["websocket"]
+threaded-alsa = []
+# Promote real-time threads via rtkit over D-Bus instead of natively, see
+# src/utils/rt_priority.rs. PipeWire implies a desktop system where rtkit ships as a dependency of
+# the sound server, so that backend enables it. Can also be enabled on its own, for an ALSA build
+# that runs unprivileged on a desktop.
+rtkit = ["audio_thread_priority/with_dbus"]
+pipewire-backend = ["pipewire", "rtkit"]
+asio-backend = ["asio-sys"]
+bench = []
+websocket = ["tungstenite"]
+secure-websocket = ["websocket", "native-tls", "tungstenite/native-tls"]
+debug = []
+
+# The sample precision is deliberately not a Cargo feature. Features are unified
+# across the whole dependency graph, so any crate depending on this one could
+# flip the precision for everyone else in the build. It is a raw rustc cfg
+# instead, set with RUSTFLAGS="--cfg camillafloat_f32".
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(camillafloat_f32)'] }
+
+[lib]
+name = "camillalib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "camilladsp"
+path = "src/bin.rs"
+
+[target.'cfg(target_os="linux")'.dependencies]
+alsa = "0.9.0"
+alsa-sys = "0.3.1"
+nix = { version = "0.30", features = ["poll", "signal"] }
+pipewire = { version = "0.9", optional = true }
+
+[target.'cfg(target_os="macos")'.dependencies]
+coreaudio-rs = "0.13.0"
+objc2-core-audio = "0.3.1"
+objc2-core-audio-types = "0.3.1"
+objc2-core-foundation = "0.3.1"
+objc2-audio-toolbox = "0.3.1"
+dispatch = "0.2.0"
+libc = "0.2.172"
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.24.0"
+# wasapi = { version = "0.24.0", path = "../wasapi-rs" }
+windows = {version = "0.62.0", features = ["Win32_System_Threading", "Win32_Foundation"] }
+asio-sys = { version = "0.2.5", optional = true }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+yaml_serde = "0.10.3"
+serde_json = "1.0"
+serde_with = "3.12"
+json-patch = "4.0.0"
+realfft = "3.4.0"
+#realfft = { git = "https://github.com/HEnquist/realfft", branch = "better_errors" }
+num-complex = "0.4"
+num-traits = "0.2"
+signal-hook = "0.3.8"
+rand = { version = "0.9.1", default-features = false, features = ["small_rng", "std", "os_rng"] }
+rand_distr = "0.5.1"
+clap = { version = "4.5.4", features = ["cargo"] }
+git-version = "0.3"
+log = "0.4.14"
+flexi_logger = { version = "0.30.2", features = ["async", "colors"] }
+chrono = "0.4"
+tungstenite = { version = "0.26.1", optional = true }
+native-tls = { version = "0.2.7", optional = true }
+rubato = "5.0"
+#rubato = { git = "https://github.com/HEnquist/rubato", branch = "preview_1.0" }
+parking_lot = { version = "0.12.1", features = ["hardware-lock-elision"] }
+crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
+rayon = "1.10.0"
+# Real-time thread promotion. On Linux it promotes via rtkit over D-Bus with the "rtkit" feature, and
+# natively with SCHED_FIFO without it, see src/utils/rt_priority.rs.
+audio_thread_priority = { version = "0.36.0", default-features = false }
+ringbuf = "0.4.7"
+#audioadapter = { version = "5.0.0", path = "../audioadapter-rs/audioadapter" }
+#audioadapter-sample = { version = "5.1.0", path = "../audioadapter-rs/audioadapter-sample" }
+#audioadapter-buffers = { version = "5.1.0", path = "../audioadapter-rs/audioadapter-buffers" }
+audioadapter = "5.0.0"
+audioadapter-sample = "5.1.0"
+audioadapter-buffers = "5.1.0"
+waveadapter = "0.2.0"
+
+[dev-dependencies]
+criterion = "0.6"
+
+[[bench]]
+name = "filters"
+harness = false
+
+[[bench]]
+name = "conversions"
+harness = false
+
+[[bench]]
+name = "pipeline"
+harness = false
+
+[[bench]]
+name = "fftconv_kernels"
+harness = false
+required-features = ["bench"]
+
+[profile.release]
+codegen-units = 1
