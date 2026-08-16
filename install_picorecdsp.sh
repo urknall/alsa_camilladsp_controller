@@ -790,8 +790,8 @@ if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 | grep -q -- '--no_config';
     exit 1
 fi
 
-"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}" 2>/dev/null
-"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}"   2>/dev/null
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}"
+"${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}"
 
 echo "CamillaDSP configuration validation OK."
 
@@ -1221,9 +1221,6 @@ echo "                |"
 echo "                v"
 echo "               DAC"
 echo "  (${PLAYBACK_DEVICE})"
-echo
-echo "CamillaDSP playback device:"
-echo "  ${PLAYBACK_DEVICE}"
 echo
 echo "CamillaGUI after reboot:"
 echo "  http://pcp.local:5000"
