@@ -66,7 +66,7 @@ impl CamillaDspV5 {
             .await
             .map_err(|e| PicorecdspError::WebSocketOffline(format!("{e}")))?;
 
-        ws.send(Message::Text(text.into()))
+        ws.send(Message::Text(text))
             .await
             .map_err(|e| PicorecdspError::WebSocketOffline(format!("send failed: {e}")))?;
 
@@ -113,8 +113,7 @@ fn parse_version_v5(v: &Value) -> Result<Version, PicorecdspError> {
     let s = v.as_str().ok_or_else(|| {
         PicorecdspError::ProtocolError("GetVersion result is not a string".into())
     })?;
-    s.parse::<Version>()
-        .map_err(|e| PicorecdspError::ProtocolError(e))
+    s.parse::<Version>().map_err(PicorecdspError::ProtocolError)
 }
 
 /// CamillaDSP 5.x state string mapping.  `"Inactive"` is the canonical name in
@@ -269,7 +268,7 @@ impl CamillaStateEvents for CamillaDspV5StateEvents {
 
                 let cmd = serde_json::to_string(&json!({"SubscribeState": null}))
                     .map_err(|e| e.to_string())?;
-                ws.send(Message::Text(cmd.into()))
+                ws.send(Message::Text(cmd))
                     .await
                     .map_err(|e| e.to_string())?;
 

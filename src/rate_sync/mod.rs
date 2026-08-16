@@ -29,10 +29,12 @@ pub mod config_patch;
 pub use config_patch::ConfigPatchRateSynchronizer;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use crate::{
-    camilla::{control::DspState, ConfigDocument},
+    camilla::{
+        control::{DspState, StopReason},
+        ConfigDocument,
+    },
     error::PicorecdspError,
 };
 
@@ -62,6 +64,12 @@ pub struct DspSnapshot {
 
     /// Fingerprint of `previous_config` for race detection.
     pub previous_fingerprint: Option<u64>,
+
+    /// Why CamillaDSP last stopped, from `GetStopReason` (roadmap §33).
+    /// Used by the run loop to classify DSP failures (DAC unavailable,
+    /// CaptureFormatChange, etc.) without requiring the reconciler to call
+    /// `stop_reason()` itself.
+    pub stop_reason: Option<StopReason>,
 }
 
 impl DspSnapshot {
@@ -205,6 +213,7 @@ mod tests {
             previous_config: Some(doc),
             active_fingerprint: Some(fp),
             previous_fingerprint: Some(fp),
+            stop_reason: None,
         }
     }
 

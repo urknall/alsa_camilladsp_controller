@@ -218,6 +218,7 @@ mod tests {
             previous_config: Some(doc),
             active_fingerprint: Some(fp),
             previous_fingerprint: Some(fp),
+            stop_reason: None,
         }
     }
 
@@ -271,6 +272,7 @@ mod tests {
             previous_config: Some(doc),
             active_fingerprint: None,
             previous_fingerprint: Some(fp),
+            stop_reason: None,
         };
 
         let outcome = sync.ensure_source_rate(96_000, &snap).await.unwrap();
@@ -320,6 +322,7 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: None,
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
 
         // Simulate 44.1 → 96 kHz.
@@ -364,10 +367,174 @@ filters:
             previous_config: Some(doc.clone()),
             active_fingerprint: Some(doc.fingerprint()),
             previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
         };
         let camilla = FakeCamilla::default();
         let sync = ConfigPatchRateSynchronizer::new(&camilla);
         let err = sync.ensure_source_rate(96_000, &snap).await.unwrap_err();
         assert!(matches!(err, PicorecdspError::SamplerateTokenGuard { .. }));
+    }
+
+    /// Save-without-Apply (roadmap §29.3):
+    /// When the user saves the config file (updating the disk file) without
+    /// clicking Apply, the running DSP state is unchanged.  piCoreCDSP's rate
+    /// sync must not auto-reload from disk; it uses only `GetPreviousConfig`
+    /// (the applied runtime config) for the rate patch.
+    ///
+    /// Verification: `ConfigPatchRateSynchronizer` only calls `previous_config()`
+    /// on `CamillaControl` — it never reads from a file path.  The `FakeCamilla`
+    /// returns only the PreviousConfig it was constructed with, and the rate patch
+    /// uses that — regardless of what might be on disk.
+    #[tokio::test]
+    async fn save_without_apply_rate_sync_ignores_disk_config() {
+        // The applied (previous) config has a gain filter at 44.1 kHz.
+        let applied_yaml = r#"
+devices:
+  samplerate: 44100
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+filters:
+  eq:
+    type: Gain
+    parameters:
+      gain: 6.0
+"#;
+        // A different config was saved to disk (but NOT applied).
+        // piCoreCDSP has no disk watcher and never reads from the file path.
+        // The FakeCamilla simulates this: previous_config returns the APPLIED
+        // config, and the config_file_path (if queried) would return a path that
+        // points to a different file.  But config_file_path is never queried by
+        // ConfigPatchRateSynchronizer, so only the applied config is used.
+        let camilla = FakeCamilla::default().with_previous_config(applied_yaml);
+        let set_config_calls = camilla.set_config_calls.clone();
+        let sync = ConfigPatchRateSynchronizer::new(&camilla);
+
+        let doc = ConfigDocument::from_yaml(applied_yaml).unwrap();
+        let snap = DspSnapshot {
+            state: DspState::Inactive,
+            active_config: None,
+            previous_config: Some(doc.clone()),
+            active_fingerprint: None,
+            previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
+        };
+
+        // New source at 96 kHz.
+        let outcome = sync.ensure_source_rate(96_000, &snap).await.unwrap();
+        assert!(matches!(
+            outcome,
+            RateSyncOutcome::SetConfigAfterInactive {
+                new_rate: 96_000,
+                ..
+            }
+        ));
+
+        let calls = set_config_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "exactly one SetConfig must be issued");
+        let patched = &calls[0];
+        // Rate was updated from the APPLIED config, not any disk file.
+        assert_eq!(
+            patched.get("devices.samplerate"),
+            Some(&Value::Number(96_000.into()))
+        );
+        // Gain from the APPLIED config was preserved (Save-without-Apply is irrelevant).
+        assert_eq!(
+            patched.get("filters.eq.parameters.gain"),
+            Some(&Value::Number(serde_json::Number::from_f64(6.0).unwrap()))
+        );
+    }
+
+    /// Apply-without-Save regression (roadmap §29.2, §30, §47):
+    /// A gain setting applied via GUI Apply (but not Saved) must survive a
+    /// complete source rate cycle.  This is the mandatory regression test from
+    /// roadmap §30, §47.  See also `apply_without_save_gain_survives_rate_change`
+    /// above for the single-step version; this test covers the full cycle
+    /// 44.1 → 96 → 48 kHz as required by the roadmap.
+    #[tokio::test]
+    async fn apply_without_save_gain_survives_full_rate_cycle() {
+        let gain_yaml = r#"
+devices:
+  samplerate: 44100
+  capture:
+    type: Alsa
+    device: "hw:Loopback,0,0"
+    channels: 2
+    format: S32_LE
+    stop_on_inactive: true
+filters:
+  gain_filter:
+    type: Gain
+    parameters:
+      gain: 6.0
+"#;
+        // After each rate change the FakeCamilla's previous_config is the patched
+        // config from the prior step.  We simulate this by re-constructing the
+        // FakeCamilla with the patched config at each step.
+
+        // ── Step 1: 44.1 → 96 kHz ────────────────────────────────────────────
+        let camilla = FakeCamilla::default().with_previous_config(gain_yaml);
+        let set_config_calls_1 = camilla.set_config_calls.clone();
+        let sync = ConfigPatchRateSynchronizer::new(&camilla);
+
+        let doc = ConfigDocument::from_yaml(gain_yaml).unwrap();
+        let snap = DspSnapshot {
+            state: DspState::Inactive,
+            active_config: None,
+            previous_config: Some(doc.clone()),
+            active_fingerprint: None,
+            previous_fingerprint: Some(doc.fingerprint()),
+            stop_reason: None,
+        };
+        sync.ensure_source_rate(96_000, &snap).await.unwrap();
+
+        let patched_96_yaml = {
+            let calls_1 = set_config_calls_1.lock().unwrap();
+            let patched_96 = &calls_1[0];
+            assert_eq!(
+                patched_96.get("devices.samplerate"),
+                Some(&Value::Number(96_000.into())),
+                "rate must be 96 kHz after first patch"
+            );
+            assert_eq!(
+                patched_96.get("filters.gain_filter.parameters.gain"),
+                Some(&Value::Number(serde_json::Number::from_f64(6.0).unwrap())),
+                "gain must survive 44.1 → 96 kHz"
+            );
+            patched_96.to_yaml().unwrap()
+        };
+        drop(sync);
+        drop(camilla);
+
+        let camilla2 = FakeCamilla::default().with_previous_config(&patched_96_yaml);
+        let set_config_calls_2 = camilla2.set_config_calls.clone();
+        let sync2 = ConfigPatchRateSynchronizer::new(&camilla2);
+
+        let doc2 = ConfigDocument::from_yaml(&patched_96_yaml).unwrap();
+        let snap2 = DspSnapshot {
+            state: DspState::Inactive,
+            active_config: None,
+            previous_config: Some(doc2.clone()),
+            active_fingerprint: None,
+            previous_fingerprint: Some(doc2.fingerprint()),
+            stop_reason: None,
+        };
+        sync2.ensure_source_rate(48_000, &snap2).await.unwrap();
+
+        let calls_2 = set_config_calls_2.lock().unwrap();
+        let patched_48 = &calls_2[0];
+        assert_eq!(
+            patched_48.get("devices.samplerate"),
+            Some(&Value::Number(48_000.into())),
+            "rate must be 48 kHz after second patch"
+        );
+        assert_eq!(
+            patched_48.get("filters.gain_filter.parameters.gain"),
+            Some(&Value::Number(serde_json::Number::from_f64(6.0).unwrap())),
+            "gain must survive 96 → 48 kHz"
+        );
     }
 }

@@ -147,7 +147,7 @@ item off because it is merely planned.
 - [x] `$samplerate$` token guard: `ConfigDocument::has_samplerate_token()` scans the full config tree; `with_path_value` refuses to patch if token found; `ConfigPatchRateSynchronizer` checks before writing; fail-closed with `PicorecdspError::SamplerateTokenGuard` (roadmap §21 / Cliffhanger D).
 - [x] `DspTriggerSource` trait implemented: `PollingTrigger` for 4.1, `CamillaDspV4StateEvents` and `CamillaDspV5StateEvents` for 4.2+/5.x (roadmap §22 / Cliffhanger E).
 - [x] Every workaround registered in `upstream/capabilities.yml` with `local_code` and `removal_when` fields (roadmap §61). Keys: `persistent_source_rate_override`, `native_aloop_rate_following`, `config_revision_cas`, `samplerate_token_reresolution`, `state_push_events`, `camilla_v5_wire_format`.
-- [ ] ✅ **Gate 4 passed**: every temporary workaround has code-linked removal criteria, not just prose in the roadmap.
+- [x] ✅ **Gate 4 passed**: every temporary workaround has code-linked removal criteria, not just prose in the roadmap.
 
 ---
 
@@ -160,45 +160,62 @@ item off because it is merely planned.
 - [x] No version checks leak into `reconcile.rs`, `source/`, or `config_view.rs` (roadmap §24).
 - [x] Confirmed no `camillalib` dependency exists in `Cargo.toml` and no engine internals are imported (roadmap §25).
 - [x] `ConfigDocument` implemented as a schema-light generic YAML/JSON tree limited to the documented paths (roadmap §26), with no filter/mixer/processor/biquad/FIR modeling. See `src/camilla/config_document.rs`.
-- [ ] ✅ **Gate 5 passed**: the reconciler compiles and passes its tests against both `protocol_v4` and `protocol_v5`
+- [x] ✅ **Gate 5 passed**: the reconciler compiles and passes its tests against both `protocol_v4` and `protocol_v5`
       through the same trait, with zero protocol-specific branching outside `camilla/`.
 
 ---
 
 ## Gate 6 — CamillaGUI Integration & Operating-State Scenarios
 
-- [ ] Custom `on_get_active_config` / `on_set_active_config` / shadow `active_config.yml` removed or confirmed absent
-      (roadmap §28).
-- [ ] Rust confirmed to never observe CamillaGUI directly — only CamillaDSP (roadmap §28).
-- [ ] Apply-during-playback scenario implemented/tested: Rust changes nothing but source rate, all other GUI changes
-      preserved (roadmap §29.1, §30).
-- [ ] Apply-without-Save scenario implemented/tested: RuntimeConfig wins, survives rate changes (roadmap §29.2).
-- [ ] Save-without-Apply scenario implemented/tested: running DSP unchanged, no auto-reload (roadmap §29.3).
-- [ ] Config A → B scenario implemented/tested: latest applied decision wins, A never restored (roadmap §29.4).
-- [ ] `ConfigFilePath != RuntimeConfig` divergence confirmed to produce no repair/warning (roadmap §29.5).
-- [ ] New-source-same-rate handled via active-generation detection, not just `old_rate != new_rate` (roadmap §31).
-- [ ] Concurrent Apply + rate-change race handled per §32 (settle → fresh reads → minimal write → verify).
-- [ ] Mandatory regression test passes: gain +6 dB applied without save survives source rate 44.1 → 96 → 48 kHz
-      (roadmap §30, §47).
+- [x] Custom `on_get_active_config` / `on_set_active_config` / shadow `active_config.yml` removed or confirmed absent
+      (roadmap §28). Confirmed absent: v2 codebase communicates only with CamillaDSP via `CamillaControl`; no
+      shadow config file and no GUI hooks exist anywhere in `src/`.
+- [x] Rust confirmed to never observe CamillaGUI directly — only CamillaDSP (roadmap §28). Confirmed: the entire
+      Rust codebase interfaces with CamillaDSP exclusively through the `CamillaControl` WebSocket trait. There is
+      no GUI process handle, no GUI port/socket observation, and no HTTP/REST call to CamillaGUI anywhere in `src/`.
+- [x] Apply-during-playback scenario implemented/tested: Rust changes nothing but source rate, all other GUI changes
+      preserved (roadmap §29.1, §30). See `reconcile::tests::apply_during_playback_reconciler_only_touches_rate`.
+- [x] Apply-without-Save scenario implemented/tested: RuntimeConfig wins, survives rate changes (roadmap §29.2).
+      See `rate_sync::config_patch::tests::apply_without_save_gain_survives_rate_change` and
+      `apply_without_save_gain_survives_full_rate_cycle`.
+- [x] Save-without-Apply scenario implemented/tested: running DSP unchanged, no auto-reload (roadmap §29.3).
+      See `rate_sync::config_patch::tests::save_without_apply_rate_sync_ignores_disk_config`.
+- [x] Config A → B scenario implemented/tested: latest applied decision wins, A never restored (roadmap §29.4).
+      See `reconcile::tests::config_a_to_b_latest_applied_config_is_authoritative`.
+- [x] `ConfigFilePath != RuntimeConfig` divergence confirmed to produce no repair/warning (roadmap §29.5).
+      See `reconcile::tests::config_file_path_divergence_produces_no_repair`. By construction,
+      `reconcile_step` accepts no `config_file_path` parameter and never reads from disk.
+- [x] New-source-same-rate handled via active-generation detection, not just `old_rate != new_rate` (roadmap §31).
+      See `reconcile::tests::new_source_same_rate_reconcile_still_runs_full_pass`. The reconciler calls
+      `ensure_source_rate` unconditionally when source is active; generation is available on `SourceSnapshot`
+      to prevent any future loop-level optimization from incorrectly skipping same-rate passes.
+- [x] Concurrent Apply + rate-change race handled per §32 (settle → fresh reads → minimal write → verify).
+      See `reconcile::tests::concurrent_apply_rate_change_fresh_snapshot_used`. Fresh-read-before-write is
+      enforced in `ConfigPatchRateSynchronizer::ensure_source_rate` (re-reads `GetPreviousConfig` immediately
+      before `SetConfig`).
+- [x] Mandatory regression test passes: gain +6 dB applied without save survives source rate 44.1 → 96 → 48 kHz
+      (roadmap §30, §47). See `rate_sync::config_patch::tests::apply_without_save_gain_survives_rate_change`
+      and `apply_without_save_gain_survives_full_rate_cycle`.
 - [ ] ✅ **Gate 6 passed**: all scenarios in roadmap §29–§32 and the GUI test matrix (Gate 8) pass.
 
 ---
 
 ## Gate 7 — Error, Recovery & Cold Boot
 
-- [ ] WebSocket-offline recovery implemented: bounded backoff, reconnect, full fresh snapshot (roadmap §33).
-- [ ] DAC-unavailable handling implemented: log + retry with current RuntimeConfig, no automatic DAC switch.
-- [ ] Invalid-config handling implemented: no repair; old valid RuntimeConfig stays authoritative or `WaitingForUserFix`.
-- [ ] Incompatible-transport-config handling implemented: managed mode suspended with a clear message.
-- [ ] Stalled-state handling implemented: short observation phase, no immediate restart loop, bounded retry.
-- [ ] Rust-crash recovery implemented: stateless restart, fresh source/DSP read, reconcile.
-- [ ] CamillaDSP-crash handling documented/implemented as an accepted v2 MVP boundary (unsaved RuntimeConfig may be lost).
-- [ ] CamillaGUI-crash isolation confirmed: audio, Rust, and CamillaDSP unaffected.
-- [ ] Cold boot test matrix implemented and passing (roadmap §34): boot without/with producer, statefile behavior,
+- [x] WebSocket-offline recovery implemented: bounded backoff, reconnect, full fresh snapshot (roadmap §33). See `run_loop` in `src/reconcile.rs` (`ws_initial_backoff`, `ws_max_backoff` config fields; test `run_loop_websocket_offline_reconnects_after_backoff`).
+- [x] DAC-unavailable handling implemented: log + retry with current RuntimeConfig, no automatic DAC switch. `DspError { stop_reason: Some(PlaybackError) }` classified in `reconcile_step`; bounded retry via `max_dsp_error_retries` / `dsp_error_retry_interval` in `run_loop` (tests `dsp_failed_with_playback_error_reports_stop_reason`, `cold_boot_playback_error_at_startup_is_dac_unavailable`).
+- [x] Invalid-config handling implemented: no repair; old valid RuntimeConfig stays authoritative or `WaitingForUserFix`. See `ReconcileAction::WaitingForUserFix` and transport-contract section in `reconcile_step` (tests `invalid_config_in_active_config_returns_waiting_for_user_fix`, `cold_boot_invalid_persistent_config_waits_for_fix`).
+- [x] Incompatible-transport-config handling implemented: managed mode suspended with a clear message. See `ReconcileAction::ManagedModeSuspended` (unchanged from Gate 2/3).
+- [x] Stalled-state handling implemented: short observation phase, no immediate restart loop, bounded retry. `DspError { state: Stalled }` returned; `max_dsp_error_retries` / `dsp_error_retry_interval` bound the retry count in `run_loop` (tests `stalled_dsp_reports_error`, `dsp_stalled_with_capture_format_change_reports_stop_reason`).
+- [x] Rust-crash recovery implemented: stateless restart, fresh source/DSP read, reconcile. `run_loop` holds no cross-cycle state; on restart all state is read fresh. Documented in `run_loop` doc comment; test `rust_crash_recovery_is_stateless_restart`.
+- [x] CamillaDSP-crash handling documented/implemented as an accepted v2 MVP boundary (unsaved RuntimeConfig may be lost). Documented in `run_loop` doc comment; test `camilladsp_crash_rust_reads_fresh_state_not_cached`.
+- [x] CamillaGUI-crash isolation confirmed: audio, Rust, and CamillaDSP unaffected. Documented in `run_loop` doc comment; test `camillagui_crash_isolation_reconciler_runs_normally`.
+- [x] Cold boot test matrix implemented and passing (roadmap §34): boot without/with producer, statefile behavior,
       `stop_on_inactive` → clean inactive, `PreviousConfig` available, boot at matching/different rate, startup
-      `CaptureError`/`PlaybackError`, missing `ConfigFilePath`, invalid persistent config, no statefile.
-- [ ] Confirmed no disk config watcher (mtime/inode/fingerprint auto-reload) exists (roadmap §35); runtime fingerprint
-      used only for race detection.
+      `CaptureError`/`PlaybackError`, missing `ConfigFilePath`, invalid persistent config, no statefile. See
+      `cold_boot_*` tests in `src/reconcile.rs`.
+- [x] Confirmed no disk config watcher (mtime/inode/fingerprint auto-reload) exists (roadmap §35); runtime fingerprint
+      used only for race detection. See `no_disk_config_watcher_in_reconcile_config` test.
 - [ ] ✅ **Gate 7 passed**: failure-injection suite (Gate 8) passes for every listed failure mode.
 
 ---
