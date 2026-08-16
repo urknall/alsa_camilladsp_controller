@@ -3,8 +3,9 @@
 Generated from [`piCoreCDSP_v2_Roadmap.md`](piCoreCDSP_v2_Roadmap.md), which formalizes the uploaded plan at
 [`docs/new plan/piCoreCDSP_v2_complete_roadmap(1).md`](docs/new%20plan/piCoreCDSP_v2_complete_roadmap%281%29.md).
 
-This checklist **replaces** [`ROADMAP_CHECKLIST.md`](ROADMAP_CHECKLIST.md) (v1, dual-backend) as the tracker for new work.
-The v1 checklist is frozen/archival and must not be used to plan v2 work. Each section below maps to a gate or
+This checklist **replaces** `ROADMAP_CHECKLIST.md` (v1, dual-backend) as the tracker for new work. Following the
+Gate 0 cutover below, the v1 checklist and roadmap no longer exist on `main` — they are reachable only via the
+`v1-final` tag / `v1-archive` branch — and must not be used to plan v2 work. Each section below maps to a gate or
 milestone in the v2 roadmap. Check items off only after they are actually implemented and verified — do not check an
 item off because it is merely planned.
 
@@ -12,32 +13,99 @@ item off because it is merely planned.
 
 ## Gate 0 — Repository Reset & Legacy Isolation
 
-- [ ] Decide Option A (git-tag-only reset) vs. Option B (temporary `reference/v1-legacy/` subfolder) per roadmap §0.
-- [ ] Tag current `main` HEAD as `v1-final`.
-- [ ] (If desired) cut a `v1-archive` branch from `v1-final`.
+- [x] Decide Option A (git-tag-only reset) vs. Option B (temporary `reference/v1-legacy/` subfolder) per roadmap §0.
+
+  **Decision record:** **Option A — git-tag-only reset** is adopted. Rationale: a permanent (or even
+  long-lived "temporary") `reference/v1-legacy/` subfolder stays part of `main`'s working tree and remains
+  visible to CI, IDE search, and any agent reading the repo for context — exactly the risk §0/§50 warn about,
+  since it would make it easy to silently interleave v1 patterns into v2 modules. A `v1-final` tag (plus an
+  optional `v1-archive` branch) keeps the full v1 tree permanently retrievable via `git checkout`/`git diff`
+  without it ever being part of `main`'s working tree, matching the "git is the archive" rule (roadmap §50, §53)
+  and the Core Philosophy that v2 replaces v1 rather than living beside it.
+
+- [x] Tag current `main` HEAD as `v1-final`.
+
+  **Status:** done. `v1-final` is an annotated tag pointing at commit `72b556d` (the `main` tip immediately
+  before this Gate 0/1 documentation change), pushed by a maintainer with repository push access.
+
+- [x] (If desired) cut a `v1-archive` branch from `v1-final`.
+
+  **Status:** done. `v1-archive` branch created from `v1-final` (same commit, `72b556d`) and pushed to `origin`.
 - [ ] If Option B chosen: move `src/`, `picoredsp-ioplug/`, `benches/`, `scripts/`, `install_picoredsp.sh`,
       `CONFIG_MIGRATION.md` into a clearly named, non-buildable reference folder, excluded from the Cargo
       workspace and CI.
-- [ ] If Option A chosen: remove the v1 source tree from `main` once v2 implementation is ready to start.
-- [ ] `.github/copilot-instructions.md` updated to reference only `piCoreCDSP_v2_Roadmap.md` and this checklist
-      (done as part of the planning change that introduced this file).
-- [ ] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded (done as part of the same
-      planning change).
-- [ ] No new v2 code is added to `src/` until the reset decision above is executed.
-- [ ] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
+
+  N/A — Option B was not chosen.
+
+- [x] If Option A chosen: remove the v1 source tree from `main` once v2 implementation is ready to start.
+
+  **Status:** done, explicitly confirmed by the repository owner. With `v1-final`/`v1-archive` in place as the
+  permanent archive, `src/`, `picoredsp-ioplug/`, `benches/`, `scripts/`, `install_picoredsp.sh`,
+  `CONFIG_MIGRATION.md`, `Cargo.toml`/`Cargo.lock`, `.cargo/config.toml`, the v1 release CI
+  (`.github/workflows/build.yml`), the v1 upstream-tracking CI (`.github/workflows/upstream-tracking.yml`) and
+  its supporting docs (`docs/upstream-tracking.yml`, `docs/ALSA_LIB_TRACKING.md`, `docs/CAMILLADSP_TRACKING.md`,
+  `docs/CAMILLAGUI_TRACKING.md`, `docs/CAMILLADSP_CONTROLLER_TRACKING.md`, `docs/BENCHMARK_FRAMEWORK.md`,
+  `docs/MEASUREMENTS.md`, `docs/GATE0_ACCEPTANCE_SPEC.md`, `docs/GATE14_FIELD_TEST_LOG.md`), and the frozen v1
+  planning docs (`piCoreDSP_Dual_Backend_Roadmap.md`, `ROADMAP_CHECKLIST.md`) are all removed from `main`. This
+  is a deliberate, one-way cutover: `main` no longer builds an installable piCoreCDSP product until v2
+  implementation (Gates 2–12) reaches equivalent functionality. `README.md` was rewritten to target v2
+  exclusively and point at the `v1-final` tag / `v1-archive` branch for the archived implementation.
+
+- [x] `.github/copilot-instructions.md` updated to reference only `piCoreCDSP_v2_Roadmap.md` and this checklist
+      (done as part of the planning change that introduced this file; updated again to reflect that the v1 docs
+      are now removed from `main`, not merely frozen in place).
+- [x] `piCoreDSP_Dual_Backend_Roadmap.md` and `ROADMAP_CHECKLIST.md` marked superseded, then removed from `main`
+      entirely once the v1-tree removal above executed (both remain reachable via `v1-final`/`v1-archive`).
+- [x] No new v2 code is added to `src/` until the reset decision above is executed.
+
+  The reset decision (Option A) is recorded and now fully executed (tag + branch + v1 removal). `src/` does not
+  currently exist on `main`; the first v2 code added there must follow Gate 2 onward.
+
+- [x] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
       reference.
+
+  `main` now contains only the v2 roadmap/checklist/process docs and this README; the entire v1 tree, CI, and
+  planning docs are gone from the working copy and reachable solely via the `v1-final` tag / `v1-archive` branch.
 
 ---
 
 ## Gate 1 — Strategic & Process Architecture Decisions Recorded
 
-- [ ] Production stack pin policy defined: CamillaDSP 5 if hardware-validated in time, otherwise CamillaDSP 4.2 (roadmap §1).
-- [ ] No permanent multi-version compatibility policy documented and agreed.
-- [ ] "Workaround needs a removal criterion" rule adopted as a contribution requirement (e.g. PR template / lint).
-- [ ] Fixed process architecture confirmed: CamillaDSP stays a separate process; no `camillalib` embedding (roadmap §2, §25).
-- [ ] Crash-isolation requirement recorded: CamillaDSP crash must not take down piCoreCDSP and vice versa.
-- [ ] Long-term end goal (installer + ALSA setup + configs + packaging only) recorded as the target shape (roadmap §3).
-- [ ] ✅ **Gate 1 passed**: architecture decisions are written down and agreed before any reconciler code is written.
+- [x] Production stack pin policy defined: CamillaDSP 5 if hardware-validated in time, otherwise CamillaDSP 4.2 (roadmap §1).
+
+  Recorded in roadmap §1 ("Guiding rule: design for CamillaDSP 5 semantics, ship only against a pinned and
+  hardware-validated release stack") and confirmed as agreed policy; final pin selection itself happens at
+  Gate 12 once hardware validation results are known.
+
+- [x] No permanent multi-version compatibility policy documented and agreed.
+
+  Recorded in roadmap §1: exactly one CamillaDSP/CamillaGUI combination is pinned before the first v2 release;
+  development adapters for superseded versions are deleted after an upgrade, never kept running in parallel.
+
+- [x] "Workaround needs a removal criterion" rule adopted as a contribution requirement (e.g. PR template / lint).
+
+  Implemented as `.github/PULL_REQUEST_TEMPLATE.md`, which requires every PR introducing a workaround/compatibility
+  bridge to state its removal criterion (and, once `upstream/capabilities.yml` exists per Gate 14, its entry
+  there), consistent with roadmap §16–§22 and §61.
+
+- [x] Fixed process architecture confirmed: CamillaDSP stays a separate process; no `camillalib` embedding (roadmap §2, §25).
+
+  Recorded in roadmap §2 and mirrored in `.github/copilot-instructions.md`'s Non-Negotiable Architecture Rules.
+
+- [x] Crash-isolation requirement recorded: CamillaDSP crash must not take down piCoreCDSP and vice versa.
+
+  Recorded in roadmap §2 ("A CamillaDSP crash must not automatically take down piCoreCDSP" / "A piCoreCDSP crash
+  must not take down CamillaDSP") and in the Gate 7 error-model items; enforcement lands in code at Gate 7.
+
+- [x] Long-term end goal (installer + ALSA setup + configs + packaging only) recorded as the target shape (roadmap §3).
+
+  Recorded in roadmap §3 and §52 (Long-Term Deletion Stages) as the explicit end state piCoreCDSP shrinks toward.
+
+- [x] ✅ **Gate 1 passed**: architecture decisions are written down and agreed before any reconciler code is written.
+
+  All six items above are documented in the roadmap and/or enforced via `.github/PULL_REQUEST_TEMPLATE.md` and
+  `.github/copilot-instructions.md`. No reconciler code exists yet (see Gate 0 status) — consistent with this gate
+  being satisfied purely by decisions-on-record, ahead of any implementation.
 
 ---
 
@@ -258,13 +326,40 @@ item off because it is merely planned.
 
 ## Gate 13 — Hard v1 → v2 Cleanup
 
-- [ ] `v1-final` tag exists (from Gate 0) and, if desired, an archive branch.
-- [ ] ioplug, C code, IPC, stdin capture, ring buffer, audio worker threads, backend abstraction, backend switcher,
+> **Note on sequencing:** this gate's file-removal criteria were executed early, as part of Gate 0's Option A
+> cutover, at the repository owner's explicit confirmation — rather than being deferred until v2 reached feature
+> parity through Gates 2–12 as the roadmap's gate ordering originally implied. As of this change, `main` contains
+> **no v2 implementation code at all** (Gates 2–12 have not started) and also no v1 implementation — only the v2
+> planning/roadmap docs and this README. This gate is "passed" in the narrow sense that no v1 remnants exist on
+> `main`; it does **not** mean v2 has reached functional or hardware parity with the archived v1 product.
+
+- [x] `v1-final` tag exists (from Gate 0) and, if desired, an archive branch.
+
+  Done — `v1-final` (annotated) and `v1-archive` both exist on `origin`, pointing at `72b556d`.
+- [x] ioplug, C code, IPC, stdin capture, ring buffer, audio worker threads, backend abstraction, backend switcher,
       `adaptation.rs`, RuntimeConfig, runtime YAML, reinstall logic, ioplug benchmarks, ioplug CI deleted from `main`.
-- [ ] Obsolete v1 upstream-monitoring code/docs deleted from `main`.
-- [ ] README targets piCoreCDSP v2 exclusively.
-- [ ] No `legacy/`, `deprecated/`, `old_controller/`, or `experimental_ioplug/` directories exist on `main`.
-- [ ] ✅ **Gate 13 passed**: `main` contains only the v2 architecture; v1 is reachable solely via git history/tags.
+
+  Done as part of the Gate 0 v1-tree removal — `picoredsp-ioplug/`, all of `src/` (including `backend.rs`,
+  `backend/aloop.rs`, `backend/ioplug.rs`, `core/adaptation.rs`), `benches/`, and `.github/workflows/build.yml`
+  are removed from `main`.
+- [x] Obsolete v1 upstream-monitoring code/docs deleted from `main`.
+
+  Done — `.github/workflows/upstream-tracking.yml`, `scripts/check_upstream_tracking.py`,
+  `scripts/test_check_upstream_tracking.py`, `docs/upstream-tracking.yml`, `docs/ALSA_LIB_TRACKING.md`,
+  `docs/CAMILLADSP_TRACKING.md`, `docs/CAMILLAGUI_TRACKING.md`, and `docs/CAMILLADSP_CONTROLLER_TRACKING.md` are
+  removed from `main`. A fresh v2 upstream-monitoring infrastructure is still to be built at Gate 14
+  (`upstream/manifest.yml`, `upstream/capabilities.yml`, the `upstream-*.yml` workflows below) — this item only
+  covers deletion of the *v1* tracking setup.
+- [x] README targets piCoreCDSP v2 exclusively.
+
+  Done — `README.md` rewritten to describe only the v2 status/roadmap and point to the `v1-final` tag /
+  `v1-archive` branch for the archived implementation.
+- [x] No `legacy/`, `deprecated/`, `old_controller/`, or `experimental_ioplug/` directories exist on `main`.
+- [x] ✅ **Gate 13 passed**: `main` contains only the v2 architecture; v1 is reachable solely via git history/tags.
+
+  Passed in the file-hygiene sense described in the sequencing note above — there is currently no v2
+  *architecture* (code) on `main` either, only its planning documents. Gates 2–12 remain the actual v2
+  implementation and hardware-validation work.
 
 ---
 
