@@ -59,7 +59,7 @@ def gh_request(path: str, token: str) -> Any:
     req = urllib.request.Request(
         url,
         headers={
-            "Authorization": f"******",
+            "Authorization": "Bearer " + token,
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
