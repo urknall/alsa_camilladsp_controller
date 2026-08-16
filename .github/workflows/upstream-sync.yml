@@ -1,0 +1,94 @@
+# piCoreCDSP v2 — Upstream Sync Workflow (roadmap §62, Gate 14)
+#
+# Reads upstream/manifest.yml, fetches sparse snapshots of relevant upstream
+# files, updates upstream/status.json, classifies changes by capability, and
+# opens an automatic PR (never pushes directly to main).
+#
+# The PR body lists: changed sources, touched capabilities, potentially affected
+# local code, and removal candidate signals.
+#
+# Triggers: daily at 03:00 UTC + manual workflow_dispatch.
+#
+# IMPORTANT (roadmap §69): this workflow is READ-ONLY with respect to
+# piCoreCDSP source code.  It writes only to the upstream/ subdirectory.
+# It never modifies Rust source, Cargo.toml, or any production file.
+
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC daily (offset from canary's 04:00)
+  workflow_dispatch:
+    inputs:
+      source_id:
+        description: "Sync only this source ID (blank = all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write      # needed to push the sync branch
+  pull-requests: write # needed to open the PR
+
+jobs:
+  sync:
+    name: Sync upstream snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # full history so we can push a new branch
+
+      - name: Install Python dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Run upstream sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/upstream_sync.py \
+            --manifest upstream/manifest.yml \
+            --status   upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --output-dir . \
+            --pr-body-file /tmp/pr-body.md
+
+      - name: Regenerate upstream/status.md dashboard
+        run: |
+          python3 scripts/upstream_dashboard.py \
+            --status       upstream/status.json \
+            --capabilities upstream/capabilities.yml \
+            --output       upstream/status.md
+
+      - name: Check for changes
+        id: diff
+        run: |
+          git diff --quiet upstream/ && echo "changed=false" >> "$GITHUB_OUTPUT" \
+            || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch and open PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE="$(date -u +%Y%m%d-%H%M)"
+          BRANCH="chore/upstream-sync-${DATE}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add upstream/
+          git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
+          git push origin "$BRANCH"
+
+          PR_TITLE="chore(upstream): sync upstream snapshots ${DATE}"
+          PR_BODY="$(cat /tmp/pr-body.md)"
+          gh pr create \
+            --title  "$PR_TITLE" \
+            --body   "$PR_BODY" \
+            --base   main \
+            --head   "$BRANCH" \
+            --label  "upstream"
+
+      - name: No changes — skip PR
+        if: steps.diff.outputs.changed == 'false'
+        run: echo "No upstream changes detected — no PR needed."

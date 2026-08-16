@@ -1,0 +1,124 @@
+# piCoreCDSP v2 — Upstream Branch Watch (roadmap §65, Gate 14)
+#
+# Watches for newly appearing branches on upstream repositories, especially
+# CamillaDSP 4.2/5 ecosystem branches (next4.2.0, next5, v5*, 5.*).
+#
+# A new branch on pycamilladsp or camillagui-backend matching next5/v5/5.* is
+# a strong CamillaDSP 5 release-readiness signal.  The workflow opens an issue
+# or writes to the step summary.
+#
+# Schedule: daily at 04:15 UTC (offset to avoid rate-limit collisions).
+# Never auto-merges, never upgrades the production pin.
+
+name: Upstream Branch Watch
+
+on:
+  schedule:
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch-branches:
+    name: Branch watch
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Watch CamillaDSP branches [critical]
+        id: watch-camilla
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaDSP Branches [critical]" >> "$GITHUB_STEP_SUMMARY"
+          BRANCHES=$(gh api repos/HEnquist/camilladsp/branches \
+            --jq '[.[] | select(.name | test("next|v5|5\\."))] | .[].name' \
+            2>/dev/null || true)
+          if [ -z "$BRANCHES" ]; then
+            echo "- _No next*/v5*/5.* branches found._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Canary branches present:**" >> "$GITHUB_STEP_SUMMARY"
+            echo "$BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "CAMILLA_BRANCHES<<EOF" >> "$GITHUB_ENV"
+          echo "$BRANCHES" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+      - name: Watch CamillaGUI backend branches [high]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## CamillaGUI Backend Branches [high]" >> "$GITHUB_STEP_SUMMARY"
+          BRANCHES=$(gh api repos/HEnquist/camillagui-backend/branches \
+            --jq '[.[] | select(.name | test("next|v5|5\\."))] | .[].name' \
+            2>/dev/null || true)
+          if [ -z "$BRANCHES" ]; then
+            echo "- _No next*/v5*/5.* branches found._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Canary branches present:**" >> "$GITHUB_STEP_SUMMARY"
+            echo "$BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Watch pyCamillaDSP branches [critical — v5 signal]
+        id: watch-pycamilla
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## pyCamillaDSP Branches [critical — v5 ecosystem signal]" \
+            >> "$GITHUB_STEP_SUMMARY"
+          BRANCHES=$(gh api repos/HEnquist/pycamilladsp/branches \
+            --jq '[.[] | select(.name | test("next|v5|5\\."))] | .[].name' \
+            2>/dev/null || true)
+          if [ -z "$BRANCHES" ]; then
+            echo "- _No next*/v5*/5.* branches found._" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**⚠️ CamillaDSP 5 ecosystem signal: pyCamillaDSP has canary branches!**" \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "$BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "PYCAMILLA_BRANCHES<<EOF" >> "$GITHUB_ENV"
+          echo "$BRANCHES" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+      - name: Watch piCorePlayer kernel/releases branches [critical]
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## piCorePlayer Kernel Branches [critical]" >> "$GITHUB_STEP_SUMMARY"
+          PCP_BRANCHES=$(gh api repos/piCorePlayer/linux/branches \
+            --jq '.[].name' 2>/dev/null | head -10 || true)
+          if [ -n "$PCP_BRANCHES" ]; then
+            echo "$PCP_BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- _Unable to list branches (private or unavailable)._" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Open an issue if a new pycamilladsp v5 branch appears (strong signal).
+      - name: Open CamillaDSP 5 ecosystem signal issue (if applicable)
+        if: env.PYCAMILLA_BRANCHES != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh issue list \
+            --label "upstream:camilladsp" \
+            --state open \
+            --search "CamillaDSP 5 ecosystem signal" \
+            --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Issue already open (#${EXISTING}) — skipping."
+          else
+            gh issue create \
+              --title  "Upstream: CamillaDSP 5 ecosystem signal — pyCamillaDSP has canary branches" \
+              --body   "$(printf "## CamillaDSP 5 Ecosystem Signal\n\npyCamillaDSP now has canary branches matching next*/v5*/5.*:\n\n\`\`\`\n${PYCAMILLA_BRANCHES}\n\`\`\`\n\nThis is a strong indicator that CamillaDSP 5 release preparation is underway.\n\n### Recommended Actions\n- [ ] Run the upstream-capability-canary workflow against the new branches.\n- [ ] Check camilladsp \`next5\` branch for protocol/API changes.\n- [ ] Review the Upstream Capability Matrix (roadmap §38) for affected capabilities.\n- [ ] Assess production eligibility for Gate 12.\n\n---\n_Opened automatically by upstream-branch-watch.yml — roadmap §65._")" \
+              --label  "upstream,upstream:camilladsp,capability" \
+              || true
+          fi
