@@ -53,17 +53,32 @@ class UpstreamSyncWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["permissions"]["issues"], "write")
 
         steps = workflow["jobs"]["sync"]["steps"]
-        open_pr_step = next(step for step in steps if step.get("id") == "open_pr")
+        open_pr_step = next(
+            (step for step in steps if step.get("id") == "open_pr"),
+            None,
+        )
         fallback_step = next(
-            step
-            for step in steps
-            if step.get("name") == "Fallback when PR creation is blocked"
+            (
+                step
+                for step in steps
+                if step.get("name") == "Fallback when PR creation is blocked"
+            ),
+            None,
+        )
+        self.assertIsNotNone(open_pr_step, "Expected a workflow step with id='open_pr'")
+        self.assertIsNotNone(
+            fallback_step,
+            "Expected a workflow step named 'Fallback when PR creation is blocked'",
         )
 
         self.assertIn(
             "GitHub Actions is not permitted to create or approve pull requests",
             open_pr_step["run"],
         )
+        self.assertEqual(open_pr_step["env"]["BRANCH"], "${{ steps.push_branch.outputs.branch }}")
+        self.assertEqual(open_pr_step["env"]["PR_TITLE"], "${{ steps.push_branch.outputs.pr_title }}")
+        self.assertEqual(fallback_step["env"]["REPO"], "${{ github.repository }}")
+        self.assertIn("--body-file /tmp/upstream-sync-issue-body.md", fallback_step["run"])
         self.assertEqual(
             fallback_step["if"],
             "steps.diff.outputs.changed == 'true' && "
