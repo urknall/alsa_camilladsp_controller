@@ -1,0 +1,96 @@
+# piCoreCDSP v2 — Release-gate CI
+#
+# Runs against the pinned production stack only (roadmap §41, Gate 10).
+# This workflow is the release gate: it must stay green before any merge to main.
+# It covers: fmt, clippy, unit tests, integration tests, ARM cross-build, and the
+# full Gate 8 test matrices (source, producer, GUI, failure-injection).
+#
+# The upstream canary CI is a separate, non-blocking workflow (canary.yml).
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Formatting ─────────────────────────────────────────────────────────────
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+  # ── Linting ────────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --all-targets
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ── Unit & integration tests ───────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --all-features -- --include-ignored
+
+  # ── ARM cross-build (piCorePlayer target) ─────────────────────────────────
+  # Cross-compiles for aarch64-unknown-linux-musl, the static target used on
+  # Raspberry Pi 3/4/5 running piCorePlayer (TinyCore, musl libc).
+  build-arm:
+    name: ARM cross-build (aarch64-musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install musl cross-compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools gcc-aarch64-linux-gnu
+      - name: Configure cross-compilation linker
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+      - name: cargo build --release (aarch64-musl)
+        run: cargo build --release --target aarch64-unknown-linux-musl
+
+  # ── Installer script linting ───────────────────────────────────────────────
+  installer-lint:
+    name: Installer shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y -qq shellcheck
+      - name: shellcheck install_picorecdsp.sh
+        run: shellcheck -S warning install_picorecdsp.sh
+      - name: shellcheck probes/probe_camilla_capabilities.sh
+        run: shellcheck -S warning probes/probe_camilla_capabilities.sh

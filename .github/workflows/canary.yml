@@ -1,0 +1,157 @@
+# piCoreCDSP v2 — Upstream Canary CI
+#
+# Non-blocking, scheduled canary that builds CamillaDSP at tracked upstream branches,
+# runs the black-box capability probes (roadmap §41–§42), and reports any capability
+# status changes against upstream/capabilities.yml.
+#
+# This workflow NEVER gates or auto-updates the release build.  A failure here means
+# "upstream changed something worth investigating", not "the release is broken".
+# continue-on-error: true is set at every job level for that reason.
+#
+# Triggered: daily at 04:00 UTC (off-peak) and manually via workflow_dispatch.
+
+name: Upstream Canary
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "CamillaDSP branch to probe (leave blank to probe all)"
+        required: false
+        default: ""
+
+jobs:
+  # ── CamillaDSP capability probes ──────────────────────────────────────────
+  probe-camilladsp:
+    name: "Probe CamillaDSP @ ${{ matrix.branch }}"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+          - master      # current stable
+          - next4.2.0   # upcoming 4.2 series
+          - next5       # CamillaDSP 5 canary
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clone CamillaDSP at the target branch.  The branch may not exist yet
+      # on an older upstream — we tolerate that and skip the probe gracefully.
+      - name: Checkout CamillaDSP ${{ matrix.branch }}
+        id: clone-camilla
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: HEnquist/camilladsp
+          ref: ${{ matrix.branch }}
+          path: /tmp/camilladsp-src
+
+      - name: Install ALSA headers + Python deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev python3-pip
+          pip install --quiet websockets pyyaml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "/tmp/camilladsp-src -> target"
+
+      # Build with websocket support.  We don't need functional audio hardware;
+      # the WebSocket server starts regardless of whether audio playback succeeds.
+      - name: Build CamillaDSP ${{ matrix.branch }}
+        id: build-camilla
+        continue-on-error: true
+        working-directory: /tmp/camilladsp-src
+        run: cargo build --release 2>&1 | tail -5
+
+      # Run the capability probe script.  It starts CamillaDSP, exercises the
+      # WebSocket API, and writes a JSON result file.  Audio errors are expected
+      # (no real DAC in CI) but the WebSocket API remains usable.
+      - name: Run capability probes
+        id: run-probes
+        continue-on-error: true
+        env:
+          CAMILLA_BINARY: /tmp/camilladsp-src/target/release/camilladsp
+          CAMILLA_BRANCH: ${{ matrix.branch }}
+          CAPABILITIES_FILE: upstream/capabilities.yml
+          RESULTS_FILE: /tmp/probe-results-${{ matrix.branch }}.json
+        run: |
+          if [ ! -f "$CAMILLA_BINARY" ]; then
+            echo "Binary not built — skipping probes for ${{ matrix.branch }}" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 probes/probe_camilla_capabilities.py \
+            --binary "$CAMILLA_BINARY" \
+            --branch "$CAMILLA_BRANCH" \
+            --capabilities "$CAPABILITIES_FILE" \
+            --output "$RESULTS_FILE"
+
+      # Emit a human-readable summary to the Actions run page.
+      - name: Summarise probe results
+        continue-on-error: true
+        run: |
+          RESULTS="/tmp/probe-results-${{ matrix.branch }}.json"
+          echo "## Capability probe: CamillaDSP ${{ matrix.branch }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RESULTS" ]; then
+            python3 probes/report_probe_results.py "$RESULTS" \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "_Probe did not produce results (build or startup failure)._" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Upload the raw JSON so it can be diffed over time.
+      - name: Upload probe results
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: probe-results-${{ matrix.branch }}
+          path: /tmp/probe-results-${{ matrix.branch }}.json
+          retention-days: 90
+
+  # ── CamillaGUI backend branch watch ───────────────────────────────────────
+  # Watch for new branches on camillagui-backend that may affect the Apply/Save
+  # semantics piCoreCDSP relies on.  This job only reports; it never merges.
+  watch-gui-branches:
+    name: CamillaGUI branch watch
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: List open camillagui-backend branches
+        run: |
+          echo "## CamillaGUI backend open branches" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camillagui-backend/branches \
+            --jq '.[].name' \
+            | grep -E 'next|v5|5\.' \
+            | sed 's/^/- /' \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          echo "## camillagui-backend open PRs" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/camillagui-backend/pulls \
+            --jq '.[] | "- #\(.number) \(.title)"' \
+            >> "$GITHUB_STEP_SUMMARY" || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # ── pycamilladsp watch ────────────────────────────────────────────────────
+  # New WebSocket features surface in pycamilladsp first.
+  watch-pycamilladsp:
+    name: pycamilladsp release watch
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check latest pycamilladsp release
+        run: |
+          echo "## Latest pycamilladsp release" >> "$GITHUB_STEP_SUMMARY"
+          gh api repos/HEnquist/pycamilladsp/releases/latest \
+            --jq '"- \(.tag_name): \(.name) (\(.published_at[:10]))"' \
+            >> "$GITHUB_STEP_SUMMARY" || true
+        env:
+          GH_TOKEN: ${{ github.token }}
