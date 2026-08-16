@@ -1,6 +1,6 @@
 # piCoreCDSP v2 — Upstream Capability Canary (roadmap §63, Gate 14)
 #
-# Runs the black-box CamillaDSP capability probes (probes/) nightly and after
+# Runs the black-box CamillaDSP capability probes (probes/) weekly and after
 # upstream-sync PRs.  Feeds results into the removal-check workflow.
 #
 # This workflow is NON-BLOCKING — it never gates a release merge.
@@ -15,12 +15,14 @@
 #
 # Hardware-dependent probes (real pCP + DAC) are NOT included here — those run
 # at Gate 12 hardware validation and are not simulated by GitHub-hosted CI.
+#
+# Schedule: weekly (Mondays 04:00 UTC) + manual workflow_dispatch + on upstream/** PRs.
 
 name: Upstream Capability Canary
 
 on:
   schedule:
-    - cron: "0 4 * * *"   # nightly at 04:00 UTC
+    - cron: "0 4 * * 1"   # weekly at 04:00 UTC every Monday
   workflow_dispatch:
   pull_request:
     branches: ["main"]
@@ -111,89 +113,7 @@ jobs:
           path: /tmp/probe-results-${{ matrix.branch }}.json
           retention-days: 90
 
-  # Run the removal check after all probes finish.
-  removal-check:
-    name: Check for FAIL→PASS capability flips
-    needs: probe-camilladsp
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: write
-      issues: write
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Download all probe results
-        uses: actions/download-artifact@v7
-        continue-on-error: true
-        with:
-          pattern: probe-results-*
-          path: /tmp/probe-results
-          merge-multiple: true
-
-      - name: Install Python deps
-        run: pip install --quiet pyyaml
-
-      - name: Run removal candidate check
-        id: removal
-        continue-on-error: true
-        run: |
-          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
-          python3 scripts/upstream_removal_check.py \
-            --status       upstream/status.json \
-            --capabilities upstream/capabilities.yml \
-            --probes       $PROBE_FILES \
-            --output       /tmp/removal-candidates.json
-          echo "exit=$?" >> "$GITHUB_OUTPUT"
-
-      - name: Update upstream/status.json with probe results
-        continue-on-error: true
-        run: |
-          # The removal check script updates status.json in-place with current results.
-          if [ -f upstream/status.json ]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add upstream/status.json
-            git diff --cached --quiet || git commit -m "chore: update probe results in status.json [skip ci]"
-            git push origin HEAD || true
-          fi
-
-      - name: Open removal-candidate issues
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ ! -f /tmp/removal-candidates.json ]; then exit 0; fi
-          COUNT=$(python3 -c "import json,sys; d=json.load(open('/tmp/removal-candidates.json')); print(len(d))")
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No new removal candidates."
-            exit 0
-          fi
-          python3 - <<'PYEOF'
-          import json, subprocess, sys
-          candidates = json.load(open("/tmp/removal-candidates.json"))
-          for c in candidates:
-              result = subprocess.run(
-                  ["gh", "issue", "create",
-                   "--title",  c["issue_title"],
-                   "--body",   c["issue_body"],
-                   "--label",  ",".join(c["issue_labels"])],
-                  capture_output=True, text=True
-              )
-              if result.returncode == 0:
-                  print(f"Opened: {result.stdout.strip()}")
-              else:
-                  print(f"Failed: {result.stderr.strip()}", file=sys.stderr)
-          PYEOF
-
-      - name: Regenerate dashboard
-        continue-on-error: true
-        run: |
-          PROBE_FILES=$(find /tmp/probe-results -name "*.json" 2>/dev/null | tr '\n' ' ')
-          python3 scripts/upstream_dashboard.py \
-            --status       upstream/status.json \
-            --capabilities upstream/capabilities.yml \
-            --probes       $PROBE_FILES \
-            --output       upstream/status.md
-          echo "## Upstream Status Dashboard" >> "$GITHUB_STEP_SUMMARY"
-          cat upstream/status.md >> "$GITHUB_STEP_SUMMARY" || true
+  # Removal check and dashboard regeneration run in the dedicated
+  # upstream-removal-check.yml workflow, which is triggered via workflow_run
+  # once this canary completes.  Keeping them separate avoids duplicating the
+  # logic here.

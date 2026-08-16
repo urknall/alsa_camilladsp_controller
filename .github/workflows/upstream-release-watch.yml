@@ -1,12 +1,14 @@
 # piCoreCDSP v2 — Upstream Release Watch (roadmap §64, Gate 14)
 #
-# Daily watch for new releases of every upstream project piCoreCDSP depends on.
+# Weekly watch for new releases of every upstream project piCoreCDSP depends on.
 # Reports new releases in the Actions step summary.  NEVER auto-upgrades.
 #
 # Monitoring levels (roadmap §67):
 #   critical — CamillaDSP, pyCamillaDSP, piCorePlayer
 #   high     — CamillaGUI backend
 #   medium   — CamillaGUI frontend
+#
+# Schedule: weekly (Mondays 03:30 UTC, 30 min after upstream-sync).
 #
 # The upgrade path:
 #   new release discovered → canary → hardware validation (Gate 12) → deliberate pin
@@ -15,7 +17,7 @@ name: Upstream Release Watch
 
 on:
   schedule:
-    - cron: "30 3 * * *"   # 03:30 UTC daily
+    - cron: "30 3 * * 1"   # 03:30 UTC every Monday (weekly)
   workflow_dispatch:
 
 permissions:
