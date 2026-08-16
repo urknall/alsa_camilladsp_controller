@@ -111,13 +111,13 @@ item off because it is merely planned.
 
 ## Gate 2 — Ownership Model & Contracts
 
-- [ ] Ownership model implemented as documented types/comments: user/GUI-owned fields, ALSA-owned fields,
-      CamillaDSP-owned fields, Rust-temporary-owned fields (roadmap §4).
-- [ ] `SourceState` enum defined (`Inactive` / `Active { sample_rate }`) with **no** producer-specific variants (roadmap §5).
-- [ ] `pcm.picorecdsp` ALSA `plug` definition implemented: `format S32_LE`, `channels 2`, `rate unchanged` (roadmap §6).
-- [ ] CamillaDSP transport contract validation implemented: read + validate only, never repair/rewrite (roadmap §7).
-- [ ] Managed-mode-suspended behavior implemented for incompatible transport configs.
-- [ ] ✅ **Gate 2 passed**: contracts are enforced by types/validation, not by convention alone.
+- [x] Ownership model implemented as documented types/comments: user/GUI-owned fields, ALSA-owned fields,
+      CamillaDSP-owned fields, Rust-temporary-owned fields (roadmap §4). See `src/ownership.rs`.
+- [x] `SourceState` enum defined (`Inactive` / `Active { sample_rate }`) with **no** producer-specific variants (roadmap §5). See `src/source/mod.rs`.
+- [x] `pcm.picorecdsp` ALSA `plug` definition implemented: `format S32_LE`, `channels 2`, `rate unchanged` (roadmap §6). See `src/source/alsa_loopback.rs` (contract + parser/validator; installing it on a real target is Gate 11's job).
+- [x] CamillaDSP transport contract validation implemented: read + validate only, never repair/rewrite (roadmap §7). See `src/camilla/mod.rs`.
+- [x] Managed-mode-suspended behavior implemented for incompatible transport configs. See `ManagedMode` in `src/camilla/mod.rs`.
+- [x] ✅ **Gate 2 passed**: contracts are enforced by types/validation, not by convention alone (17 unit tests covering compliant/incompatible cases in `cargo test`).
 
 ---
 
