@@ -371,10 +371,7 @@ def main() -> None:
 
     changed_count = sum(1 for r in results if not r.get("skipped") and r.get("files_changed", 0) > 0)
     print(f"\nSync complete: {changed_count} source(s) changed.")
-    if changed_count > 0:
-        sys.exit(0)
-    else:
-        sys.exit(0)
+    sys.exit(0 if changed_count > 0 else 1)
 
 
 if __name__ == "__main__":

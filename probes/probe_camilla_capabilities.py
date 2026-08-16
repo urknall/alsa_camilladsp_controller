@@ -276,7 +276,7 @@ async def probe_set_config_value(port: int) -> dict[str, Any]:
     """
     Probe: does SetConfigValue exist and accept a rate field update?
 
-    Maps to: upstream/capabilities.yml key persistent_source_rate_override
+    Maps to: upstream/capabilities.yml key set_config_value
     """
     try:
         async with ws_connect(f"ws://127.0.0.1:{port}") as ws:
