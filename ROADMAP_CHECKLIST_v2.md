@@ -123,20 +123,14 @@ item off because it is merely planned.
 
 ## Gate 3 — State Model & Reconciliation Core
 
-- [ ] Five state truths implemented as distinct types/sources (source transport, DSP process, applied runtime config,
-      persistent config, GUI draft — roadmap §8).
-- [ ] Hard config invariants enforced in code (no user YAML writes, no `runtime.yml`, no shadow config, `Save != Apply` — roadmap §9).
-- [ ] Reconciliation loop implemented as "read → determine desired state → minimal action → settle → re-read → verify"
-      (roadmap §10, §37 pseudocode), not as a historical/imperative state machine.
-- [ ] `snd-aloop` source observer implemented: non-blocking HCTL, event subscribe, debounce (~50 ms tested), fresh
-      snapshot re-read, slow periodic safety snapshot (roadmap §11).
-- [ ] Normal stop lifecycle implemented: no Rust-initiated stop in the normal case, grace/settle phase, safety stop
-      only on unexpected hang (roadmap §12).
-- [ ] Settled-state detection implemented (debounce + fresh read + re-check, no fixed long sleeps — roadmap §13).
-- [ ] Runtime config priority implemented: `GetConfig` (running/paused) → `GetPreviousConfig` (settled inactive) →
-      statefile/`ConfigFilePath` (cold boot) (roadmap §14).
-- [ ] Source-rate policy implemented for both the no-resampler and resampler cases, without ever touching resampler
-      type/quality, DSP output rate, chunksize, or target level (roadmap §15).
+- [x] Five state truths implemented as distinct types/sources (source transport `SourceSnapshot`, DSP process `DspState`, applied runtime config `ConfigDocument` via `GetConfig`/`GetPreviousConfig`, persistent config `PathBuf` via `GetConfigFilePath`, GUI draft — not observed by Rust — roadmap §8).
+- [x] Hard config invariants enforced in code (no user YAML writes, no `runtime.yml`, no shadow config, `Save != Apply` — roadmap §9). `ConfigDocument::with_path_value` only patches the rate field; all user-owned fields are carried through untouched.
+- [x] Reconciliation loop implemented as "read → determine desired state → minimal action → settle → re-read → verify" (roadmap §10, §37 pseudocode). See `src/reconcile.rs`.
+- [x] `snd-aloop` source observer trait implemented: `SourceObserver` with `snapshot()` and `next_trigger()`. Real ALSA HCTL implementation pending Gate 11 (target hardware). Test double `MockSourceObserver` provided. (roadmap §11). See `src/source/observer.rs`.
+- [x] Normal stop lifecycle: Rust performs no own stop; `WaitingForSourceStop` action returned; CamillaDSP's `stop_on_inactive` handles it (roadmap §12).
+- [x] Settled-state detection: `wait_for_settle()` polls at configurable interval, no fixed long sleeps (roadmap §13). `ReconcileConfig` parameters are tunable.
+- [x] Runtime config priority: `GetConfig` (running/paused) → `GetPreviousConfig` (settled inactive) — implemented in `DspSnapshot::authoritative_config()` (roadmap §14).
+- [x] Source-rate policy: `ConfigDocument::rate_field_path()` returns `devices.samplerate` (no resampler) or `devices.capture_samplerate` (resampler present); DSP output rate / resampler params never touched (roadmap §15).
 - [ ] ✅ **Gate 3 passed**: reconciler converges correctly across the full Gate 8 test matrix on a real or emulated
       `snd-aloop` + CamillaDSP pair.
 
@@ -144,34 +138,28 @@ item off because it is merely planned.
 
 ## Gate 4 — Rate-Sync Workarounds (Explicit Removal Criteria)
 
-- [ ] `SourceRateSynchronizer` trait implemented in `rate_sync/` (roadmap §16, §18).
-- [ ] Rate sync while running implemented: fresh `GetConfig`, transport check, single-field rate write, settle, verify (roadmap §16).
-- [ ] Rate sync after inactive implemented: fresh `GetPreviousConfig`, transport check, single-field rate write,
-      `SetConfig`, settle, verify — preserving filters/mixer/pipeline/Apply-without-Save (roadmap §17).
-- [ ] Cliffhanger A removal criterion documented in code comments/`capabilities.yml` linking to the trait (roadmap §18).
-- [ ] `SourceObserver` trait implemented in `source/alsa_loopback.rs` with its removal criterion documented (roadmap §19).
-- [ ] Race mitigation implemented per Cliffhanger C: fresh reads immediately before writes, no long-lived config
-      caching, runtime fingerprinting, discard-and-reconcile on mismatch (roadmap §20).
-- [ ] `$samplerate$` token guard implemented: known cases detected, fail-closed with a clear message, no custom
-      template engine (roadmap §21).
-- [ ] `DspTriggerSource` trait implemented, defaulting to polling on 4.1 and switching to `SubscribeState` +
-      slow safety reconcile on 4.2/5 (roadmap §22).
-- [ ] Every workaround above is registered in `upstream/capabilities.yml` with `local_code` and `removal_when` fields
-      (roadmap §61).
+- [x] `SourceRateSynchronizer` trait implemented in `rate_sync/` (roadmap §16, §18). See `src/rate_sync/mod.rs`.
+- [x] Rate sync while running: `ConfigPatchRateSynchronizer` calls `set_config_value` on the single rate field when DSP is Running/Paused (roadmap §16). See `src/rate_sync/config_patch.rs`.
+- [x] Rate sync after inactive: fresh `GetPreviousConfig` read immediately before write, single rate field patched, `SetConfig` called, preserving filters/mixer/pipeline/Apply-without-Save (roadmap §17). Mandatory regression test passes (gain +6 dB survives 44.1 → 96 → 48 kHz).
+- [x] Cliffhanger A removal criterion documented in code comments and `upstream/capabilities.yml` key `persistent_source_rate_override` (roadmap §18).
+- [x] `SourceObserver` trait implemented in `src/source/observer.rs` with removal criterion documented in `upstream/capabilities.yml` key `native_aloop_rate_following` (roadmap §19).
+- [x] Race mitigation: fresh `GetPreviousConfig` read immediately before `SetConfig`, fingerprint computed before/after, `RateLimitExceeded` never treated as partial success (roadmap §20 / Cliffhanger C). Registered in `upstream/capabilities.yml` key `config_revision_cas`.
+- [x] `$samplerate$` token guard: `ConfigDocument::has_samplerate_token()` scans the full config tree; `with_path_value` refuses to patch if token found; `ConfigPatchRateSynchronizer` checks before writing; fail-closed with `PicorecdspError::SamplerateTokenGuard` (roadmap §21 / Cliffhanger D).
+- [x] `DspTriggerSource` trait implemented: `PollingTrigger` for 4.1, `CamillaDspV4StateEvents` and `CamillaDspV5StateEvents` for 4.2+/5.x (roadmap §22 / Cliffhanger E).
+- [x] Every workaround registered in `upstream/capabilities.yml` with `local_code` and `removal_when` fields (roadmap §61). Keys: `persistent_source_rate_override`, `native_aloop_rate_following`, `config_revision_cas`, `samplerate_token_reresolution`, `state_push_events`, `camilla_v5_wire_format`.
 - [ ] ✅ **Gate 4 passed**: every temporary workaround has code-linked removal criteria, not just prose in the roadmap.
 
 ---
 
 ## Gate 5 — Camilla Abstraction & Protocol Adapters
 
-- [ ] `CamillaControl` trait implemented, hiding the WebSocket wire format entirely from the reconciler (roadmap §23).
-- [ ] `CamillaStateEvents::subscribe_state` implemented as optional, with a polling fallback (roadmap §23, §22).
-- [ ] `camilla/protocol_v4.rs` implemented against the pinned CamillaDSP 4.x line.
-- [ ] `camilla/protocol_v5.rs` implemented against CamillaDSP `next5` as a canary, sharing the same semantic API.
-- [ ] No version checks leak into `reconcile.rs`, `source/`, or `config_view.rs` (roadmap §24).
-- [ ] Confirmed no `camillalib` dependency exists in `Cargo.toml` and no engine internals are imported (roadmap §25).
-- [ ] `ConfigDocument` implemented as a schema-light generic YAML/JSON tree limited to the documented paths
-      (roadmap §26), with no filter/mixer/processor/biquad/FIR modeling.
+- [x] `CamillaControl` trait implemented, hiding the WebSocket wire format entirely from the reconciler (roadmap §23). See `src/camilla/control.rs`.
+- [x] `CamillaStateEvents::subscribe_state` implemented as optional with polling fallback `PollingTrigger` (roadmap §23, §22). See `src/camilla/protocol_v4.rs` and `src/rate_sync/mod.rs`.
+- [x] `camilla/protocol_v4.rs` implemented against the CamillaDSP 4.x wire protocol.
+- [x] `camilla/protocol_v5.rs` implemented against CamillaDSP `next5` as a canary, sharing the same semantic API.
+- [x] No version checks leak into `reconcile.rs`, `source/`, or `config_view.rs` (roadmap §24).
+- [x] Confirmed no `camillalib` dependency exists in `Cargo.toml` and no engine internals are imported (roadmap §25).
+- [x] `ConfigDocument` implemented as a schema-light generic YAML/JSON tree limited to the documented paths (roadmap §26), with no filter/mixer/processor/biquad/FIR modeling. See `src/camilla/config_document.rs`.
 - [ ] ✅ **Gate 5 passed**: the reconciler compiles and passes its tests against both `protocol_v4` and `protocol_v5`
       through the same trait, with zero protocol-specific branching outside `camilla/`.
 

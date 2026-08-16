@@ -7,6 +7,9 @@
 //! this crate: a new ALSA producer must never require a Rust code change.
 
 pub mod alsa_loopback;
+pub mod observer;
+
+pub use observer::{SourceObserver, SourceSnapshot};
 
 /// The only source abstraction piCoreCDSP knows (roadmap §5). Ownership of this state
 /// belongs to ALSA (roadmap §4.2); Rust only observes and reports it, it never invents

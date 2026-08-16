@@ -1,13 +1,17 @@
-//! CamillaDSP transport contract and managed-mode state (roadmap
-//! `piCoreCDSP_v2_Roadmap.md` §7, §9, §26).
+//! CamillaDSP transport contract, managed-mode state, schema-light config
+//! document, and WebSocket control trait (roadmap §7, §9, §23–§26).
 //!
-//! Rust reads a CamillaDSP config and validates only the small, schema-light set of
-//! paths it needs (roadmap §26): `devices.capture.type`, `devices.capture.device`,
-//! `devices.capture.channels`, `devices.capture.format`, and
-//! `devices.capture.stop_on_inactive`. It never models filters, mixer, pipeline, or
-//! any other part of the config, and it never repairs, rewrites, or writes back the
-//! user's YAML (roadmap §9): on an incompatible config it suspends managed mode with a
-//! clear error and waits for the user to fix it.
+//! Public re-exports keep the reconciler free of module-path noise.
+
+pub mod config_document;
+pub mod control;
+pub mod protocol_v4;
+pub mod protocol_v5;
+
+pub use config_document::ConfigDocument;
+pub use control::{CamillaControl, CamillaStateEvents, DspState, StopReason, Version};
+
+// Transport contract — read/validate only, never repair/rewrite (roadmap §7, §9).
 
 use serde::Deserialize;
 

@@ -2,11 +2,10 @@
 //!
 //! See `piCoreCDSP_v2_Roadmap.md` and `ROADMAP_CHECKLIST_v2.md` at the repository
 //! root for the architecture and gated implementation plan this crate follows.
-//!
-//! This crate currently only carries the Gate 2 scaffolding (ownership model,
-//! `SourceState`, ALSA ingress contract, CamillaDSP transport contract). The
-//! reconciliation loop (`reconcile`, Gate 3) has not been implemented yet.
 
 pub mod camilla;
+pub mod error;
 pub mod ownership;
+pub mod rate_sync;
+pub mod reconcile;
 pub mod source;

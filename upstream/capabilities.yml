@@ -1,0 +1,191 @@
+# upstream/capabilities.yml
+#
+# Upstream capability registry (roadmap §16–§22, §38–§39, §61).
+#
+# Every workaround in piCoreCDSP that exists because CamillaDSP (or ALSA) does
+# not yet provide a capability MUST have a corresponding entry here.  The entry
+# links the workaround back to the production code and documents the exact
+# condition under which it can be deleted.
+#
+# This file is the authoritative source for the workaround inventory.  New
+# workarounds without a matching entry here are a contribution error.
+#
+# Format of each entry:
+#
+#   key:                  Stable identifier for this capability gap.
+#   description:          Human-readable summary of what is missing upstream.
+#   workaround_summary:   What piCoreCDSP does instead.
+#   local_code:           Path(s) to the Rust code that implements the workaround.
+#   removal_when:         The precise condition(s) under which local_code can be
+#                         deleted.  Must reference an upstream project, issue, or
+#                         API name.  "Eventually" is not acceptable.
+#   upstream_tracking:    Known upstream issues/PRs/discussions, if any.
+#   roadmap_section:      The piCoreCDSP roadmap section that describes this.
+#   matrix_row: |         The Upstream Capability Matrix row (roadmap §38).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+capabilities:
+
+  # ── Cliffhanger A ──────────────────────────────────────────────────────────
+  - key: persistent_source_rate_override
+    description: >
+      CamillaDSP has no mechanism for a persistent source-rate override that
+      survives SetConfig, GUI Apply, config switches, reload, and correctly
+      handles the resampler case without token-resolution loss.
+    workaround_summary: >
+      piCoreCDSP reads the runtime config (GetConfig when running, GetPreviousConfig
+      when inactive), patches the single rate field (devices.samplerate or
+      devices.capture_samplerate), and writes it back with SetConfigValue (running)
+      or SetConfig (inactive).  No user-owned field is ever touched.
+    local_code:
+      - src/rate_sync/config_patch.rs   # ConfigPatchRateSynchronizer
+      - src/rate_sync/mod.rs            # SourceRateSynchronizer trait
+    removal_when: >
+      CamillaDSP upstream provides a source-rate override that:
+        1. Can be set while the DSP is in the Inactive state.
+        2. Survives a subsequent SetConfig (GUI Apply does not clear it).
+        3. Survives a config switch (Config A → Config B keeps the override).
+        4. Survives a reload / statefile restart.
+        5. Correctly sets devices.capture_samplerate in the resampler case
+           without touching devices.samplerate (user-owned).
+        6. Honours $samplerate$ token resolution before applying.
+      When all six conditions are met: src/rate_sync/config_patch.rs → DELETE.
+      If CamillaDSP also takes over the full source-rate detection lifecycle
+      (Cliffhanger B), the SourceRateSynchronizer trait and most of reconcile.rs
+      become candidates for deletion as well.
+    upstream_tracking: null
+    roadmap_section: "§16–§18 / Cliffhanger A"
+    matrix_row: |
+      | Persistent source-rate override | no | no | currently no | rate_sync/config_patch |
+
+  # ── Cliffhanger B ──────────────────────────────────────────────────────────
+  - key: native_aloop_rate_following
+    description: >
+      CamillaDSP does not natively detect snd-aloop loopback active/inactive,
+      read the current source sample rate from the loopback, process rate changes
+      autonomously, release capture on inactive, or start at the new rate itself.
+    workaround_summary: >
+      piCoreCDSP observes snd-aloop via ALSA HCTL (non-blocking, event-subscribe,
+      ~50 ms debounce, fresh snapshot after each event).  The SourceObserver trait
+      is the only way Rust is allowed to learn about source state.
+    local_code:
+      - src/source/observer.rs          # SourceObserver trait + SourceSnapshot
+      - src/source/alsa_loopback.rs     # ALSA ingress contract / HCTL impl
+    removal_when: >
+      CamillaDSP upstream reliably:
+        1. Detects snd-aloop loopback as active/inactive.
+        2. Reads the current source sample rate from the loopback device.
+        3. Processes sample rate changes (restarts capture at the new rate).
+        4. Releases capture on inactive (stop_on_inactive equivalent for the
+           loopback case without requiring user config).
+        5. Starts processing at the new rate without external prompting.
+      When all five conditions are met: src/source/alsa_loopback.rs → DELETE,
+      src/source/observer.rs → DELETE.  If CamillaDSP also provides the rate
+      override (Cliffhanger A): rate_sync/ + large parts of reconcile.rs → DELETE.
+      Subsequently the Rust daemon itself may potentially be deleted.
+    upstream_tracking: null
+    roadmap_section: "§19 / Cliffhanger B"
+    matrix_row: |
+      | Native aloop rate following | no | no | currently no | source/alsa_loopback |
+
+  # ── Cliffhanger C ──────────────────────────────────────────────────────────
+  - key: config_revision_cas
+    description: >
+      CamillaDSP has no config generation counter, revision, or compare-and-swap
+      (CAS) semantics.  A concurrent GUI Apply and a Rust SetConfig(PreviousConfig
+      + new_rate) can arrive simultaneously; there is no atomic check that the
+      config Rust is patching is still the authoritative one.
+    workaround_summary: >
+      Race mitigation via fresh reads immediately before writes:
+        - GetConfig / GetPreviousConfig re-read immediately before SetConfigValue
+          or SetConfig (never use a cached copy).
+        - Source rate re-checked immediately before write.
+        - Config fingerprint compared before and after write.
+        - On fingerprint mismatch: discard local work and reconcile from scratch.
+        - RateLimitExceeded / disconnect never treated as partial success.
+    local_code:
+      - src/rate_sync/config_patch.rs   # fresh PreviousConfig read before SetConfig
+      - src/reconcile.rs                # fresh snapshot on every trigger
+    removal_when: >
+      CamillaDSP upstream provides a config generation counter, revision number,
+      optimistic concurrency (ETag / If-Match equivalent), or an atomic
+      source-rate overlay that is independent of the user config.
+      When available: race mitigation in config_patch.rs can be significantly
+      simplified or deleted.
+    upstream_tracking: null
+    roadmap_section: "§20 / Cliffhanger C"
+    matrix_row: |
+      | Config revision / CAS | no | no | currently no | fresh reads + verify |
+
+  # ── Cliffhanger D ──────────────────────────────────────────────────────────
+  - key: samplerate_token_reresolution
+    description: >
+      CamillaDSP materialises $samplerate$ tokens (e.g. fir_$samplerate$.wav →
+      fir_44100.wav) at config-load time.  A subsequent SetConfigValue or SetConfig
+      with a different rate no longer knows the original token, so piCoreCDSP
+      cannot safely patch the rate field in configs that use $samplerate$-dependent
+      resources.
+    workaround_summary: >
+      Fail-closed guard: ConfigDocument::has_samplerate_token() scans the full
+      config tree for the "$samplerate$" pattern.  If found, rate patching is
+      refused with a clear PicorecdspError::SamplerateTokenGuard error message
+      that tells the user to use a fixed DSP rate + resampler or separate per-rate
+      configs as alternatives.  No custom token/template engine is built.
+    local_code:
+      - src/camilla/config_document.rs  # has_samplerate_token(), with_path_value guard
+      - src/rate_sync/config_patch.rs   # checks has_samplerate_token() before patching
+    removal_when: >
+      CamillaDSP upstream provides a real source-rate override that is applied
+      before $samplerate$ token/path resolution, so that the materialized filenames
+      are always consistent with the current source rate.
+      When available: the token guard → DELETE; the user no longer needs separate
+      per-rate configs or a resampler to use $samplerate$-dependent FIR files.
+    upstream_tracking: null
+    roadmap_section: "§21 / Cliffhanger D"
+    matrix_row: |
+      | Source-rate-aware token re-resolution | no (no runtime API) | no | currently no | token guard |
+
+  # ── Cliffhanger E ──────────────────────────────────────────────────────────
+  - key: state_push_events
+    description: >
+      CamillaDSP 4.1 does not support SubscribeState push events; the reconciler
+      must poll for state changes.
+    workaround_summary: >
+      DspTriggerSource trait with a PollingTrigger implementation for 4.1.
+      CamillaDSP 4.2+ and 5.x provide SubscribeState; CamillaDspV4StateEvents and
+      CamillaDspV5StateEvents implement the push path.  The slow safety reconcile
+      runs regardless of the trigger source.
+    local_code:
+      - src/rate_sync/mod.rs            # DspTriggerSource trait + PollingTrigger
+      - src/camilla/protocol_v4.rs      # CamillaDspV4StateEvents (4.2+ only)
+      - src/camilla/protocol_v5.rs      # CamillaDspV5StateEvents
+    removal_when: >
+      The production baseline is pinned to CamillaDSP 4.2+ or 5.x and the
+      SubscribeState path is validated as reliable in production.
+      When available: PollingTrigger → DELETE; DspTriggerSource trait becomes
+      redundant if SubscribeState is always present.
+    upstream_tracking: null
+    roadmap_section: "§22 / Cliffhanger E"
+    matrix_row: |
+      | State push events | no | yes | yes | polling fallback |
+
+  # ── Wire-format canary ────────────────────────────────────────────────────
+  - key: camilla_v5_wire_format
+    description: >
+      CamillaDSP 5.x (next5) has an incompatible WebSocket wire format compared
+      to 4.x.  Both adapters implement the same semantic CamillaControl API but
+      must be maintained in parallel until the production version is pinned.
+    workaround_summary: >
+      camilla/protocol_v4.rs and camilla/protocol_v5.rs both implement CamillaControl.
+      The reconciler is tested against both.  No version checks exist in the
+      reconciler, source/, or config_view (roadmap §24).
+    local_code:
+      - src/camilla/protocol_v4.rs
+    removal_when: >
+      After the final v5 upgrade: protocol_v4.rs → DELETE.
+      Before the v2 production release exactly one production adapter is active.
+    upstream_tracking: null
+    roadmap_section: "§24"
+    matrix_row: |
+      | v5 wire format migration | — | — | in progress | protocol_v4 / protocol_v5 |
