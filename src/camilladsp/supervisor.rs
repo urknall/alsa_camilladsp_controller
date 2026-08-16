@@ -183,7 +183,7 @@ impl StdinSupervisor {
     // ── private ──────────────────────────────────────────────────────────
 
     fn stop_stream_inner(&mut self) {
-        if let Some(proc) = self.active.take() {
+        if let Some(mut proc) = self.active.take() {
             log(
                 LogLevel::Info,
                 self.log_level,
@@ -248,7 +248,14 @@ mod tests {
     /// return `true` until the write-end of the pipe is closed.
     fn blocking_binary(name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let p = std::env::temp_dir().join(format!("picoredsp-sup-block-{name}.sh"));
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p = std::env::temp_dir().join(format!(
+            "picoredsp-sup-block-{name}-{}-{stamp}.sh",
+            std::process::id()
+        ));
         std::fs::write(&p, "#!/bin/sh\nread x\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p

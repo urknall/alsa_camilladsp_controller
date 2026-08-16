@@ -152,12 +152,16 @@ size_t pcdsp_drain_period_null_sink(pcdsp_ringbuffer_t *rb,
         return 0;
 
     if (rate > 0) {
-        /* Sleep for the nominal period duration to pace the null sink. */
-        unsigned long period_ns =
-            1000000000UL * (unsigned long)period_frames / rate;
+        /* Sleep for the nominal period duration to pace the null sink.
+         * Compute in uint64_t: on ARMv7 (a supported cross-build target)
+         * `unsigned long` is 32 bits, and 1000000000UL * period_frames
+         * overflows well within ordinary period sizes, producing a sleep
+         * duration in the wrong order of magnitude. */
+        uint64_t period_ns =
+            1000000000ULL * (uint64_t)period_frames / (uint64_t)rate;
         struct timespec ts = {
-            .tv_sec  = (time_t)(period_ns / 1000000000UL),
-            .tv_nsec = (long)(period_ns % 1000000000UL),
+            .tv_sec  = (time_t)(period_ns / 1000000000ULL),
+            .tv_nsec = (long)(period_ns % 1000000000ULL),
         };
         nanosleep(&ts, NULL);
     }

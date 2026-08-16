@@ -6,7 +6,7 @@ use crate::core::adaptation::adapt_config;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::AppResult;
 use crate::core::logging::{log, LogLevel};
-use crate::core::recovery::{ConfigFingerprint, RetryState};
+use crate::core::recovery::{ConfigFingerprint, RejectionReason, RetryState};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -151,7 +151,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                     self.log_level,
                     format!("Config adaptation failed, latching until file changes: {err}"),
                 );
-                self.retry.latch();
+                self.retry.latch_with_reason(RejectionReason::Config);
                 return Ok(());
             }
         };
@@ -179,7 +179,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                     self.log_level,
                     format!("Config validation error (latching until file changes): {msg}"),
                 );
-                self.retry.latch();
+                self.retry.latch_with_reason(RejectionReason::Config);
                 Ok(())
             }
             Err(WsError::Command(CommandReason::RateLimit, msg)) => {
@@ -236,7 +236,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
             format!("Device started with wave format {}", self.current_wave),
         );
         // Fresh ALSA start: clear retry/pending/idle state and apply current config.
-        self.retry.reset();
+        self.retry.reset_backoff();
         self.pending_since = None;
         self.idle_stop_since = None;
         self.stop_cdsp()?;
@@ -266,7 +266,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                         self.log_level,
                         "Capture format changed, but source is no longer active; waiting for playback",
                     );
-                    self.retry.reset();
+                    self.retry.reset_backoff();
                     self.pending_since = None;
                     return Ok(());
                 }
@@ -276,7 +276,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                 }
                 if effective.sample_rate.unwrap_or(0) > 0 {
                     self.current_wave = effective;
-                    self.retry.reset();
+                    self.retry.reset_backoff();
                     self.stop_cdsp()?;
                     self.start_cdsp()?;
                 } else {
@@ -425,6 +425,22 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
         self.handle_stop_reason(reason, snapshot)
     }
 
+    fn refresh_config_fingerprint(&mut self) {
+        let fp = ConfigFingerprint::sample(&self.adapt_path);
+        if fp != self.config_fp {
+            if self.retry.latch_until_change {
+                log(
+                    LogLevel::Info,
+                    self.log_level,
+                    "Config file changed — clearing error latch",
+                );
+            }
+            self.retry.reset_backoff();
+            self.retry.clear_latch();
+            self.config_fp = fp;
+        }
+    }
+
     /// Perform a one-time bootstrap on controller startup.
     ///
     /// When CamillaDSP starts with `--wait --no_config`, the processing state
@@ -438,7 +454,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
         let state = self.client.get_state()?;
         match state {
             ProcessingState::Inactive => {
-                self.retry.reset();
+                self.retry.reset_backoff();
                 self.pending_since = None;
                 if snapshot.active {
                     self.current_wave = snapshot.wave.with_fallback(&self.fallback_wave);
@@ -510,21 +526,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
         self.bootstrap_initial_config(&initial)?;
         loop {
             // ── Config fingerprint check (issue 10) ──────────────────────
-            let fp = ConfigFingerprint::sample(&self.adapt_path);
-            if fp != self.config_fp {
-                if self.retry.latch_until_change {
-                    log(
-                        LogLevel::Info,
-                        self.log_level,
-                        "Config file changed — clearing error latch",
-                    );
-                }
-                // Any deliberate config change is a good reason to allow an
-                // immediate new start attempt even if we are in a normal backoff
-                // window (e.g. after a hardware error or rate-limit).
-                self.retry.reset();
-                self.config_fp = fp;
-            }
+            self.refresh_config_fingerprint();
 
             // ── ALSA stream event detection ──────────────────────────────
             let stream_event = self.stream_backend.poll_event(CONTROL_LOOP_MS)?;
@@ -539,7 +541,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                         self.stop_cdsp()?;
                         self.idle_stop_since = Some(Instant::now());
                         // Reset retry so the next start attempt is immediate.
-                        self.retry.reset();
+                        self.retry.reset_backoff();
                         self.pending_since = None;
                     }
                     StreamEvent::Changed(_) => {
@@ -551,7 +553,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                         );
                         self.stop_cdsp()?;
                         self.current_wave = current.wave.with_fallback(&self.fallback_wave);
-                        self.retry.reset();
+                        self.retry.reset_backoff();
                         self.pending_since = None;
                         self.start_cdsp()?;
                     }
@@ -580,7 +582,7 @@ impl<B: ControllerBackend, C: CamillaClient> Controller<B, C> {
                 } else {
                     // Confirmed success — reset retry and pending.
                     if self.pending_since.is_some() || self.retry.consecutive > 0 {
-                        self.retry.reset();
+                        self.retry.reset_backoff();
                     }
                     self.pending_since = None;
                 }
@@ -808,7 +810,7 @@ mod tests {
         );
 
         // Retarget symlink to config_b, reset retry.
-        ctrl.retry.reset();
+        ctrl.retry.reset_backoff();
         ctrl.pending_since = None;
         fs::remove_file(&active).unwrap();
         symlink(&config_b, &active).unwrap();
@@ -849,7 +851,7 @@ mod tests {
             "first start should use the initial saved config"
         );
 
-        ctrl.retry.reset();
+        ctrl.retry.reset_backoff();
         ctrl.pending_since = None;
         fs::write(&config, minimal_config("hw:CardB,0")).unwrap();
 
@@ -1050,6 +1052,91 @@ mod tests {
             ctrl.client.sent_configs.len(),
             1,
             "latched — no second SetConfig"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn permanent_config_latch_survives_stopped_started_cycle_with_same_fingerprint() {
+        let dir = test_dir("latch-survives-cycle");
+        let config = dir.join("config.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config, minimal_config("hw:X,0")).unwrap();
+        symlink(&config, &active).unwrap();
+
+        let client = MockClient::new(vec![
+            MockClient::ok(), // Stop during simulated StreamEvent::Stopped
+            MockClient::ok(), // Stop during handle_started
+        ]);
+        let mut ctrl = make_controller(client, MockListener::new(vec![]), active.clone());
+        ctrl.config_fp = ConfigFingerprint::sample(&active);
+        ctrl.retry.latch_with_reason(RejectionReason::Config);
+
+        // Simulate the normal StreamEvent::Stopped transition.
+        ctrl.stop_cdsp().unwrap();
+        ctrl.idle_stop_since = Some(Instant::now());
+        ctrl.retry.reset_backoff();
+        ctrl.pending_since = None;
+        assert!(
+            ctrl.retry.latch_until_change,
+            "normal stop must not clear a permanent config latch"
+        );
+
+        // Simulate playback starting again without any config change.
+        ctrl.handle_started(&MockListener::active_with_rate(44_100))
+            .unwrap();
+
+        assert!(
+            ctrl.retry.latch_until_change,
+            "same-fingerprint restart must remain latched"
+        );
+        assert_eq!(
+            ctrl.client.sent_configs.len(),
+            0,
+            "latched restart must not send SetConfig again"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_change_clears_permanent_config_latch() {
+        let dir = test_dir("latch-clears-on-fingerprint-change");
+        let config_a = dir.join("config-a.yml");
+        let config_b = dir.join("config-b.yml");
+        let active = dir.join("active.yml");
+        fs::write(&config_a, minimal_config("hw:A,0")).unwrap();
+        fs::write(&config_b, minimal_config("hw:B,0")).unwrap();
+        symlink(&config_a, &active).unwrap();
+
+        let mut ctrl = make_controller(
+            MockClient::new(vec![]),
+            MockListener::new(vec![]),
+            active.clone(),
+        );
+        ctrl.config_fp = ConfigFingerprint::sample(&active);
+        ctrl.retry.latch_with_reason(RejectionReason::Config);
+        ctrl.retry
+            .record_attempt_with_reason(RejectionReason::Config);
+
+        ctrl.refresh_config_fingerprint();
+        assert!(
+            ctrl.retry.latch_until_change,
+            "unchanged fingerprint must keep the latch set"
+        );
+
+        fs::remove_file(&active).unwrap();
+        symlink(&config_b, &active).unwrap();
+
+        ctrl.refresh_config_fingerprint();
+        assert!(
+            !ctrl.retry.latch_until_change,
+            "fingerprint change must clear the permanent latch"
+        );
+        assert!(
+            ctrl.retry.should_attempt(),
+            "fingerprint change must also clear backoff"
         );
 
         fs::remove_dir_all(dir).unwrap();
@@ -1670,7 +1757,7 @@ mod tests {
         // Simulate the normal-stop path in run(): stop_cdsp + arm guard.
         ctrl.stop_cdsp().unwrap();
         ctrl.idle_stop_since = Some(Instant::now());
-        ctrl.retry.reset();
+        ctrl.retry.reset_backoff();
         ctrl.pending_since = None;
 
         assert!(

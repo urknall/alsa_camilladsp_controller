@@ -110,6 +110,16 @@ impl PluginMessage {
         }
     }
 
+    pub fn version(&self) -> u8 {
+        match self {
+            Self::Hello { version }
+            | Self::Start { version, .. }
+            | Self::Stop { version }
+            | Self::Ready { version }
+            | Self::Error { version, .. } => *version,
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Hello { version } => vec![MessageType::Hello as u8, *version],
@@ -221,6 +231,10 @@ pub enum ProtocolError {
         requested: u8,
         minimum_supported: u8,
     },
+    VersionMismatch {
+        expected: u8,
+        actual: u8,
+    },
     HandshakeNotComplete,
     Timeout,
     Disconnected,
@@ -275,6 +289,10 @@ impl fmt::Display for ProtocolError {
             } => write!(
                 f,
                 "unsupported protocol version {requested}, minimum supported is {minimum_supported}"
+            ),
+            Self::VersionMismatch { expected, actual } => write!(
+                f,
+                "protocol version mismatch: expected negotiated version {expected}, got {actual}"
             ),
             Self::HandshakeNotComplete => write!(f, "IPC handshake not completed"),
             Self::Timeout => write!(f, "IPC operation timed out"),

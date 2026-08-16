@@ -1192,7 +1192,7 @@ BlueALSA remains a reference upstream.
 Create:
 
 ```text
-docs/BLUEALSA_TRACKING.md
+picoredsp-ioplug/docs/BLUEALSA_TRACKING.md
 ```
 
 or machine-readable:

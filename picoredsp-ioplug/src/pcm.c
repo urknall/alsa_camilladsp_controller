@@ -300,11 +300,17 @@ static void *worker_thread(void *arg)
             if (!is_draining) {
                 /* Normal operation: wait until a full period is buffered.
                  * Sleep for half a period to avoid busy-wait.
-                 * Multiply before dividing to avoid integer truncation. */
-                unsigned long rate     = pcdsp->io.rate ? pcdsp->io.rate : 48000;
-                unsigned long sleep_ns = 500000000UL * (unsigned long)pcdsp->period_size / rate;
-                struct timespec ts = { .tv_sec  = (time_t)(sleep_ns / 1000000000UL),
-                                       .tv_nsec = (long)(sleep_ns % 1000000000UL) };
+                 * Multiply before dividing to avoid integer truncation.
+                 * Use uint64_t/ULL literals throughout: on ARMv7 (a
+                 * supported cross-build target) `unsigned long` is only
+                 * 32 bits, and 500000000UL * period_size overflows for
+                 * ordinary period sizes (e.g. 1024 frames), landing the
+                 * computed sleep in a completely different order of
+                 * magnitude than intended. */
+                uint64_t rate     = pcdsp->io.rate ? pcdsp->io.rate : 48000;
+                uint64_t sleep_ns = 500000000ULL * (uint64_t)pcdsp->period_size / rate;
+                struct timespec ts = { .tv_sec  = (time_t)(sleep_ns / 1000000000ULL),
+                                       .tv_nsec = (long)(sleep_ns % 1000000000ULL) };
                 nanosleep(&ts, NULL);
                 continue;
             }
@@ -373,9 +379,127 @@ done:
  * ioplug callbacks
  * ---------------------------------------------------------------------- */
 
+/*
+ * pcdsp_ensure_transport — (re)build the IPC connection and stdin-pipe
+ * transport to the Rust controller if it is not already in place.
+ *
+ * hw_params() always calls this after negotiating stream parameters, so the
+ * very first run of a stream gets a transport built there. But a completely
+ * normal ALSA reuse path is stop()/drop()/drain() followed by prepare() and
+ * start() *without* an intervening hw_params() call — snd_pcm_hw_params()
+ * only needs to be called again if parameters actually change. pcdsp_stop()
+ * (the plugin's `.stop` callback, used for both an explicit drop() and the
+ * auto-drop after a successful drain()) tears down the local data path
+ * (stops the worker, closes pipe_fd) and notifies the controller, which in
+ * turn drops its side of the connection once it processes STOP. Neither
+ * pcdsp_prepare() nor pcdsp_start() used to rebuild that transport: prepare()
+ * intentionally only resets local ring-buffer/counter state (it must not
+ * perform blocking IPC), and start() went straight to spawning the worker.
+ * With pipe_fd left at -1, the worker thread takes its null-sink fallback
+ * path (see worker_thread() above): frames are silently discarded while the
+ * PCM continues to look healthy to the application (pointer()/poll() report
+ * normal progress). This helper is called from pcdsp_start() so that any run
+ * beginning without a fresh transport gets one before the worker starts.
+ *
+ * Returns 0 if a transport is already in place or a new one was
+ * successfully negotiated; a negative errno otherwise (mirroring
+ * pcdsp_hw_params()'s error mapping for a rejected/unavailable controller).
+ */
+static int pcdsp_ensure_transport(snd_pcm_ioplug_t *io)
+{
+    pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    if (pcdsp->pipe_fd >= 0)
+        return 0; /* Transport already established (e.g. right after hw_params()). */
+
+    /* The peer connection (if any) is stale: the controller drops its side
+     * of the IpcConnection as soon as it processes STOP, so reusing
+     * pcdsp->conn here would fail. Always reconnect from scratch. */
+    pcdsp_ipc_close(&pcdsp->conn);
+
+    int ipc_rc = pcdsp_ipc_connect(
+        &pcdsp->conn,
+        pcdsp->socket_path[0] ? pcdsp->socket_path : NULL);
+    if (ipc_rc < 0) {
+        SNDERR("picoredsp: controller unavailable (%d): %s",
+               -ipc_rc, strerror(-ipc_rc));
+        return ipc_rc;
+    }
+
+    ipc_rc = pcdsp_ipc_send_start(
+        &pcdsp->conn,
+        (uint32_t)io->rate,
+        (uint8_t)io->format,
+        (uint8_t)io->channels);
+    if (ipc_rc < 0) {
+        SNDERR("picoredsp: failed to send START (%d)", -ipc_rc);
+        pcdsp_ipc_close(&pcdsp->conn);
+        return ipc_rc;
+    }
+
+    pcdsp_error_code_t err_code = PCDSP_ERR_OK;
+    /* Gate 8: pass &pcdsp->pipe_fd to receive the pipe write-end via
+     * SCM_RIGHTS.  The controller sends it alongside the READY message. */
+    ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, &pcdsp->pipe_fd, &err_code);
+    if (ipc_rc < 0) {
+        int result = ipc_rc;
+        if (ipc_rc == -EPROTO && err_code != PCDSP_ERR_OK) {
+            SNDERR("picoredsp: controller rejected stream (error code %d)", (int)err_code);
+            switch (err_code) {
+            case PCDSP_ERR_CONFIG:
+                result = -EINVAL;
+                break;
+            case PCDSP_ERR_PLAYBACK_DEVICE:
+                result = -ENODEV;
+                break;
+            case PCDSP_ERR_PROTOCOL:
+                result = -EPROTO;
+                break;
+            case PCDSP_ERR_INTERNAL:
+                result = -EIO;
+                break;
+            case PCDSP_ERR_OK:
+            default:
+                result = -EPROTO;
+                break;
+            }
+        } else {
+            SNDERR("picoredsp: failed waiting for READY (%d): %s",
+                   -ipc_rc, strerror(-ipc_rc));
+        }
+        pcdsp_ipc_close(&pcdsp->conn);
+        return result;
+    }
+
+    /* A blocking pipe write can hang shutdown indefinitely if CamillaDSP
+     * remains alive but stops consuming stdin.  Keep the worker fd
+     * non-blocking; pcm_worker.c polls in bounded intervals and observes the
+     * atomic worker_running flag. */
+    int pipe_flags = fcntl(pcdsp->pipe_fd, F_GETFL, 0);
+    if (pipe_flags < 0 ||
+        fcntl(pcdsp->pipe_fd, F_SETFL, pipe_flags | O_NONBLOCK) < 0) {
+        int e = errno;
+        close(pcdsp->pipe_fd);
+        pcdsp->pipe_fd = -1;
+        pcdsp_ipc_close(&pcdsp->conn);
+        return -e;
+    }
+
+    return 0;
+}
+
 static int pcdsp_start(snd_pcm_ioplug_t *io)
 {
     pcdsp_pcm_t *pcdsp = io_to_pcdsp(io);
+
+    /* Rebuild the controller/pipe transport if a prior stop()/drop()/
+     * drain() tore it down without a subsequent hw_params(). See
+     * pcdsp_ensure_transport()'s comment for why this is required: without
+     * it, the worker below would silently take its null-sink fallback path
+     * instead of reaching CamillaDSP. */
+    int transport_rc = pcdsp_ensure_transport(io);
+    if (transport_rc < 0)
+        return transport_rc;
 
     atomic_store_explicit(&pcdsp->paused, false, memory_order_release);
     pcdsp_timer_start(&pcdsp->timer);
@@ -392,6 +516,7 @@ static int pcdsp_start(snd_pcm_ioplug_t *io)
         int thread_rc = pthread_create(&pcdsp->worker, NULL, worker_thread, pcdsp);
         if (thread_rc != 0) {
             atomic_store_explicit(&pcdsp->worker_running, false, memory_order_release);
+            pcdsp_timer_stop(&pcdsp->timer);
             return -thread_rc;
         }
         pcdsp->worker_joinable = true;
@@ -587,6 +712,11 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
      * hw_params fails if the controller is unavailable or rejects the config.
      *
      * Invariant: no PCM must be transferred before READY is received.
+     *
+     * Always tear down any transport left over from a previous stream (the
+     * new parameters may differ) and rebuild it via pcdsp_ensure_transport(),
+     * which also serves pcdsp_start() when a stop()/drop()/drain() cycle
+     * runs without a subsequent hw_params().
      */
     pcdsp_ipc_close(&pcdsp->conn);
 
@@ -596,75 +726,7 @@ static int pcdsp_hw_params(snd_pcm_ioplug_t *io, snd_pcm_hw_params_t *params)
         pcdsp->pipe_fd = -1;
     }
 
-    int ipc_rc = pcdsp_ipc_connect(
-        &pcdsp->conn,
-        pcdsp->socket_path[0] ? pcdsp->socket_path : NULL);
-    if (ipc_rc < 0) {
-        SNDERR("picoredsp: controller unavailable (%d): %s",
-               -ipc_rc, strerror(-ipc_rc));
-        return ipc_rc;
-    }
-
-    ipc_rc = pcdsp_ipc_send_start(
-        &pcdsp->conn,
-        (uint32_t)io->rate,
-        (uint8_t)io->format,
-        (uint8_t)io->channels);
-    if (ipc_rc < 0) {
-        SNDERR("picoredsp: failed to send START (%d)", -ipc_rc);
-        pcdsp_ipc_close(&pcdsp->conn);
-        return ipc_rc;
-    }
-
-    pcdsp_error_code_t err_code = PCDSP_ERR_OK;
-    /* Gate 8: pass &pcdsp->pipe_fd to receive the pipe write-end via
-     * SCM_RIGHTS.  The controller sends it alongside the READY message. */
-    ipc_rc = pcdsp_ipc_recv_ready(&pcdsp->conn, &pcdsp->pipe_fd, &err_code);
-    if (ipc_rc < 0) {
-        int result = ipc_rc;
-        if (ipc_rc == -EPROTO && err_code != PCDSP_ERR_OK) {
-            SNDERR("picoredsp: controller rejected stream (error code %d)", (int)err_code);
-            switch (err_code) {
-            case PCDSP_ERR_CONFIG:
-                result = -EINVAL;
-                break;
-            case PCDSP_ERR_PLAYBACK_DEVICE:
-                result = -ENODEV;
-                break;
-            case PCDSP_ERR_PROTOCOL:
-                result = -EPROTO;
-                break;
-            case PCDSP_ERR_INTERNAL:
-                result = -EIO;
-                break;
-            case PCDSP_ERR_OK:
-            default:
-                result = -EPROTO;
-                break;
-            }
-        } else {
-            SNDERR("picoredsp: failed waiting for READY (%d): %s",
-                   -ipc_rc, strerror(-ipc_rc));
-        }
-        pcdsp_ipc_close(&pcdsp->conn);
-        return result;
-    }
-
-    /* A blocking pipe write can hang shutdown indefinitely if CamillaDSP
-     * remains alive but stops consuming stdin.  Keep the worker fd
-     * non-blocking; pcm_worker.c polls in bounded intervals and observes the
-     * atomic worker_running flag. */
-    int pipe_flags = fcntl(pcdsp->pipe_fd, F_GETFL, 0);
-    if (pipe_flags < 0 ||
-        fcntl(pcdsp->pipe_fd, F_SETFL, pipe_flags | O_NONBLOCK) < 0) {
-        int e = errno;
-        close(pcdsp->pipe_fd);
-        pcdsp->pipe_fd = -1;
-        pcdsp_ipc_close(&pcdsp->conn);
-        return -e;
-    }
-
-    return 0;
+    return pcdsp_ensure_transport(io);
 }
 
 static int pcdsp_hw_free(snd_pcm_ioplug_t *io)

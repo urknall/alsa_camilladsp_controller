@@ -92,7 +92,7 @@ fn create_cloexec_pipe() -> AppResult<(OwnedFd, OwnedFd)> {
 pub struct StdinPipeProcess {
     /// Write end of the pipe.  `None` once it has been closed by `shutdown`.
     write_fd: Option<OwnedFd>,
-    child: Child,
+    child: Option<Child>,
     /// Bounded tail of CamillaDSP's stderr output, used to classify an
     /// immediate exit as a config error vs. a playback-device error (see
     /// `classify_early_exit_error` in `controller.rs`).
@@ -162,7 +162,7 @@ impl StdinPipeProcess {
 
         Ok(Self {
             write_fd: Some(write_fd),
-            child,
+            child: Some(child),
             stderr_tail,
         })
     }
@@ -210,22 +210,23 @@ impl StdinPipeProcess {
     /// method waits up to `timeout` for the process to exit.  If it does not
     /// exit in time the child is killed.
     ///
-    /// Consumes `self` so that Drop does not attempt a redundant kill/wait.
-    pub fn shutdown(mut self, timeout: Duration) -> AppResult<()> {
+    /// Idempotent: once shutdown has completed, later calls are a no-op.
+    pub fn shutdown(&mut self, timeout: Duration) -> AppResult<()> {
         // Close our copy of the write-end first.
         drop(self.write_fd.take());
 
-        let result = wait_for_child(&mut self.child, timeout);
-
-        // Prevent Drop from killing / waiting again.
-        std::mem::forget(self);
-
-        result
+        if let Some(mut child) = self.child.take() {
+            wait_for_child(&mut child, timeout)?;
+        }
+        Ok(())
     }
 
     /// Check whether the child process is still running without blocking.
     pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        match self.child.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
     }
 }
 
@@ -235,8 +236,15 @@ impl Drop for StdinPipeProcess {
         // Close the write-end first so that CamillaDSP sees EOF and may exit
         // without needing to be killed.
         drop(self.write_fd.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            match child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
     }
 }
 
@@ -283,7 +291,9 @@ pub fn resolve_config_path(runtime_config_path: &Path) -> AppResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::io::AsRawFd;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + timeout;
@@ -294,6 +304,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         predicate()
+    }
+
+    fn process_exists(pid: u32) -> bool {
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        if rc == 0 {
+            true
+        } else {
+            std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+
+    fn blocking_binary(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "picoredsp-stdin-capture-{name}-{}-{stamp}.sh",
+            std::process::id()
+        ));
+        std::fs::write(&path, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     #[test]
@@ -326,7 +359,7 @@ mod tests {
         // Use `cat` as a stand-in for CamillaDSP: it reads stdin until EOF.
         // Pass /dev/stdin so that `cat /dev/stdin` reads from the pipe rather
         // than exiting immediately after reading a regular file argument.
-        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         assert!(proc.write_fd_raw() >= 0);
 
         // Write some bytes through the write-end.
@@ -345,7 +378,7 @@ mod tests {
 
     #[test]
     fn stdin_pipe_process_exits_after_shutdown() {
-        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         proc.shutdown(Duration::from_secs(5)).unwrap();
         // If shutdown returned Ok, the child exited cleanly.
     }
@@ -376,6 +409,52 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_is_idempotent_and_clears_owned_child() {
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        proc.shutdown(Duration::from_secs(5)).unwrap();
+        proc.shutdown(Duration::from_secs(5)).unwrap();
+
+        assert!(proc.child.is_none());
+        assert_eq!(proc.write_fd_raw(), -1);
+        assert!(!proc.is_running());
+    }
+
+    #[test]
+    fn drop_after_shutdown_does_not_try_to_reap_again() {
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        let pid = proc.child.as_ref().unwrap().id();
+        proc.shutdown(Duration::from_secs(5)).unwrap();
+
+        assert!(
+            proc.child.is_none(),
+            "shutdown must consume the child handle"
+        );
+        assert!(
+            wait_until(Duration::from_secs(1), || !process_exists(pid)),
+            "child should already be gone before Drop runs"
+        );
+
+        drop(proc);
+    }
+
+    #[test]
+    fn drop_without_shutdown_force_kills_live_child() {
+        let binary = blocking_binary("drop-kills-live-child");
+        let proc = StdinPipeProcess::spawn(&binary, "ignored", &[]).unwrap();
+        let pid = proc.child.as_ref().unwrap().id();
+        assert!(process_exists(pid));
+
+        drop(proc);
+
+        assert!(
+            wait_until(Duration::from_secs(2), || !process_exists(pid)),
+            "Drop must kill and reap a still-running child"
+        );
+
+        std::fs::remove_file(binary).unwrap();
+    }
+
+    #[test]
     fn resolve_config_path_returns_absolute_path() {
         let tmp = std::env::temp_dir().join("picoredsp-test-cfg-resolve.txt");
         std::fs::write(&tmp, "x").unwrap();
@@ -394,7 +473,7 @@ mod tests {
     fn recent_stderr_captures_child_stderr_output() {
         // Emulate CamillaDSP logging a playback-device failure to stderr,
         // then keep reading stdin (so shutdown() can close it cleanly).
-        let proc = StdinPipeProcess::spawn(
+        let mut proc = StdinPipeProcess::spawn(
             "/bin/sh",
             "-c",
             &["echo 'Playback error: snd_pcm_open failed' 1>&2; cat".to_owned()],
@@ -414,7 +493,7 @@ mod tests {
 
     #[test]
     fn recent_stderr_is_empty_when_child_produces_no_output() {
-        let proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
+        let mut proc = StdinPipeProcess::spawn("/bin/cat", "/dev/stdin", &[]).unwrap();
         // Give the (silent) child a moment to run before asserting.
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(proc.recent_stderr(), "");
@@ -425,7 +504,7 @@ mod tests {
     fn recent_stderr_is_bounded_to_the_tail_when_output_exceeds_the_cap() {
         // Emit more lines than STDERR_TAIL_LINES; only the most recent lines
         // (including the last one) should survive.
-        let proc =
+        let mut proc =
             StdinPipeProcess::spawn("/bin/sh", "-c", &["seq 1 200 1>&2; cat".to_owned()]).unwrap();
 
         assert!(

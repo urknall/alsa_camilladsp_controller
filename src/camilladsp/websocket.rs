@@ -161,10 +161,13 @@ pub trait CamillaClient {
     /// loaded, if any.
     fn get_config_file_path(&mut self) -> Result<Option<String>, WsError> {
         let value = self.query("GetConfigFilePath", None)?;
-        Ok(value
-            .as_ref()
-            .and_then(JsonValue::as_str)
-            .map(str::to_owned))
+        match value {
+            None | Some(JsonValue::Null) => Ok(None),
+            Some(JsonValue::String(path)) => Ok(Some(path)),
+            Some(other) => Err(WsError::Protocol(format!(
+                "GetConfigFilePath returned non-string value: {other:?}"
+            ))),
+        }
     }
 
     /// `SetConfig` — load and start processing with `config_yaml`.
@@ -627,6 +630,12 @@ mod tests {
     }
 
     #[test]
+    fn get_config_file_path_treats_json_null_as_no_config() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::Null))]);
+        assert_eq!(client.get_config_file_path().unwrap(), None);
+    }
+
+    #[test]
     fn get_config_file_path_extracts_string() {
         let mut client =
             MockClient::new(vec![Ok(Some(JsonValue::String("/tmp/cfg.yml".to_owned())))]);
@@ -634,6 +643,15 @@ mod tests {
             client.get_config_file_path().unwrap(),
             Some("/tmp/cfg.yml".to_owned())
         );
+    }
+
+    #[test]
+    fn get_config_file_path_rejects_non_string_non_null_value() {
+        let mut client = MockClient::new(vec![Ok(Some(JsonValue::from(42)))]);
+        assert!(matches!(
+            client.get_config_file_path(),
+            Err(WsError::Protocol(_))
+        ));
     }
 
     #[test]

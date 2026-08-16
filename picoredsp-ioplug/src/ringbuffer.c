@@ -9,6 +9,7 @@
 #include "ringbuffer.h"
 
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,6 +41,14 @@ int pcdsp_rb_init(pcdsp_ringbuffer_t *rb,
     /* capacity must be a power of two */
     if (capacity_frames & (capacity_frames - 1))
         return -EINVAL;
+
+    /* Guard the allocation size against overflow. In normal operation the
+     * ALSA-negotiated buffer/period constraints keep capacity_frames small,
+     * so this cannot realistically be hit today, but a caller must never
+     * silently allocate a truncated (wrapped-around) buffer smaller than
+     * requested. */
+    if (capacity_frames > SIZE_MAX / frame_bytes)
+        return -EOVERFLOW;
 
     rb->buf = malloc(capacity_frames * frame_bytes);
     if (!rb->buf)

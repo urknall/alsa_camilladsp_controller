@@ -6,7 +6,9 @@ The most important conceptual change is:
 
 > **A saved YAML file is the persistent DSP baseline. It is no longer necessarily an exact snapshot of the parameters currently used by CamillaDSP.**
 
-The Rust `picoredsp-controller` monitors the active `snd-aloop` stream and adapts the configuration in memory before starting/restarting CamillaDSP.
+The Rust `picoredsp-controller` monitors the active backend (`snd-aloop` HCTL
+for `aloop`, ioplug IPC for `ioplug`) and adapts the configuration in memory
+before starting/restarting CamillaDSP.
 
 ## Config field ownership policy
 
@@ -40,10 +42,26 @@ managed by piCoreDSP rather than as fixed user tuning knobs:
 - `devices.capture.stop_on_inactive`
 - `devices.enable_rate_adjust`
 
-For the current `aloop` backend, piCoreDSP derives these values from the live ALSA
-loopback stream and builds the runtime CamillaDSP configuration in memory. Future
-backends must preserve the same ownership split so one saved DSP baseline can stay
-portable across backend implementations.
+### Backend transport details
+
+#### Shared baseline rules
+
+Regardless of backend, the saved YAML should describe the DSP design and any
+intentional persistent buffering choices, while piCoreDSP injects the active
+transport details at runtime.
+
+#### `aloop` transport (`backend=aloop`)
+
+For `aloop`, piCoreDSP derives the runtime capture values from the live ALSA
+loopback stream and builds the runtime CamillaDSP configuration in memory.
+
+#### `ioplug` transport (`backend=ioplug`)
+
+For `ioplug`, the controller receives stream parameters from the native plugin's
+AF_UNIX IPC handshake, injects a `Stdin` capture block for the runtime config,
+strips ALSA-only capture keys that CamillaDSP's `Stdin` device does not accept,
+and then spawns/supervises CamillaDSP for that stream. The same saved DSP
+baseline therefore remains portable across both backends.
 
 ## Old vs. new audio flow
 
@@ -86,7 +104,7 @@ devices:
 
 In that model, the config file itself described both the DSP and much of the transport format.
 
-### Current piCoreDSP setup
+### Current piCoreDSP setup — `aloop` transport
 
 piCoreDSP routes all supported sources through an ALSA loopback device:
 
@@ -128,7 +146,39 @@ snd-aloop HCTL controls
 
 When playback becomes active, the controller reads the live stream parameters, re-reads the selected baseline YAML, adapts a runtime copy in memory, and sends that adapted config to CamillaDSP.
 
+### Current piCoreDSP setup — `ioplug` transport
+
+The same baseline YAML can also run through the direct ioplug transport:
+
+```text
+Squeezelite / AirPlay / Bluetooth
+              │
+              ▼
+        pcm.picoredsp
+              │
+              ▼
+libasound_module_pcm_picoredsp.so
+              │
+              ▼
+      AF_UNIX + stdin pipe
+              │
+              ▼
+    picoredsp-controller
+              │
+              ▼
+          CamillaDSP
+              │
+              ▼
+             DAC
+```
+
+In this mode the plugin reports rate / format / channels to the controller,
+which adapts the selected baseline YAML into a runtime `Stdin` capture config
+without writing those transport fields back into the saved file.
+
 ## Migration table
+
+### `aloop` transport (`backend=aloop`)
 
 | Legacy field / behaviour | Current piCoreDSP recommendation | Why |
 |---|---|---|
@@ -143,9 +193,20 @@ When playback becomes active, the controller reads the live stream parameters, r
 | Physical DAC device | Keep it only if it still matches the current DAC | The safest reference is `devices.playback.device` from the current generated `Bypass.yml`. |
 | DSP filters/mixers/processors/pipeline | Keep unchanged | These are the actual persistent DSP design and are independent of the transport migration. |
 
+### `ioplug` transport (`backend=ioplug`)
+
+| Legacy field / behaviour | Current piCoreDSP recommendation | Why |
+|---|---|---|
+| `capture.type: Alsa` or `capture.type: Stdin` in the saved baseline | Keep the baseline transport-light; the runtime config will use `capture.type: Stdin` automatically | The ioplug backend injects the active capture transport when it launches CamillaDSP. |
+| `capture.device: hw:Loopback,0,0` | Remove it from backend-portable baselines | The runtime `Stdin` capture block has no ALSA device field. |
+| `capture.stop_on_inactive: true` | Do not rely on it in the saved baseline | `stop_on_inactive` is an ALSA-capture setting; the ioplug runtime capture omits it. |
+| ALSA-only capture keys such as `link_mute_control` / `link_volume_control` | Remove them if you want the same YAML to validate on both backends | The controller strips ALSA-only capture keys before spawning CamillaDSP with `capture.type: Stdin`. |
+| Fixed `capture.format` copied from old ALSA configs | Usually omit it from the baseline | The ioplug runtime chooses the active stream format, converting ALSA-only names to the generic CamillaDSP `Stdin` equivalents when required. |
+
 ## Recommended current `devices:` baseline
 
-For a normal stereo custom config, the device section should typically look like this:
+For a normal stereo custom config targeting `backend=aloop`, the device section
+should typically look like this:
 
 ```yaml
 devices:
@@ -169,7 +230,10 @@ devices:
     device: plughw:CARD=sndrpihifiberry,DEV=0
 ```
 
-`playback.device` above is only an example. Use the physical DAC device from the current `Bypass.yml` generated on the target piCorePlayer installation.
+`playback.device` above is only an example. Use the physical DAC device from
+the current `Bypass.yml` generated on the target piCorePlayer installation. For
+`backend=ioplug`, keep the same playback side and DSP structure, but expect the
+runtime capture block to be rewritten to `type: Stdin` with no loopback device.
 
 ## Baseline values vs. live runtime values
 
@@ -316,10 +380,12 @@ The migration is mainly about removing old assumptions from the **capture/transp
 
 For each old custom YAML:
 
-- [ ] Change `capture.type` from `Stdin` to `Alsa`.
-- [ ] Set `capture.device: hw:Loopback,0,0`.
-- [ ] Set `capture.channels: 2`.
-- [ ] Add `capture.stop_on_inactive: true`.
+- [ ] Choose the backend you intend to run first (`aloop` or `ioplug`).
+- [ ] For `backend=aloop`: change `capture.type` to `Alsa`.
+- [ ] For `backend=aloop`: set `capture.device: hw:Loopback,0,0`.
+- [ ] For `backend=aloop`: set `capture.channels: 2`.
+- [ ] For `backend=aloop`: add `capture.stop_on_inactive: true`.
+- [ ] For `backend=ioplug`: remove ALSA-only capture fields you do not want in a portable baseline (`capture.device`, `capture.stop_on_inactive`, `link_*` controls).
 - [ ] Remove an old fixed `capture.format` unless it is intentionally required.
 - [ ] Keep a valid `devices.samplerate` baseline such as `44100`.
 - [ ] Add/keep `enable_rate_adjust: true`.

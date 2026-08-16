@@ -256,6 +256,8 @@ jobs:
   rust_bench:
     name: Rust benchmarks
     runs-on: ubuntu-24.04
+    # Benchmarks are informative only; not a release gate.
+    continue-on-error: true
     permissions:
       contents: read
 
@@ -312,6 +314,8 @@ jobs:
   ioplug_bench:
     name: ioplug benchmarks
     runs-on: ubuntu-24.04
+    # Benchmarks are informative only; not a release gate.
+    continue-on-error: true
     permissions:
       contents: read
 

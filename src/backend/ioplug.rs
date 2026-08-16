@@ -276,8 +276,7 @@ impl IoplugBackend {
 
     /// Receive one message from an active connection.  Returns `Ok(None)` on
     /// timeout.  Validates that any received message carries the negotiated
-    /// protocol version; returns `Err(ProtocolError::HandshakeNotComplete)` on
-    /// a version mismatch so the caller can treat it as a protocol error.
+    /// protocol version.
     fn recv_from_active(conn: &mut IpcConnection) -> Result<Option<PluginMessage>, ProtocolError> {
         let msg = match conn.recv_plugin_message() {
             Ok(m) => m,
@@ -287,15 +286,12 @@ impl IoplugBackend {
         // Enforce the negotiated version on every post-HELLO message.
         // A peer that changes its version mid-session violates the protocol.
         if let Some(negotiated) = conn.negotiated_version() {
-            let msg_version = match &msg {
-                PluginMessage::Stop { version } => Some(*version),
-                PluginMessage::Start { version, .. } => Some(*version),
-                _ => None,
-            };
-            if let Some(ver) = msg_version {
-                if ver != negotiated {
-                    return Err(ProtocolError::HandshakeNotComplete);
-                }
+            let actual = msg.version();
+            if actual != negotiated {
+                return Err(ProtocolError::VersionMismatch {
+                    expected: negotiated,
+                    actual,
+                });
             }
         }
         Ok(Some(msg))
@@ -339,15 +335,17 @@ impl ControllerBackend for IoplugBackend {
                     Ok(Some(StreamEvent::Stopped))
                 }
                 Ok(Some(other)) => {
+                    let _ = conn.send_error(ErrorCode::Protocol);
                     log(
                         LogLevel::Warning,
                         self.log_level,
                         format!(
-                            "ioplug: unexpected message {:?} in Active state — ignoring",
+                            "ioplug: unexpected message {:?} in Active state — protocol violation",
                             other.message_type()
                         ),
                     );
-                    Ok(None)
+                    self.state = IoplugState::Idle;
+                    Ok(Some(StreamEvent::Stopped))
                 }
                 Ok(None) => Ok(None),
                 Err(ProtocolError::Disconnected) => {
@@ -360,10 +358,11 @@ impl ControllerBackend for IoplugBackend {
                     Ok(Some(StreamEvent::Stopped))
                 }
                 Err(err) => {
+                    let _ = conn.send_error(ErrorCode::Protocol);
                     log(
                         LogLevel::Warning,
                         self.log_level,
-                        format!("ioplug: IPC error in Active state: {err} — treating as stop"),
+                        format!("ioplug: protocol error in Active state: {err} — closing stream"),
                     );
                     self.state = IoplugState::Idle;
                     Ok(Some(StreamEvent::Stopped))
@@ -733,6 +732,92 @@ mod tests {
         assert_eq!(event, StreamEvent::Stopped);
 
         let _ = client_handle.join();
+    }
+
+    fn assert_active_message_is_protocol_violation(message: PluginMessage, test_name: &str) {
+        let path = test_socket_path(test_name);
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+
+        let path2 = path.clone();
+        let client_handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = connect_and_hello(&path2);
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            let mut ready = [0u8; 2];
+            client.read_exact(&mut ready).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&ready).unwrap(),
+                PluginMessage::Ready { version: 1 }
+            );
+            client.write_all(&message.encode()).unwrap();
+            let mut err_buf = [0u8; 3];
+            client.read_exact(&mut err_buf).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&err_buf).unwrap(),
+                PluginMessage::Error {
+                    version: 1,
+                    code: ErrorCode::Protocol,
+                }
+            );
+        });
+
+        loop {
+            if backend.poll_event(200).unwrap().is_some() {
+                break;
+            }
+        }
+        backend.send_ready_to_plugin().unwrap();
+
+        let event = loop {
+            if let Some(e) = backend.poll_event(200).unwrap() {
+                break e;
+            }
+        };
+        assert_eq!(event, StreamEvent::Stopped);
+        assert!(!backend.current_snapshot().active);
+
+        client_handle.join().unwrap();
+    }
+
+    #[test]
+    fn active_state_rejects_version_mismatch_on_hello_ready_and_error_frames() {
+        for (name, message) in [
+            (
+                "active-hello-version-mismatch",
+                PluginMessage::Hello { version: 2 },
+            ),
+            (
+                "active-ready-version-mismatch",
+                PluginMessage::Ready { version: 2 },
+            ),
+            (
+                "active-error-version-mismatch",
+                PluginMessage::Error {
+                    version: 2,
+                    code: ErrorCode::Config,
+                },
+            ),
+        ] {
+            assert_active_message_is_protocol_violation(message, name);
+        }
+    }
+
+    #[test]
+    fn active_state_treats_unexpected_version_correct_message_as_protocol_violation() {
+        assert_active_message_is_protocol_violation(
+            PluginMessage::Hello { version: 1 },
+            "active-unexpected-hello",
+        );
     }
 
     #[test]

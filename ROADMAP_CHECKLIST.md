@@ -181,7 +181,7 @@ Each section maps to a milestone or gate. Check items off as work is completed.
   - [x] `src/timing.c`
   - [x] `src/format.c`
   - [x] `tests/`
-  - [x] `docs/BLUEALSA_TRACKING.md`
+  - [x] `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`
   - [x] `CMakeLists.txt` or `Makefile`
 - [x] First prototype works without touching CamillaDSP (audio loopback/null sink only)
 
@@ -249,7 +249,8 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    lands in `SND_PCM_STATE_SETUP` (not stuck in `DRAINING`) and that a
 >    subsequent `snd_pcm_prepare()` succeeds. (BlueALSA's `io->nonblock == 2`
 >    signal-abort sentinel was evaluated and deliberately not ported — see
->    `BLUEALSA_TRACKING.md`'s Drain semantics section for why.)
+>    `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`'s Drain semantics section
+>    for why.)
 >
 > 3. **Delay accounting — evaluated and reverted.** BlueALSA's
 >    snapshot+extrapolate delay technique (`io_thread_update_delay()` +
@@ -260,8 +261,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    once CamillaDSP stalls — a first-class tested scenario for this plugin,
 >    unlike BlueALSA's Bluetooth transport. Reverted in favor of keeping the
 >    always-live `ioctl(FIONREAD)` per `delay()` call; recorded as a
->    deliberate, measured divergence in `BLUEALSA_TRACKING.md`'s Delay
->    accounting section, not an unexamined one.
+>    deliberate, measured divergence in
+>    `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`'s Delay accounting section,
+>    not an unexamined one.
 >
 > 4. **Device disconnect** — BlueALSA's IO thread only ever flips an
 >    `atomic_bool connected = false`; every *app-thread* callback
@@ -296,9 +298,9 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 > (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 19/19 checks
 > inside `test_pcm_integration` including all new tests). `cargo test`
 > re-run to confirm the Rust side is unaffected: 214 passed, 0 failed.
-> `BLUEALSA_TRACKING.md`'s verification table and prose sections (Signal
-> masking, Drain semantics, Delay accounting, Device disconnect / connectivity
-> state) updated to cite the new code and tests.
+> `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`'s verification table and prose
+> sections (Signal masking, Drain semantics, Delay accounting, Device
+> disconnect / connectivity state) updated to cite the new code and tests.
 >
 > **Second correctness follow-up (Gate-14 hardware-qualification review):**
 > a further external review of the 2026-08-15/16 pass found the pause
@@ -350,9 +352,52 @@ Each section maps to a milestone or gate. Check items off as work is completed.
 >    test, which already expected `-ENODEV`.
 >
 > Full C suite re-run after all four fixes: 7/7 binaries, 0 failures.
-> `docs/BLUEALSA_TRACKING.md`'s verification table updated (SIGPIPE, Pause
-> synchronization, Drain, Delay, Device disconnect rows) to cite the new
-> code and tests.
+> `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`'s verification table updated
+> (SIGPIPE, Pause synchronization, Drain, Delay, Device disconnect rows) to
+> cite the new code and tests.
+>
+> **Third correctness follow-up (2026-08-16 external review — silent audio
+> drop on reuse, HIGH):** a normal ALSA reuse path
+> (`stop`/`drop`/`drain` → `prepare` → `start`, without an intervening
+> `hw_params()` call) left `pipe_fd == -1` after `pcdsp_stop()` tore down the
+> IPC transport, because the HELLO/START/READY handshake and SCM_RIGHTS pipe
+> handoff were only ever (re)built inside `pcdsp_hw_params()`. The worker
+> thread then silently fell back to its null-sink path: the PCM looked
+> healthy to the client while audio was discarded. Fixed by extracting the
+> handshake into a new `pcdsp_ensure_transport()` (no-op if a live pipe
+> already exists) and calling it from both `pcdsp_hw_params()` and
+> `pcdsp_start()`, so `start()` always rebuilds a torn-down transport before
+> the worker thread runs. New regression tests
+> `drop_then_prepare_start_rebuilds_transport_and_delivers_audio` and
+> `successful_drain_then_prepare_start_rebuilds_transport`
+> (`test_pcm_integration.c`) drive a full `hw_params → write → drop/drain →
+> prepare → start → write` cycle against a mock server that accepts two
+> sequential connections, and assert both that a second START/READY/fd
+> handshake happens and that the second write phase is actually received —
+> both were confirmed to fail against the pre-fix plugin (reverted via
+> `git stash`) and pass with the fix. Also fixed in the same pass:
+> - **32-bit overflow (MEDIUM).** `pcm.c`'s and `pcm_worker.c`'s
+>   sleep/period-duration calculations used `unsigned long` (32-bit on the
+>   supported ARMv7 cross-build target) for `500000000UL * period_size / rate`
+>   / `1000000000UL * period_frames / rate`, overflowing for ordinary period
+>   sizes. Switched to `uint64_t`/`ULL` arithmetic.
+> - **SCM_RIGHTS hardening (LOW).** `ipc.c`'s fd-receive path now rejects
+>   `MSG_CTRUNC` and validates `cmsg_len >= CMSG_LEN(sizeof(int))` before
+>   reading the ancillary fd.
+> - **Ringbuffer allocation overflow guard (LOW).** `ringbuffer.c` now
+>   rejects `capacity_frames * frame_bytes` allocations that would overflow
+>   `size_t` before calling `malloc()`.
+> - **Timer left running on thread-create failure (LOW).** `pcdsp_start()`
+>   now stops the just-started timer if `pthread_create()` fails, instead of
+>   leaving it running with no worker thread.
+>
+> Full C suite re-run after all fixes: 7/7 binaries, 0 failures
+> (`cmake --build . -j$(nproc) && ctest --output-on-failure`, 21/21 checks
+> inside `test_pcm_integration` including both new regression tests).
+> Note: this closes the specific silent-audio-drop defect; the broader
+> "Reliable pause/stop/start" Gate 16 production-readiness criterion still
+> requires the field-testing milestones above (M14/M15) before being marked
+> done.
 
 - [x] Review current BlueALSA PCM implementation as an engineering reference (no `alsa_cdsp` fork exists in this project to diff against)
 - [x] Document relevant learnings in `picoredsp-ioplug/docs/BLUEALSA_TRACKING.md`:

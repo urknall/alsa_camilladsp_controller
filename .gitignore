@@ -1,2 +1,4 @@
 /target/
 picoredsp-ioplug/build*/
+__pycache__/
+*.py[cod]
