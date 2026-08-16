@@ -536,7 +536,7 @@ upstream_capabilities:
     used_now: true
     wanted_future: false
     local_code:
-      - configs/pcm.picorecdsp.conf   # rate unchanged in the ALSA plug definition
+      - configs/pcm.camilladsp.conf   # rate unchanged in the ALSA plug definition
       - src/source/alsa_loopback.rs   # CANONICAL_ASOUND_CONF contract
     current_fallback: []
     removal_when: >
