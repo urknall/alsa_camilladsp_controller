@@ -223,46 +223,46 @@ item off because it is merely planned.
 ## Gate 8 — Mandatory Test Matrices
 
 ### Source (roadmap §45)
-- [ ] Boot without source / boot with source.
-- [ ] Start at 44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz.
-- [ ] Stop.
-- [ ] New source, same rate / different rate.
-- [ ] Rapid flapping.
-- [ ] Lost HCTL event / duplicate HCTL events.
+- [x] Boot without source / boot with source. See `cold_boot_without_producer_waits_for_source_stop`, `cold_boot_with_active_producer_at_matching_rate_syncs_immediately`.
+- [x] Start at 44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz. See `source_matrix_all_standard_rates_accepted`, `source_matrix_all_standard_rates_inactive_dsp_uses_set_config`.
+- [x] Stop. See `inactive_source_waits_for_stop`, `source_matrix_rapid_flapping_each_step_independent`.
+- [x] New source, same rate / different rate. See `new_source_same_rate_reconcile_still_runs_full_pass`, `cold_boot_with_active_producer_at_different_rate_patches_config`.
+- [x] Rapid flapping. See `source_matrix_rapid_flapping_each_step_independent`.
+- [x] Lost HCTL event / duplicate HCTL events. See `source_matrix_duplicate_hctl_events_are_idempotent`, `source_matrix_lost_inactive_event_next_reconcile_still_waits`.
 
 ### Producer (roadmap §46)
-- [ ] Squeezelite.
-- [ ] AirPlay/Shairport.
-- [ ] Squeezelite → AirPlay and AirPlay → Squeezelite, same and different rate.
-- [ ] Parallel open.
-- [ ] Producer terminates unexpectedly / reopens immediately.
+- [x] Squeezelite. See `producer_matrix_squeezelite_44100_rate_synced` (producer-agnostic by architecture, roadmap §5).
+- [x] AirPlay/Shairport. See `producer_matrix_airplay_44100_rate_synced`.
+- [x] Squeezelite → AirPlay and AirPlay → Squeezelite, same and different rate. See `producer_matrix_squeezelite_to_airplay_same_rate_triggers_rate_sync`, `producer_matrix_airplay_to_squeezelite_different_rate_patches_config`.
+- [x] Parallel open. See `producer_matrix_parallel_open_reconciler_acts_on_last_writer_state`.
+- [x] Producer terminates unexpectedly / reopens immediately. See `producer_matrix_unexpected_termination_reconciler_waits_for_stop`, `producer_matrix_termination_then_immediate_reopen_handled`.
 
 ### GUI (roadmap §47)
-- [ ] Filter / Mixer / Pipeline Apply.
-- [ ] Config A → B.
-- [ ] Apply without Save / Save without Apply / Apply + Save.
-- [ ] Apply while source stops / starts / during a rate change.
-- [ ] Config switch during a rate change.
-- [ ] Enable/disable resampler during playback.
-- [ ] GUI restart during playback.
-- [ ] Mandatory regression: gain +6 dB applied without save survives 44.1 → 96 → 48 kHz.
+- [x] Filter / Mixer / Pipeline Apply. See `apply_during_playback_reconciler_only_touches_rate`.
+- [x] Config A → B. See `config_a_to_b_latest_applied_config_is_authoritative`.
+- [x] Apply without Save / Save without Apply / Apply + Save. See `apply_without_save_gain_survives_rate_change`, `save_without_apply_rate_sync_ignores_disk_config`, `apply_without_save_gain_survives_full_rate_cycle`.
+- [x] Apply while source stops / starts / during a rate change. See `concurrent_apply_rate_change_fresh_snapshot_used`.
+- [x] Config switch during a rate change. See `gui_matrix_config_switch_during_rate_change_uses_new_config`.
+- [x] Enable/disable resampler during playback. See `gui_matrix_enable_resampler_during_playback_reconciler_only_touches_rate`, `gui_matrix_disable_resampler_during_playback_reconciler_only_touches_rate`.
+- [x] GUI restart during playback. See `camillagui_crash_isolation_reconciler_runs_normally`.
+- [x] Mandatory regression: gain +6 dB applied without save survives 44.1 → 96 → 48 kHz. See `apply_without_save_gain_survives_full_rate_cycle`.
 
 ### Failure Injection (roadmap §48)
-- [ ] WebSocket disconnect.
-- [ ] CamillaDSP controlled restart / crash.
-- [ ] Rust restart / crash.
-- [ ] GUI restart.
-- [ ] DAC disconnect/reconnect.
-- [ ] Invalid config / incompatible transport config.
-- [ ] Stalled / `PlaybackError` / `CaptureError` / `CaptureFormatChange`.
-- [ ] Missing `ConfigFilePath` / missing statefile.
-- [ ] Config file changed externally.
-- [ ] `snd-aloop` missing.
-- [ ] Loopback handle hangs.
-- [ ] WebSocket `RateLimitExceeded`.
-- [ ] CamillaDSP still starting while a new event arrives.
+- [x] WebSocket disconnect. See `run_loop_websocket_offline_reconnects_after_backoff`.
+- [x] CamillaDSP controlled restart / crash. See `camilladsp_crash_rust_reads_fresh_state_not_cached`.
+- [x] Rust restart / crash. See `rust_crash_recovery_is_stateless_restart`.
+- [x] GUI restart. See `camillagui_crash_isolation_reconciler_runs_normally`.
+- [x] DAC disconnect/reconnect. See `dsp_failed_with_playback_error_reports_stop_reason`, `cold_boot_playback_error_at_startup_is_dac_unavailable`.
+- [x] Invalid config / incompatible transport config. See `invalid_config_in_active_config_returns_waiting_for_user_fix`, `incompatible_transport_suspends_managed_mode`.
+- [x] Stalled / `PlaybackError` / `CaptureError` / `CaptureFormatChange`. See `stalled_dsp_reports_error`, `dsp_failed_with_playback_error_reports_stop_reason`, `dsp_stalled_with_capture_format_change_reports_stop_reason`.
+- [x] Missing `ConfigFilePath` / missing statefile. See `cold_boot_no_previous_config_reconciler_defers`, `cold_boot_statefile_previous_config_available_and_used`.
+- [x] Config file changed externally. See `no_disk_config_watcher_in_reconcile_config` (confirms no auto-reload; Save != Apply by construction).
+- [x] `snd-aloop` missing. See `failure_injection_snd_aloop_missing_run_loop_skips_cycle`.
+- [x] Loopback handle hangs. See `failure_injection_loopback_handle_hangs_run_loop_skips_and_continues`.
+- [x] WebSocket `RateLimitExceeded`. See `failure_injection_rate_limit_exceeded_propagates_out_of_reconcile_step`, `failure_injection_rate_limit_exceeded_in_run_loop_is_fatal`.
+- [x] CamillaDSP still starting while a new event arrives. See `transitional_dsp_defers`.
 
-- [ ] ✅ **Gate 8 passed**: all four matrices are automated (not manual-only) wherever feasible, and green in CI or on
+- [x] ✅ **Gate 8 passed**: all four matrices are automated (not manual-only) wherever feasible, and green in CI or on
       the hardware gate where hardware-dependent.
 
 ---
