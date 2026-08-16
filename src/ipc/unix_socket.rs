@@ -274,10 +274,16 @@ where
         unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as usize;
     let mut cmsg_buf: Vec<u8> = vec![0u8; cmsg_space];
 
+    // Exactly one dummy payload byte accompanies the ancillary SCM_RIGHTS
+    // data.  `sendmsg()`'s return value counts only payload bytes (the
+    // control message is delivered atomically alongside it, all-or-nothing),
+    // so a successful transfer must report sending exactly `PAYLOAD_LEN`
+    // bytes; anything else means the fd was not actually handed over.
+    const PAYLOAD_LEN: libc::ssize_t = 1;
     let dummy: u8 = 0;
     let mut iov = libc::iovec {
         iov_base: &dummy as *const u8 as *mut libc::c_void,
-        iov_len: 1,
+        iov_len: PAYLOAD_LEN as usize,
     };
 
     let mh = libc::msghdr {
@@ -309,7 +315,7 @@ where
     loop {
         // SAFETY: mh, iov, and cmsg_buf are valid for the duration of sendmsg.
         let n = sendmsg_fn(socket_fd, &mh);
-        if n == 1 {
+        if n == PAYLOAD_LEN {
             return Ok(());
         }
         if n >= 0 {

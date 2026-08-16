@@ -253,9 +253,16 @@ mod tests {
         let mut r = RetryState::new();
         r.record_attempt_with_reason(RejectionReason::PlaybackDevice);
         assert_eq!(r.rejection_reason(), RejectionReason::PlaybackDevice);
+        // Not latched, so `reset_backoff()` also forgets the transient
+        // rejection reason; `rejection_reason()` falls back to its
+        // `Internal` default rather than reporting `PlaybackDevice` again.
         r.reset_backoff();
         assert_eq!(r.rejection_reason(), RejectionReason::Internal);
         r.latch_with_reason(RejectionReason::Config);
+        assert_eq!(r.rejection_reason(), RejectionReason::Config);
+        // Once latched, `reset_backoff()` must NOT forget the reason behind
+        // the still-active permanent latch (only `clear_latch()` may do so).
+        r.reset_backoff();
         assert_eq!(r.rejection_reason(), RejectionReason::Config);
     }
 
