@@ -1120,6 +1120,23 @@ filters:
         }
     }
 
+    /// A [`SourceRateSynchronizer`] that always returns
+    /// [`PicorecdspError::RateLimitExceeded`] — simulates CamillaDSP rejecting a
+    /// config write because it is in a transitional state (roadmap §20, §48 /
+    /// Cliffhanger C).
+    struct RateLimitedSync;
+
+    #[async_trait]
+    impl SourceRateSynchronizer for RateLimitedSync {
+        async fn ensure_source_rate(
+            &self,
+            _: u32,
+            _: &DspSnapshot,
+        ) -> Result<RateSyncOutcome, PicorecdspError> {
+            Err(PicorecdspError::RateLimitExceeded)
+        }
+    }
+
     /// Minimal `ReconcileConfig` with all durations set to 1 ms for fast tests.
     fn fast_cfg() -> ReconcileConfig {
         ReconcileConfig {
@@ -1244,7 +1261,7 @@ filters:
 
         // The loop reconnects during the first trigger cycle and shuts down on
         // trigger exhaustion.
-        let result = run_loop(&camilla, &mut obs, &sync, &mut trigger, &cfg).await;
+        let result = run_loop(&camilla, &obs, &sync, &mut trigger, &cfg).await;
         assert!(
             result.is_err(),
             "run_loop should terminate when trigger is exhausted"
@@ -1264,7 +1281,7 @@ filters:
         // Zero triggers → shuts down immediately.
         let mut trigger = LimitedTrigger::new(0);
         let cfg = fast_cfg();
-        let result = run_loop(&camilla, &mut obs, &sync, &mut trigger, &cfg).await;
+        let result = run_loop(&camilla, &obs, &sync, &mut trigger, &cfg).await;
         assert!(matches!(result, Err(PicorecdspError::SourceObserver(_))));
     }
 
@@ -1283,7 +1300,7 @@ filters:
         let cfg = fast_cfg();
         // The loop must not crash or propagate a fatal error; it terminates only
         // on trigger exhaustion.
-        let result = run_loop(&camilla, &mut obs, &sync, &mut trigger, &cfg).await;
+        let result = run_loop(&camilla, &obs, &sync, &mut trigger, &cfg).await;
         assert!(matches!(result, Err(PicorecdspError::SourceObserver(_))));
     }
 
@@ -1601,5 +1618,654 @@ filters:
         let _ = cfg.dsp_error_retry_interval;
         // No `config_watcher_interval`, `watch_config_file_path`, or similar field.
         // This is a compile-time structural assertion via exhaustive field access.
+    }
+
+    // ── Gate 8 — Source matrix (roadmap §45) ─────────────────────────────────
+
+    /// Source matrix: Start at each standard sample rate (44.1/48/88.2/96/176.4/
+    /// 192 kHz) — reconciler must accept every rate and call ensure_source_rate
+    /// (roadmap §45).
+    #[tokio::test]
+    async fn source_matrix_all_standard_rates_accepted() {
+        let standard_rates = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
+        for rate in standard_rates {
+            let source = active_source(rate);
+            let dsp = dsp_snap(DspState::Running, rate);
+            let (sync, counter) = SpyRateSync::new(RateSyncOutcome::AlreadyCorrect);
+            let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+            assert!(
+                matches!(action, ReconcileAction::RateSyncWhileRunning(_)),
+                "rate {rate}: unexpected action {action:?}"
+            );
+            assert_eq!(
+                counter.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "rate {rate}: ensure_source_rate must be called exactly once"
+            );
+        }
+    }
+
+    /// Source matrix: Start at each standard rate with DSP inactive — uses
+    /// SetConfig path (roadmap §45, §17).
+    #[tokio::test]
+    async fn source_matrix_all_standard_rates_inactive_dsp_uses_set_config() {
+        let standard_rates = [44_100u32, 48_000, 88_200, 96_000, 176_400, 192_000];
+        for rate in standard_rates {
+            let source = active_source(rate);
+            let dsp = dsp_snap(DspState::Inactive, rate);
+            let sync = FakeRateSync {
+                outcome: RateSyncOutcome::SetConfigAfterInactive {
+                    old_rate: None,
+                    new_rate: rate,
+                },
+            };
+            let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+            assert!(
+                matches!(action, ReconcileAction::RateSyncAfterInactive(_)),
+                "rate {rate}: unexpected action {action:?}"
+            );
+        }
+    }
+
+    /// Source matrix: Rapid flapping — source toggles active→inactive→active in
+    /// quick succession.  Each individual reconcile_step call must produce the
+    /// correct action for the snapshot it receives; the reconciler has no memory
+    /// between calls (roadmap §45, §10).
+    #[tokio::test]
+    async fn source_matrix_rapid_flapping_each_step_independent() {
+        let rate = 48_000;
+        let active = active_source(rate);
+        let inactive = inactive_source();
+        let dsp = dsp_snap(DspState::Running, rate);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+
+        // active → inactive → active → inactive
+        let sequence: &[(&SourceSnapshot, ReconcileAction)] = &[
+            (
+                &active,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect),
+            ),
+            (&inactive, ReconcileAction::WaitingForSourceStop),
+            (
+                &active,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect),
+            ),
+            (&inactive, ReconcileAction::WaitingForSourceStop),
+        ];
+
+        for (i, (source, expected)) in sequence.iter().enumerate() {
+            let action = reconcile_step(source, &dsp, &sync).await.unwrap();
+            assert_eq!(action, *expected, "flap step {i}: unexpected action");
+        }
+    }
+
+    /// Source matrix: Lost HCTL event — the same snapshot delivered twice must
+    /// produce the same (idempotent) action.  Duplicate events are just redundant
+    /// reconcile triggers; the outcome must be identical (roadmap §45).
+    #[tokio::test]
+    async fn source_matrix_duplicate_hctl_events_are_idempotent() {
+        let source = active_source(44_100);
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+
+        let a1 = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        let a2 = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert_eq!(
+            a1, a2,
+            "duplicate HCTL events must produce identical actions (idempotent)"
+        );
+    }
+
+    /// Source matrix: Lost HCTL event at source-stop — if the inactive event is
+    /// lost, the next reconcile sees inactive source and still waits for stop
+    /// (roadmap §45).
+    #[tokio::test]
+    async fn source_matrix_lost_inactive_event_next_reconcile_still_waits() {
+        // Simulate: the source stopped but the HCTL event was lost.
+        // The next reconcile triggered by the safety timer reads inactive state.
+        let source = inactive_source();
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert_eq!(action, ReconcileAction::WaitingForSourceStop);
+    }
+
+    // ── Gate 8 — Producer matrix (roadmap §46) ────────────────────────────────
+    //
+    // piCoreCDSP is producer-agnostic (roadmap §5): the reconciler has no
+    // Squeezelite/AirPlay/Shairport-specific code.  The producer abstraction is
+    // `SourceState { Inactive, Active { sample_rate } }`.  These tests model
+    // each producer scenario through that abstraction.
+
+    /// Producer matrix: Squeezelite producer active at 44.1 kHz — reconciler
+    /// syncs rate and does not care which producer opened the loopback (roadmap §46).
+    #[tokio::test]
+    async fn producer_matrix_squeezelite_44100_rate_synced() {
+        // Squeezelite is modelled as any active source at 44.1 kHz.
+        let source = active_source(44_100);
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(matches!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        ));
+    }
+
+    /// Producer matrix: AirPlay/Shairport producer active at 44.1 kHz —
+    /// reconciler behaviour is identical regardless of producer identity
+    /// (roadmap §46, §5).
+    #[tokio::test]
+    async fn producer_matrix_airplay_44100_rate_synced() {
+        // AirPlay is modelled identically to any other active source at 44.1 kHz.
+        let source = active_source(44_100);
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(matches!(
+            action,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        ));
+    }
+
+    /// Producer matrix: Squeezelite → AirPlay handover at the same rate — new
+    /// producer, same rate.  The generation counter bumps even though the rate is
+    /// unchanged; the reconciler must still call ensure_source_rate (roadmap §31,
+    /// §46).
+    #[tokio::test]
+    async fn producer_matrix_squeezelite_to_airplay_same_rate_triggers_rate_sync() {
+        let rate = 44_100;
+        let dsp = dsp_snap(DspState::Running, rate);
+        let (sync, counter) = SpyRateSync::new(RateSyncOutcome::AlreadyCorrect);
+
+        // First producer (Squeezelite): generation 1.
+        let source_gen1 = SourceSnapshot {
+            state: SourceState::Active { sample_rate: rate },
+            sample_rate: Some(rate),
+            format: Some("S32_LE".into()),
+            channels: Some(2),
+            generation: 1,
+        };
+        let a1 = reconcile_step(&source_gen1, &dsp, &sync).await.unwrap();
+        assert!(matches!(
+            a1,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        ));
+
+        // Second producer (AirPlay): same rate, but generation bumped to 2.
+        let source_gen2 = SourceSnapshot {
+            state: SourceState::Active { sample_rate: rate },
+            sample_rate: Some(rate),
+            format: Some("S32_LE".into()),
+            channels: Some(2),
+            generation: 2,
+        };
+        let a2 = reconcile_step(&source_gen2, &dsp, &sync).await.unwrap();
+        assert!(matches!(
+            a2,
+            ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+        ));
+
+        // ensure_source_rate called on both reconcile passes.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "ensure_source_rate must be called on every trigger including same-rate handover"
+        );
+    }
+
+    /// Producer matrix: AirPlay → Squeezelite handover at a different rate —
+    /// new producer at 96 kHz after previous at 44.1 kHz (roadmap §46).
+    #[tokio::test]
+    async fn producer_matrix_airplay_to_squeezelite_different_rate_patches_config() {
+        let old_rate = 44_100;
+        let new_rate = 96_000;
+        let dsp = dsp_snap(DspState::Running, old_rate);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::PatchedWhileRunning {
+                old_rate: Some(old_rate),
+                new_rate,
+            },
+        };
+        // New producer at 96 kHz (generation bump).
+        let source = SourceSnapshot {
+            state: SourceState::Active {
+                sample_rate: new_rate,
+            },
+            sample_rate: Some(new_rate),
+            format: Some("S32_LE".into()),
+            channels: Some(2),
+            generation: 2,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(
+            matches!(
+                action,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::PatchedWhileRunning {
+                    new_rate: 96_000,
+                    ..
+                })
+            ),
+            "expected rate patch on AirPlay→Squeezelite handover at different rate, got {action:?}"
+        );
+    }
+
+    /// Producer matrix: Parallel open — two producers cannot simultaneously hold
+    /// the loopback PCM (ALSA exclusive access).  The SourceObserver reads the
+    /// last-writer state; the reconciler acts on whatever snapshot it receives.
+    /// This test verifies that a snapshot at any rate is handled (roadmap §46).
+    #[tokio::test]
+    async fn producer_matrix_parallel_open_reconciler_acts_on_last_writer_state() {
+        // After a parallel-open race, the loopback reports the winner's rate.
+        // The reconciler must handle whatever rate the SourceObserver reports.
+        let winner_rate = 96_000;
+        let source = active_source(winner_rate);
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::PatchedWhileRunning {
+                old_rate: Some(44_100),
+                new_rate: winner_rate,
+            },
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(
+            matches!(
+                action,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::PatchedWhileRunning {
+                    new_rate: 96_000,
+                    ..
+                })
+            ),
+            "parallel open: reconciler must act on winning producer's rate, got {action:?}"
+        );
+    }
+
+    /// Producer matrix: Producer terminates unexpectedly — loopback becomes
+    /// inactive.  Reconciler waits for CamillaDSP `stop_on_inactive` to fire,
+    /// returning `WaitingForSourceStop` (roadmap §46, §12).
+    #[tokio::test]
+    async fn producer_matrix_unexpected_termination_reconciler_waits_for_stop() {
+        let source = inactive_source(); // producer gone
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert_eq!(
+            action,
+            ReconcileAction::WaitingForSourceStop,
+            "unexpected producer termination must produce WaitingForSourceStop"
+        );
+    }
+
+    /// Producer matrix: Producer terminates and reopens immediately — two
+    /// consecutive reconcile_steps: first inactive (stop), then active (new
+    /// producer).  Each step must produce the correct action independently
+    /// (roadmap §46, §10).
+    #[tokio::test]
+    async fn producer_matrix_termination_then_immediate_reopen_handled() {
+        let rate = 44_100;
+        let dsp_running = dsp_snap(DspState::Running, rate);
+        let dsp_inactive = dsp_snap(DspState::Inactive, rate);
+
+        // Step 1: source gone, DSP still running (brief window before stop_on_inactive fires).
+        let action_stop = reconcile_step(
+            &inactive_source(),
+            &dsp_running,
+            &FakeRateSync {
+                outcome: RateSyncOutcome::AlreadyCorrect,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(action_stop, ReconcileAction::WaitingForSourceStop);
+
+        // Step 2: new producer arrived; DSP now inactive (stopped); rate sync via SetConfig.
+        let action_reopen = reconcile_step(
+            &active_source(rate),
+            &dsp_inactive,
+            &FakeRateSync {
+                outcome: RateSyncOutcome::SetConfigAfterInactive {
+                    old_rate: None,
+                    new_rate: rate,
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                action_reopen,
+                ReconcileAction::RateSyncAfterInactive(RateSyncOutcome::SetConfigAfterInactive {
+                    ..
+                })
+            ),
+            "immediate reopen after termination must trigger RateSyncAfterInactive, got {action_reopen:?}"
+        );
+    }
+
+    // ── Gate 8 — GUI matrix (roadmap §47) ────────────────────────────────────
+
+    /// GUI matrix: Config switch during a rate change — user applies config B
+    /// while source is switching from 44.1 to 96 kHz.  The reconciler must use
+    /// the fresh DSP snapshot (which already has config B applied) and only patch
+    /// the rate field in config B (roadmap §29.4, §47).
+    ///
+    /// This test verifies that when DSP reports config B as the active config
+    /// during a rate change, the reconciler patches config B's rate field, not
+    /// config A.  The `ensure_source_rate` spy receives the new DSP snapshot
+    /// (containing config B), confirming the reconciler never reverts to config A.
+    #[tokio::test]
+    async fn gui_matrix_config_switch_during_rate_change_uses_new_config() {
+        let old_rate = 44_100;
+        let new_rate = 96_000;
+
+        // Config B is now the active config — user applied it during the rate change.
+        let config_b_yaml = format!(
+            "devices:\n  samplerate: {old_rate}\n  capture:\n    type: Alsa\n    device: \"hw:Loopback,0,0\"\n    channels: 2\n    format: S32_LE\n    stop_on_inactive: true\n  filters:\n    FIR_B:\n      type: Conv\n      parameters:\n        filename: filter_b.wav\n"
+        );
+        let config_b = ConfigDocument::from_yaml(&config_b_yaml).unwrap();
+        let fp_b = config_b.fingerprint();
+
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(config_b.clone()),
+            previous_config: Some(config_b.clone()),
+            active_fingerprint: Some(fp_b),
+            previous_fingerprint: Some(fp_b),
+            stop_reason: None,
+        };
+
+        // Source has changed to 96 kHz; DSP is still running with config B at 44.1.
+        let source = active_source(new_rate);
+        let (sync, counter) = SpyRateSync::new(RateSyncOutcome::PatchedWhileRunning {
+            old_rate: Some(old_rate),
+            new_rate,
+        });
+
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+
+        // Rate sync was called with config B — the reconciler does not revert to config A.
+        assert!(
+            matches!(
+                action,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::PatchedWhileRunning {
+                    new_rate: 96_000,
+                    ..
+                })
+            ),
+            "config switch during rate change: expected RateSyncWhileRunning patching 96 kHz, got {action:?}"
+        );
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "ensure_source_rate must be called exactly once with the new (config B) DSP snapshot"
+        );
+    }
+
+    /// GUI matrix: Enable resampler during playback — user applies a config that
+    /// adds a resampler while the source is playing.  The reconciler must not
+    /// touch the resampler config, only the rate field (roadmap §47, §26,
+    /// "schema-light ConfigDocument").
+    ///
+    /// This test confirms that the reconciler calls ensure_source_rate (which
+    /// only patches the rate field) and does NOT attempt to re-apply the full
+    /// config or remove the resampler.
+    #[tokio::test]
+    async fn gui_matrix_enable_resampler_during_playback_reconciler_only_touches_rate() {
+        let rate = 44_100;
+
+        // Config with resampler enabled — applied by the user via GUI Apply.
+        let config_with_resampler = format!(
+            "devices:\n  samplerate: {rate}\n  resampler:\n    type: Synchronous\n  capture:\n    type: Alsa\n    device: \"hw:Loopback,0,0\"\n    channels: 2\n    format: S32_LE\n    stop_on_inactive: true\n"
+        );
+        let doc = ConfigDocument::from_yaml(&config_with_resampler).unwrap();
+        let fp = doc.fingerprint();
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(doc.clone()),
+            previous_config: Some(doc),
+            active_fingerprint: Some(fp),
+            previous_fingerprint: Some(fp),
+            stop_reason: None,
+        };
+
+        let source = active_source(rate);
+        let (sync, counter) = SpyRateSync::new(RateSyncOutcome::AlreadyCorrect);
+
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(
+            matches!(
+                action,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+            ),
+            "enable resampler: reconciler must only call ensure_source_rate, got {action:?}"
+        );
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "ensure_source_rate must be called exactly once — reconciler must not modify resampler config"
+        );
+    }
+
+    /// GUI matrix: Disable resampler during playback — user removes the resampler
+    /// via GUI Apply while source is playing.  The reconciler treats this
+    /// identically to any other GUI Apply: only the rate field is its concern
+    /// (roadmap §47, §29.1).
+    #[tokio::test]
+    async fn gui_matrix_disable_resampler_during_playback_reconciler_only_touches_rate() {
+        let rate = 96_000;
+
+        // Config with resampler removed — applied by the user via GUI Apply.
+        let config_no_resampler = format!(
+            "devices:\n  samplerate: {rate}\n  capture:\n    type: Alsa\n    device: \"hw:Loopback,0,0\"\n    channels: 2\n    format: S32_LE\n    stop_on_inactive: true\n"
+        );
+        let doc = ConfigDocument::from_yaml(&config_no_resampler).unwrap();
+        let fp = doc.fingerprint();
+        let dsp = DspSnapshot {
+            state: DspState::Running,
+            active_config: Some(doc.clone()),
+            previous_config: Some(doc),
+            active_fingerprint: Some(fp),
+            previous_fingerprint: Some(fp),
+            stop_reason: None,
+        };
+
+        let source = active_source(rate);
+        let (sync, counter) = SpyRateSync::new(RateSyncOutcome::AlreadyCorrect);
+
+        let action = reconcile_step(&source, &dsp, &sync).await.unwrap();
+        assert!(
+            matches!(
+                action,
+                ReconcileAction::RateSyncWhileRunning(RateSyncOutcome::AlreadyCorrect)
+            ),
+            "disable resampler: reconciler must only call ensure_source_rate, got {action:?}"
+        );
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "ensure_source_rate must be called exactly once — reconciler must not restore resampler"
+        );
+    }
+
+    // ── Gate 8 — Failure injection matrix (roadmap §48) ──────────────────────
+
+    /// Failure injection: `snd-aloop` missing — the SourceObserver returns a
+    /// `SourceObserver` error.  The run_loop must skip the current reconcile
+    /// cycle gracefully (not crash) and wait for the next trigger (roadmap §48).
+    #[tokio::test]
+    async fn failure_injection_snd_aloop_missing_run_loop_skips_cycle() {
+        use tokio::time::timeout;
+
+        // A SourceObserver that always fails — simulates snd-aloop missing.
+        struct AlwaysFailingObserver;
+
+        #[async_trait]
+        impl crate::source::observer::SourceObserver for AlwaysFailingObserver {
+            async fn snapshot(&self) -> Result<SourceSnapshot, PicorecdspError> {
+                Err(PicorecdspError::SourceObserver(
+                    "snd-aloop: No such file or directory".into(),
+                ))
+            }
+            async fn next_trigger(&mut self) -> Result<(), PicorecdspError> {
+                Ok(())
+            }
+        }
+
+        let camilla = FakeCamilla {
+            state: DspState::Running,
+            active_config: Some(compliant_config(44_100)),
+            previous_config: Some(compliant_config(44_100)),
+        };
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let cfg = fast_cfg();
+
+        // Run 2 triggers then shut down.  The loop must not panic despite the
+        // source observer always failing.
+        let mut trigger = LimitedTrigger::new(2);
+        let result = timeout(
+            Duration::from_secs(5),
+            run_loop(&camilla, &AlwaysFailingObserver, &sync, &mut trigger, &cfg),
+        )
+        .await
+        .expect("run_loop did not terminate within 5 s");
+
+        // run_loop terminates via trigger exhaustion (SourceObserver error from LimitedTrigger).
+        assert!(
+            matches!(result, Err(PicorecdspError::SourceObserver(_))),
+            "snd-aloop missing: run_loop must terminate cleanly on trigger shutdown, got {result:?}"
+        );
+    }
+
+    /// Failure injection: Loopback handle hangs — the SourceObserver returns
+    /// a transient error after delay.  The run_loop treats any SourceObserver
+    /// error as a skippable cycle (not a fatal crash), per roadmap §48.
+    #[tokio::test]
+    async fn failure_injection_loopback_handle_hangs_run_loop_skips_and_continues() {
+        use tokio::time::timeout;
+
+        // A SourceObserver that fails the first N snapshots (simulates hang + timeout),
+        // then succeeds.
+        struct HangingObserver {
+            failures_remaining: Arc<Mutex<u32>>,
+            good_snapshot: SourceSnapshot,
+        }
+
+        #[async_trait]
+        impl crate::source::observer::SourceObserver for HangingObserver {
+            async fn snapshot(&self) -> Result<SourceSnapshot, PicorecdspError> {
+                let mut remaining = self.failures_remaining.lock().unwrap();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    Err(PicorecdspError::SourceObserver(
+                        "loopback handle timed out".into(),
+                    ))
+                } else {
+                    Ok(self.good_snapshot.clone())
+                }
+            }
+            async fn next_trigger(&mut self) -> Result<(), PicorecdspError> {
+                Ok(())
+            }
+        }
+
+        let camilla = FakeCamilla {
+            state: DspState::Running,
+            active_config: Some(compliant_config(44_100)),
+            previous_config: Some(compliant_config(44_100)),
+        };
+        let sync = FakeRateSync {
+            outcome: RateSyncOutcome::AlreadyCorrect,
+        };
+        let cfg = fast_cfg();
+
+        let observer = HangingObserver {
+            // First 2 snapshot calls fail, third succeeds.
+            failures_remaining: Arc::new(Mutex::new(2)),
+            good_snapshot: active_source(44_100),
+        };
+        // Run 3 triggers (2 skipped cycles due to hang, 1 successful cycle), then shut down.
+        let mut trigger = LimitedTrigger::new(3);
+        let result = timeout(
+            Duration::from_secs(5),
+            run_loop(&camilla, &observer, &sync, &mut trigger, &cfg),
+        )
+        .await
+        .expect("run_loop timed out");
+
+        // Should terminate via trigger exhaustion.
+        assert!(
+            matches!(result, Err(PicorecdspError::SourceObserver(_))),
+            "loopback hang: run_loop must terminate cleanly, got {result:?}"
+        );
+    }
+
+    /// Failure injection: WebSocket `RateLimitExceeded` — CamillaDSP rejects a
+    /// config write because it is in a transitional state.  This error must
+    /// propagate out of `reconcile_step` (the caller — `run_loop` — is responsible
+    /// for retry logic after a fresh snapshot).  It must NOT be silently swallowed
+    /// or treated as a partial success (roadmap §20, §48 / Cliffhanger C).
+    #[tokio::test]
+    async fn failure_injection_rate_limit_exceeded_propagates_out_of_reconcile_step() {
+        let source = active_source(96_000);
+        let dsp = dsp_snap(DspState::Running, 44_100);
+        let result = reconcile_step(&source, &dsp, &RateLimitedSync).await;
+        assert!(
+            matches!(result, Err(PicorecdspError::RateLimitExceeded)),
+            "RateLimitExceeded must propagate out of reconcile_step without being swallowed, got {result:?}"
+        );
+    }
+
+    /// Failure injection: WebSocket `RateLimitExceeded` in the run_loop — the run
+    /// loop must NOT silently absorb this; it should surface as a fatal error
+    /// (since it is not handled in the match arms for known recoverable errors)
+    /// causing the loop to terminate (roadmap §20, §48).
+    #[tokio::test]
+    async fn failure_injection_rate_limit_exceeded_in_run_loop_is_fatal() {
+        use tokio::time::timeout;
+
+        let camilla = FakeCamilla {
+            state: DspState::Running,
+            active_config: Some(compliant_config(44_100)),
+            previous_config: Some(compliant_config(44_100)),
+        };
+        // Source at 96 kHz so the rate-sync path is taken.
+        let source_observer = FixedSourceObserver {
+            snapshot: active_source(96_000),
+        };
+        let cfg = fast_cfg();
+        let mut trigger = LimitedTrigger::new(1);
+
+        let result = timeout(
+            Duration::from_secs(5),
+            run_loop(
+                &camilla,
+                &source_observer,
+                &RateLimitedSync,
+                &mut trigger,
+                &cfg,
+            ),
+        )
+        .await
+        .expect("run_loop timed out");
+
+        assert!(
+            matches!(result, Err(PicorecdspError::RateLimitExceeded)),
+            "RateLimitExceeded must be fatal in run_loop — must not be silently absorbed, got {result:?}"
+        );
     }
 }

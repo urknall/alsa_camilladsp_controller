@@ -117,6 +117,12 @@ pub mod testing {
         trigger_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>,
     }
 
+    impl Default for MockSourceObserver {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl MockSourceObserver {
         pub fn new() -> Self {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
