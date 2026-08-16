@@ -28,6 +28,7 @@ on:
 permissions:
   contents: write      # needed to push the sync branch
   pull-requests: write # needed to open the PR
+  issues: write        # needed for fallback notification when PR creation is blocked
 
 jobs:
   sync:
@@ -75,13 +76,15 @@ jobs:
             --color "0075ca" \
             || true   # label may already exist; ignore the error
 
-      - name: Create sync branch and open PR
+      - name: Create sync branch and push snapshot update
         if: steps.diff.outputs.changed == 'true'
+        id: push_branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           DATE="$(date -u +%Y%m%d-%H%M)"
           BRANCH="chore/upstream-sync-${DATE}"
+          PR_TITLE="chore(upstream): sync upstream snapshots ${DATE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -90,14 +93,94 @@ jobs:
           git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
           git push origin "$BRANCH"
 
-          PR_TITLE="chore(upstream): sync upstream snapshots ${DATE}"
-          PR_BODY="$(cat /tmp/pr-body.md)"
-          gh pr create \
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Open sync pull request
+        if: steps.diff.outputs.changed == 'true'
+        id: open_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.push_branch.outputs.branch }}
+          PR_TITLE: ${{ steps.push_branch.outputs.pr_title }}
+        run: |
+          set +e
+          OUTPUT=$(gh pr create \
             --title  "$PR_TITLE" \
-            --body   "$PR_BODY" \
+            --body-file /tmp/pr-body.md \
             --base   main \
             --head   "$BRANCH" \
-            --label  "upstream"
+            --label  "upstream" 2>&1)
+          STATUS=$?
+          set -e
+
+          printf '%s\n' "$OUTPUT"
+
+          if [ "$STATUS" -eq 0 ]; then
+            echo "blocked_by_policy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if printf '%s' "$OUTPUT" | grep -Fq "GitHub Actions is not permitted to create or approve pull requests"; then
+            echo "blocked_by_policy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          exit "$STATUS"
+
+      - name: Fallback when PR creation is blocked
+        if: steps.diff.outputs.changed == 'true' && steps.open_pr.outputs.blocked_by_policy == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.push_branch.outputs.branch }}
+          PR_TITLE: ${{ steps.push_branch.outputs.pr_title }}
+          REPO: ${{ github.repository }}
+        run: |
+          COMPARE_URL="https://github.com/${REPO}/compare/main...${BRANCH}?expand=1"
+          ISSUE_TITLE="Upstream sync branch pushed but PR creation was blocked"
+          ISSUE_SEARCH="Upstream sync branch pushed but PR creation was blocked in:title"
+
+          {
+            echo "## Upstream Sync"
+            echo ""
+            echo "⚠️ GitHub Actions pushed \`${BRANCH}\`, but repository policy blocked automatic pull request creation."
+            echo ""
+            echo "- Branch: \`${BRANCH}\`"
+            echo "- Manual PR link: ${COMPARE_URL}"
+            echo "- Required repository setting: **Allow GitHub Actions to create and approve pull requests**"
+            echo ""
+            echo "The workflow completed the snapshot sync and pushed the update branch successfully."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          EXISTING=$(gh issue list \
+            --label "upstream" \
+            --state open \
+            --search "$ISSUE_SEARCH" \
+            --json number \
+            --jq '.[0].number' 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Fallback issue already open (#${EXISTING}) — skipping duplicate issue creation."
+            exit 0
+          fi
+
+          {
+            printf "## Upstream Sync PR Creation Blocked\n\n"
+            printf "The upstream sync workflow pushed branch \`%s\` but could not open a pull request automatically.\n\n" "$BRANCH"
+            printf -- "- Branch: \`%s\`\n" "$BRANCH"
+            printf -- "- Suggested PR title: \`%s\`\n" "$PR_TITLE"
+            printf -- "- Manual PR link: %s\n\n" "$COMPARE_URL"
+            printf "GitHub reported:\n\n"
+            printf "> GitHub Actions is not permitted to create or approve pull requests.\n\n"
+            printf "To restore automatic PR creation for this workflow, enable **Allow GitHub Actions to create and approve pull requests** in the repository (or org / enterprise override) Actions settings.\n\n"
+            printf "### Snapshot PR body\n\n"
+            cat /tmp/pr-body.md
+          } > /tmp/upstream-sync-issue-body.md
+
+          gh issue create \
+            --title "$ISSUE_TITLE" \
+            --label "upstream" \
+            --body-file /tmp/upstream-sync-issue-body.md
 
       - name: No changes — skip PR
         if: steps.diff.outputs.changed == 'false'
