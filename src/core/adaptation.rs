@@ -640,6 +640,87 @@ pub fn adapt_config_for_backend(
     Ok(serde_yaml_ng::to_string(&root)?)
 }
 
+// ─── Static-mode diagnostics ───────────────────────────────────────────────
+
+/// Read-only diagnostic comparing an **unmodified** config against the
+/// currently detected transport `WaveFormat`, for use in
+/// `core::config::ConfigMode::Static`.
+///
+/// Unlike [`adapt_config_for_backend`], this function never mutates
+/// anything — it does not write a file, return an adapted YAML string, or
+/// have any side effect beyond reading `path`. It exists so operators can
+/// see *why* CamillaDSP might reject a static config (or run with an
+/// unexpected rate/format/channel count), without piCoreDSP silently
+/// "fixing" the mismatch for them, which is the entire point of
+/// `ConfigMode::Static`.
+///
+/// Returns `None` when the config cannot be read/parsed (parse errors are
+/// CamillaDSP's concern to report, not this diagnostic's) or when no
+/// mismatch worth surfacing was found. A samplerate mismatch is only
+/// reported when `devices.resampler` is absent/null, mirroring
+/// `adapt_config_for_backend`'s own rule that a configured resampler makes a
+/// `devices.samplerate` vs. transport-rate difference expected rather than a
+/// problem.
+pub fn diagnose_static_config_mismatch(path: &Path, wave: &WaveFormat) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let root: YamlValue = serde_yaml_ng::from_str(&raw).ok()?;
+    let devices = root.as_mapping()?.get(yaml_key("devices"))?.as_mapping()?;
+
+    let mut mismatches = Vec::new();
+
+    let has_resampler = devices
+        .get(yaml_key("resampler"))
+        .map(|v| !v.is_null())
+        .unwrap_or(false);
+    if !has_resampler {
+        if let (Some(configured), Some(actual)) = (
+            devices.get(yaml_key("samplerate")).and_then(yaml_u32),
+            wave.sample_rate,
+        ) {
+            if configured != actual {
+                mismatches.push(format!(
+                    "stream rate = {actual} Hz, configured rate = {configured} Hz"
+                ));
+            }
+        }
+    }
+
+    if let Some(capture) = devices
+        .get(yaml_key("capture"))
+        .and_then(YamlValue::as_mapping)
+    {
+        if let (Some(configured), Some(actual)) = (
+            capture.get(yaml_key("channels")).and_then(yaml_u32),
+            wave.channels,
+        ) {
+            if configured != actual {
+                mismatches.push(format!(
+                    "stream channels = {actual}, configured channels = {configured}"
+                ));
+            }
+        }
+        if let (Some(configured), Some(actual)) = (
+            capture.get(yaml_key("format")).and_then(YamlValue::as_str),
+            wave.sample_format.as_deref(),
+        ) {
+            if configured != actual {
+                mismatches.push(format!(
+                    "stream format = {actual}, configured format = {configured}"
+                ));
+            }
+        }
+    }
+
+    if mismatches.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{} — configuration is not modified in static mode",
+            mismatches.join(", ")
+        ))
+    }
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1589,5 +1670,106 @@ mod tests {
         }
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ── diagnose_static_config_mismatch ─────────────────────────────────
+
+    #[test]
+    fn diagnose_static_returns_none_when_wave_matches_config() {
+        let dir = test_dir("diagnose-match");
+        let config = dir.join("config.yml");
+        fs::write(&config, base_config("hw:DAC,0", Some("S16_LE"))).unwrap();
+        let wave = WaveFormat {
+            sample_rate: Some(44100),
+            sample_format: None,
+            channels: Some(2),
+        };
+        assert_eq!(diagnose_static_config_mismatch(&config, &wave), None);
+    }
+
+    #[test]
+    fn diagnose_static_reports_samplerate_mismatch() {
+        let dir = test_dir("diagnose-rate-mismatch");
+        let config = dir.join("config.yml");
+        fs::write(&config, base_config("hw:DAC,0", Some("S16_LE"))).unwrap();
+        let wave = WaveFormat {
+            sample_rate: Some(48000),
+            sample_format: None,
+            channels: None,
+        };
+        let msg = diagnose_static_config_mismatch(&config, &wave).unwrap();
+        assert!(msg.contains("stream rate = 48000 Hz"), "{msg}");
+        assert!(msg.contains("configured rate = 44100 Hz"), "{msg}");
+        assert!(
+            msg.contains("configuration is not modified in static mode"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn diagnose_static_reports_channel_and_format_mismatch() {
+        let dir = test_dir("diagnose-channels-format");
+        let config = dir.join("config.yml");
+        fs::write(&config, base_config("hw:DAC,0", Some("S16_LE"))).unwrap();
+        let wave = WaveFormat {
+            sample_rate: Some(44100),
+            sample_format: Some("S32_LE".to_owned()),
+            channels: Some(6),
+        };
+        let msg = diagnose_static_config_mismatch(&config, &wave).unwrap();
+        assert!(msg.contains("stream channels = 6, configured channels = 2"), "{msg}");
+        assert!(
+            msg.contains("stream format = S32_LE, configured format = S16_LE"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn diagnose_static_ignores_samplerate_mismatch_when_resampler_present() {
+        let dir = test_dir("diagnose-resampler");
+        let config = dir.join("config.yml");
+        fs::write(
+            &config,
+            "devices:\n  samplerate: 44100\n  chunksize: 2048\n  \
+             resampler:\n    type: Synchronous\n  \
+             capture:\n    type: Alsa\n    channels: 2\n    \
+             device: \"hw:Loopback,0,0\"\n  \
+             playback:\n    type: Alsa\n    channels: 2\n    \
+             device: \"hw:DAC,0\"\nfilters: {}\nmixers: {}\n\
+             pipeline: []\nprocessors: {}\n",
+        )
+        .unwrap();
+        let wave = WaveFormat {
+            sample_rate: Some(96000),
+            sample_format: None,
+            channels: None,
+        };
+        assert_eq!(diagnose_static_config_mismatch(&config, &wave), None);
+    }
+
+    #[test]
+    fn diagnose_static_returns_none_for_unreadable_path() {
+        let missing = std::env::temp_dir().join("picoredsp-diagnose-missing-xyz.yml");
+        let wave = WaveFormat {
+            sample_rate: Some(48000),
+            sample_format: None,
+            channels: None,
+        };
+        assert_eq!(diagnose_static_config_mismatch(&missing, &wave), None);
+    }
+
+    #[test]
+    fn diagnose_static_never_mutates_the_config_file() {
+        let dir = test_dir("diagnose-no-mutation");
+        let config = dir.join("config.yml");
+        let original = base_config("hw:DAC,0", Some("S16_LE"));
+        fs::write(&config, &original).unwrap();
+        let wave = WaveFormat {
+            sample_rate: Some(96000),
+            sample_format: Some("S32_LE".to_owned()),
+            channels: Some(8),
+        };
+        let _ = diagnose_static_config_mismatch(&config, &wave);
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
     }
 }

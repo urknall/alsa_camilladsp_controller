@@ -33,8 +33,6 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct StdinSupervisor {
     /// Path to the `camilladsp` binary.
     binary_path: PathBuf,
-    /// Path to the transient runtime-adapted YAML config file.
-    runtime_config_path: PathBuf,
     /// Extra command-line arguments forwarded to CamillaDSP on every spawn
     /// (e.g. `--port 1234 --address 127.0.0.1 --statefile /…/statefile.yml`).
     cdsp_extra_args: Vec<String>,
@@ -47,16 +45,15 @@ impl StdinSupervisor {
     /// Create a new supervisor.
     ///
     /// `binary_path`: path to the `camilladsp` executable.
-    /// `runtime_config_path`: path to the transient runtime-adapted YAML config
-    ///   (will be canonicalised before being passed to CamillaDSP).
-    pub fn new(
-        binary_path: impl AsRef<Path>,
-        runtime_config_path: impl AsRef<Path>,
-        log_level: LogLevel,
-    ) -> Self {
+    ///
+    /// The supervisor deliberately does not take a config path at
+    /// construction time: it has no opinion on where a config comes from
+    /// (the original user file in `ConfigMode::Static`, or a transient
+    /// runtime-adapted copy in `ConfigMode::Adaptive`) — that decision is
+    /// made once by the caller and passed to each [`Self::start_stream`] call.
+    pub fn new(binary_path: impl AsRef<Path>, log_level: LogLevel) -> Self {
         Self {
             binary_path: binary_path.as_ref().to_path_buf(),
-            runtime_config_path: runtime_config_path.as_ref().to_path_buf(),
             cdsp_extra_args: Vec::new(),
             active: None,
             log_level,
@@ -77,20 +74,23 @@ impl StdinSupervisor {
         self
     }
 
-    /// Spawn a new CamillaDSP process for the current stream.
+    /// Spawn a new CamillaDSP process for the current stream, loading
+    /// `config_path`.
     ///
-    /// The transient runtime config must already have been written/updated by
-    /// the caller before invoking this method.
+    /// `config_path` is resolved (canonicalised, following symlinks) here;
+    /// the caller does not need to pre-resolve it. In `ConfigMode::Static`
+    /// this is the original active config file; in `ConfigMode::Adaptive`
+    /// the caller must have already written the transient runtime-adapted
+    /// config to this path before invoking this method.
     ///
     /// Returns the raw fd of the pipe write-end, which the caller must pass
     /// to the plugin via SCM_RIGHTS in the READY message.  The fd remains
     /// valid until `stop_stream` is called or the supervisor is dropped.
-    pub fn start_stream(&mut self) -> AppResult<std::os::unix::io::RawFd> {
+    pub fn start_stream(&mut self, config_path: &Path) -> AppResult<std::os::unix::io::RawFd> {
         // Stop any leftover process from a previous (unexpected) stream.
         self.stop_stream_inner();
 
-        let config_path =
-            crate::camilladsp::stdin_capture::resolve_config_path(&self.runtime_config_path)?;
+        let config_path = crate::camilladsp::stdin_capture::resolve_config_path(config_path)?;
 
         log(
             LogLevel::Info,
@@ -265,7 +265,7 @@ mod tests {
     fn supervisor_starts_cat_and_stops_cleanly() {
         let binary = blocking_binary("start-stop");
         let config = tmp_config("start-stop");
-        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, LogLevel::Error);
 
         let write_fd = sup.start_stream().unwrap();
         assert!(write_fd >= 0);
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn supervisor_start_stream_returns_valid_fd() {
         let config = tmp_config("fd-valid");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new("/bin/cat", LogLevel::Error);
         let fd = sup.start_stream().unwrap();
         assert!(fd >= 0);
         // Write some bytes to confirm fd is usable.
@@ -292,7 +292,7 @@ mod tests {
     fn supervisor_release_controller_write_end_allows_plugin_close_to_end_process() {
         let binary = blocking_binary("release-write-end");
         let config = tmp_config("release-write-end");
-        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, LogLevel::Error);
         let fd = sup.start_stream().unwrap();
         let plugin_fd = dup_fd(fd);
 
@@ -316,14 +316,14 @@ mod tests {
     #[test]
     fn supervisor_is_running_returns_false_when_no_stream() {
         let config = tmp_config("no-stream");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new("/bin/cat", LogLevel::Error);
         assert!(!sup.is_running());
     }
 
     #[test]
     fn supervisor_stop_is_idempotent() {
         let config = tmp_config("idempotent");
-        let mut sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new("/bin/cat", LogLevel::Error);
         sup.start_stream().unwrap();
         sup.stop_stream();
         // Second stop must not panic.
@@ -334,7 +334,7 @@ mod tests {
     fn supervisor_start_stops_previous_process_on_restart() {
         let binary = blocking_binary("restart");
         let config = tmp_config("restart");
-        let mut sup = StdinSupervisor::new(&binary, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&binary, LogLevel::Error);
 
         // First stream.
         sup.start_stream().unwrap();
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn supervisor_fails_with_nonexistent_binary() {
         let config = tmp_config("bad-bin");
-        let mut sup = StdinSupervisor::new("/nonexistent/camilladsp", &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new("/nonexistent/camilladsp", LogLevel::Error);
         let result = sup.start_stream();
         assert!(result.is_err());
     }
@@ -360,7 +360,7 @@ mod tests {
     fn supervisor_fails_with_nonexistent_config() {
         let missing = std::env::temp_dir().join("picoredsp-missing-cfg.yml");
         let _ = std::fs::remove_file(&missing);
-        let mut sup = StdinSupervisor::new("/bin/cat", &missing, LogLevel::Error);
+        let mut sup = StdinSupervisor::new("/bin/cat", LogLevel::Error);
         let result = sup.start_stream();
         assert!(result.is_err());
     }
@@ -376,7 +376,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let config = tmp_config("startup-ok");
-        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&script, LogLevel::Error);
         sup.start_stream().unwrap();
 
         let alive = sup.startup_check(Duration::from_millis(200), Duration::from_millis(20));
@@ -398,7 +398,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let config = tmp_config("startup-exits");
-        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&script, LogLevel::Error);
         sup.start_stream().unwrap();
 
         let alive = sup.startup_check(Duration::from_millis(500), Duration::from_millis(20));
@@ -419,7 +419,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let config = tmp_config("startup-playback-err");
-        let mut sup = StdinSupervisor::new(&script, &config, LogLevel::Error);
+        let mut sup = StdinSupervisor::new(&script, LogLevel::Error);
         sup.start_stream().unwrap();
 
         let alive = sup.startup_check(Duration::from_millis(500), Duration::from_millis(20));
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn recent_stderr_is_empty_when_no_stream_has_started() {
         let config = tmp_config("no-stream");
-        let sup = StdinSupervisor::new("/bin/cat", &config, LogLevel::Error);
+        let sup = StdinSupervisor::new("/bin/cat", LogLevel::Error);
         assert_eq!(sup.recent_stderr(), "");
     }
 }

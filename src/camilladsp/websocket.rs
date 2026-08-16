@@ -190,6 +190,41 @@ pub trait CamillaClient {
         self.query("Stop", None)?;
         Ok(())
     }
+
+    /// `SetConfigFilePath` — change the config file path CamillaDSP will use.
+    /// Not applied until [`CamillaClient::reload`] (or `SIGHUP`) runs.
+    ///
+    /// Used by `core::config::ConfigMode::Static`, where the controller must
+    /// hand CamillaDSP the original file path rather than a YAML string
+    /// mutated in memory (see [`CamillaClient::load_config_file`]).
+    fn set_config_file_path(&mut self, path: &str) -> Result<(), WsError> {
+        self.query(
+            "SetConfigFilePath",
+            Some(JsonValue::String(path.to_owned())),
+        )?;
+        Ok(())
+    }
+
+    /// `Reload` — reload the config file at the path last set via
+    /// [`CamillaClient::set_config_file_path`] (equivalent to `SIGHUP`).
+    fn reload(&mut self) -> Result<(), WsError> {
+        self.query("Reload", None)?;
+        Ok(())
+    }
+
+    /// Load a CamillaDSP config directly from `path` on disk, without ever
+    /// sending its content over the wire.
+    ///
+    /// Combines `SetConfigFilePath` + `Reload`, mirroring how CamillaGUI
+    /// switches the active config. This is the `ConfigMode::Static`
+    /// counterpart to [`CamillaClient::set_config`]: the latter sends
+    /// (possibly adapted) YAML content directly, while this method tells
+    /// CamillaDSP to (re)read the file itself, so the running configuration
+    /// and `GetConfigFilePath` both stay pinned to the on-disk file.
+    fn load_config_file(&mut self, path: &str) -> Result<(), WsError> {
+        self.set_config_file_path(path)?;
+        self.reload()
+    }
 }
 
 // ─── Client ────────────────────────────────────────────────────────────────
@@ -697,6 +732,96 @@ mod tests {
         let mut client = MockClient::new(vec![Ok(None)]);
         client.stop().unwrap();
         assert_eq!(client.commands_sent, vec![("Stop".to_owned(), None)]);
+    }
+
+    #[test]
+    fn set_config_file_path_sends_path_as_string_argument() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        client.set_config_file_path("/mnt/mmcblk0p2/tce/camilladsp/MyDSP.yml")
+            .unwrap();
+        assert_eq!(
+            client.commands_sent,
+            vec![(
+                "SetConfigFilePath".to_owned(),
+                Some(JsonValue::String(
+                    "/mnt/mmcblk0p2/tce/camilladsp/MyDSP.yml".to_owned()
+                ))
+            )]
+        );
+    }
+
+    #[test]
+    fn set_config_file_path_propagates_command_errors() {
+        let mut client = MockClient::new(vec![Err(WsError::Command(
+            CommandReason::ConfigValidation,
+            "bad path".to_owned(),
+        ))]);
+        assert!(matches!(
+            client.set_config_file_path("/no/such/file.yml"),
+            Err(WsError::Command(CommandReason::ConfigValidation, _))
+        ));
+    }
+
+    #[test]
+    fn reload_sends_reload_with_no_argument() {
+        let mut client = MockClient::new(vec![Ok(None)]);
+        client.reload().unwrap();
+        assert_eq!(client.commands_sent, vec![("Reload".to_owned(), None)]);
+    }
+
+    #[test]
+    fn reload_propagates_command_errors() {
+        let mut client = MockClient::new(vec![Err(WsError::Command(
+            CommandReason::ConfigValidation,
+            "invalid config on disk".to_owned(),
+        ))]);
+        assert!(matches!(
+            client.reload(),
+            Err(WsError::Command(CommandReason::ConfigValidation, _))
+        ));
+    }
+
+    #[test]
+    fn load_config_file_sends_set_config_file_path_then_reload_in_order() {
+        let mut client = MockClient::new(vec![Ok(None), Ok(None)]);
+        client.load_config_file("/mnt/.../MyDSP.yml").unwrap();
+        assert_eq!(
+            client.commands_sent,
+            vec![
+                (
+                    "SetConfigFilePath".to_owned(),
+                    Some(JsonValue::String("/mnt/.../MyDSP.yml".to_owned()))
+                ),
+                ("Reload".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_config_file_never_sends_set_config() {
+        // The whole point of `load_config_file` (used by `ConfigMode::Static`)
+        // is that it must never carry YAML content over the wire — only the
+        // path, followed by a reload of that same path.
+        let mut client = MockClient::new(vec![Ok(None), Ok(None)]);
+        client.load_config_file("/mnt/.../MyDSP.yml").unwrap();
+        assert!(client
+            .commands_sent
+            .iter()
+            .all(|(cmd, _)| cmd != "SetConfig"));
+    }
+
+    #[test]
+    fn load_config_file_stops_at_first_error_without_reloading() {
+        let mut client = MockClient::new(vec![Err(WsError::Command(
+            CommandReason::ConfigValidation,
+            "path does not exist".to_owned(),
+        ))]);
+        assert!(matches!(
+            client.load_config_file("/missing.yml"),
+            Err(WsError::Command(CommandReason::ConfigValidation, _))
+        ));
+        assert_eq!(client.commands_sent.len(), 1);
+        assert_eq!(client.commands_sent[0].0, "SetConfigFilePath");
     }
 
     #[test]
