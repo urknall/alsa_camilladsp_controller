@@ -1,0 +1,26 @@
+{
+  "source_id": "camillagui-backend-master",
+  "repo": "HEnquist/camillagui-backend",
+  "ref": "master",
+  "sha": "4cf1e4188aebaaf305bf6f462e96fbed4b238808",
+  "fetched_at": "2026-08-16T18:16:06.300061+00:00",
+  "files": [
+    "README.md",
+    "backend/__init__.py",
+    "backend/convolver_config_import.py",
+    "backend/eqapo_config_import.py",
+    "backend/filemanagement.py",
+    "backend/filters.py",
+    "backend/legacy_config_import.py",
+    "backend/routes.py",
+    "backend/settings.py",
+    "backend/settings_schemas.py",
+    "backend/statics.py",
+    "backend/version.py",
+    "backend/views.py",
+    "config/camillagui.yml",
+    "config/gui-config.yml",
+    "main.py",
+    "release_automation/versions.yml"
+  ]
+}
