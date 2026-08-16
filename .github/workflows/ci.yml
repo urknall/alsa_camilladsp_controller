@@ -28,7 +28,7 @@ jobs:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -40,7 +40,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -53,7 +53,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
@@ -61,41 +61,142 @@ jobs:
         # and excluded here; they run only when PICORECDSP_HW_TESTS=1 is set (Gate 12 hardware gate).
         run: cargo test --all-features
 
-  # ── ARM cross-build (piCorePlayer target) ─────────────────────────────────
-  # Cross-compiles for aarch64-unknown-linux-musl, the static target used on
-  # Raspberry Pi 3/4/5 running piCorePlayer (TinyCore, musl libc).
-  build-arm:
-    name: ARM cross-build (aarch64-musl)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
-      - name: Install musl cross-compiler
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools gcc-aarch64-linux-gnu
-      - name: Configure cross-compilation linker
-        run: |
-          mkdir -p .cargo
-          cat >> .cargo/config.toml <<'EOF'
-          [target.aarch64-unknown-linux-musl]
-          linker = "aarch64-linux-gnu-gcc"
-          EOF
-      - name: cargo build --release (aarch64-musl)
-        run: cargo build --release --target aarch64-unknown-linux-musl
-
   # ── Installer script linting ───────────────────────────────────────────────
   installer-lint:
     name: Installer shell lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install shellcheck
         run: sudo apt-get install -y -qq shellcheck
       - name: shellcheck install_picorecdsp.sh
         run: shellcheck -S warning install_picorecdsp.sh
       - name: shellcheck probes/probe_camilla_capabilities.sh
         run: shellcheck -S warning probes/probe_camilla_capabilities.sh
+
+  # ── ARM cross-build (piCorePlayer targets) ────────────────────────────────
+  # Cross-compiles release binaries for the two piCorePlayer ARM platforms.
+  # Runs only after all tests and linting pass.
+  #   aarch64-unknown-linux-gnu — Raspberry Pi 3/4/5 running 64-bit piCorePlayer
+  #   armv7-unknown-linux-gnueabihf — Raspberry Pi 2/3 running 32-bit piCorePlayer
+  build-arm:
+    name: Build (${{ matrix.binary_suffix }})
+    runs-on: ubuntu-24.04
+    needs: [fmt, clippy, test, installer-lint]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            binary_suffix: aarch64
+            cross_gcc: gcc-aarch64-linux-gnu
+            libasound_arch: arm64
+            pkg_config_path: /usr/lib/aarch64-linux-gnu/pkgconfig
+          - target: armv7-unknown-linux-gnueabihf
+            binary_suffix: armv7
+            cross_gcc: gcc-arm-linux-gnueabihf
+            libasound_arch: armhf
+            pkg_config_path: /usr/lib/arm-linux-gnueabihf/pkgconfig
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust (stable) with cross-compilation target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Enable multiarch and install cross toolchain
+        run: |
+          sudo dpkg --add-architecture ${{ matrix.libasound_arch }}
+          # On Ubuntu 24.04 (Noble), apt uses DEB822 format. After adding a foreign
+          # arch we restrict the existing source to amd64 and add ports.ubuntu.com
+          # for the cross architecture to avoid 404s.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            grep -q '^Architectures:' /etc/apt/sources.list.d/ubuntu.sources || \
+              sudo sed -i '/^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          else
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+          fi
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee /etc/apt/sources.list.d/cross-ports.list
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee -a /etc/apt/sources.list.d/cross-ports.list
+          printf 'deb [arch=%s] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' \
+            "${{ matrix.libasound_arch }}" | sudo tee -a /etc/apt/sources.list.d/cross-ports.list
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            pkg-config \
+            ${{ matrix.cross_gcc }}
+      - name: Configure cross-compilation linker
+        run: |
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<EOF
+          [target.${{ matrix.target }}]
+          linker = "${{ matrix.cross_gcc }}"
+          EOF
+      - name: cargo build --release (${{ matrix.target }})
+        env:
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: ${{ matrix.pkg_config_path }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Stage binary with architecture suffix
+        run: |
+          cp target/${{ matrix.target }}/release/picorecdsp \
+             picorecdsp-${{ matrix.binary_suffix }}
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum picorecdsp-${{ matrix.binary_suffix }} \
+            > picorecdsp-${{ matrix.binary_suffix }}.sha256
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: picorecdsp-${{ matrix.binary_suffix }}
+          path: |
+            picorecdsp-${{ matrix.binary_suffix }}
+            picorecdsp-${{ matrix.binary_suffix }}.sha256
+          if-no-files-found: error
+
+  # ── Publish rolling installer release (main branch only) ──────────────────
+  # Creates/updates the installer-latest GitHub release so the installer script
+  # can always download the latest successful binaries from a stable URL.
+  release_main:
+    name: Publish installer release
+    runs-on: ubuntu-latest
+    needs: build-arm
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download aarch64 binary
+        uses: actions/download-artifact@v7
+        with:
+          name: picorecdsp-aarch64
+      - name: Download armv7 binary
+        uses: actions/download-artifact@v7
+        with:
+          name: picorecdsp-armv7
+      - name: Delete existing installer-latest tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete installer-latest --yes --cleanup-tag 2>/dev/null || true
+      - name: Create or update rolling installer release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: installer-latest
+          target_commitish: ${{ github.sha }}
+          name: Installer latest
+          body: |
+            Rolling release — latest successful build from `main`.
+            The installer script downloads these binaries automatically.
+          prerelease: true
+          files: |
+            picorecdsp-aarch64
+            picorecdsp-aarch64.sha256
+            picorecdsp-armv7
+            picorecdsp-armv7.sha256
+          fail_on_unmatched_files: true
