@@ -244,7 +244,8 @@ def generate_dashboard(
         removal_when = (cap.get("removal_when") or "").strip()
         # First line of removal_when, capped at 60 chars.
         removal_summary = removal_when.split("\n")[0].strip()[:60]
-        if removal_when and len(removal_when) > 60:
+        first_line = removal_when.split("\n")[0].strip()
+        if len(first_line) > 60:
             removal_summary += "…"
         probe_status_str = _workaround_probe_status(key, probe_results)
         lines.append(f"| {display} | {file_cell} | {removal_summary} | {probe_status_str} |")

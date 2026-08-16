@@ -22,7 +22,7 @@ name: Upstream Capability Canary
 
 on:
   schedule:
-    - cron: "0 4 * * 1"   # nightly at 04:00 UTC every Monday (weekly)
+    - cron: "0 4 * * 1"   # weekly at 04:00 UTC every Monday
   workflow_dispatch:
   pull_request:
     branches: ["main"]
