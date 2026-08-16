@@ -1,5 +1,14 @@
 # piCoreDSP Dual-Backend Architecture Roadmap
 
+> **SUPERSEDED (v1, frozen/archival).** This roadmap describes the v1 dual-backend
+> (`snd-aloop` + custom `ioplug`) architecture. It is no longer the basis for new
+> development. New work is planned under
+> [`piCoreCDSP_v2_Roadmap.md`](piCoreCDSP_v2_Roadmap.md) and tracked in
+> [`ROADMAP_CHECKLIST_v2.md`](ROADMAP_CHECKLIST_v2.md). This file and
+> [`ROADMAP_CHECKLIST.md`](ROADMAP_CHECKLIST.md) remain only as historical record of
+> the v1 effort until the repository reset described in `piCoreCDSP_v2_Roadmap.md` §0
+> is executed. Do not use this file to plan v2 work.
+
 ## 1. Project goal
 
 The long-term goal is to evolve piCoreDSP from a single `snd-aloop` based architecture into a **backend-neutral Rust control platform** supporting two independent audio transport implementations:
