@@ -840,8 +840,8 @@ echo "CamillaDSP configuration validation OK."
             exit 1
         fi
 
-        # Use /dev/tcp to probe the WebSocket port without requiring nc or curl.
-        if (exec 3<>"/dev/tcp/127.0.0.1/${TEST_PORT}" && exec 3>&-) 2>/dev/null; then
+        # Probe the WebSocket port using nc (available in busybox on piCorePlayer).
+        if nc -z 127.0.0.1 "${TEST_PORT}" 2>/dev/null; then
             ws_ready=true
             break
         fi
