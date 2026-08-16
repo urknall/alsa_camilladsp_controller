@@ -3,7 +3,7 @@
   "repo": "HEnquist/camillagui-backend",
   "ref": "next4.2.0",
   "sha": "f76082a3a792cee4997d09a542d55e655604b678",
-  "fetched_at": "2026-08-16T18:16:09.526475+00:00",
+  "fetched_at": "2026-08-16T18:56:13.101439+00:00",
   "files": [
     "backend/__init__.py",
     "backend/convolver_config_import.py",

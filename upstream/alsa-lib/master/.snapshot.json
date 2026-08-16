@@ -3,7 +3,7 @@
   "repo": "alsa-project/alsa-lib",
   "ref": "master",
   "sha": "a48bbb2322fefc7eff9dca061517e935e98cb6a5",
-  "fetched_at": "2026-08-16T18:16:22.741376+00:00",
+  "fetched_at": "2026-08-16T18:56:33.549320+00:00",
   "files": [
     "doc/asoundrc.txt",
     "include/Makefile.am",
