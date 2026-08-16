@@ -141,7 +141,14 @@ pub enum ReconcileAction {
 /// This is always a set of independent fresh reads — nothing is cached.
 async fn read_dsp_snapshot(camilla: &dyn CamillaControl) -> Result<DspSnapshot, PicorecdspError> {
     let state = camilla.state().await?;
-    let stop_reason = camilla.stop_reason().await?;
+    // Only query stop_reason for states where it is meaningful (roadmap §33).
+    // Skipping it for Running/Paused/Inactive/Starting avoids an unnecessary
+    // WebSocket round-trip on the common healthy path.
+    let stop_reason = if matches!(state, DspState::Stalled | DspState::Failed) {
+        camilla.stop_reason().await?
+    } else {
+        None
+    };
     let active_config = camilla.active_config().await?;
     let previous_config = camilla.previous_config().await?;
     let active_fingerprint = active_config.as_ref().map(|c| c.fingerprint());
@@ -367,17 +374,17 @@ pub async fn run_loop(
 
         // ── Post-step: bounded DSP error retry (roadmap §33 — stalled / DAC) ──
         // If the action is DspError, back off and retry up to max_dsp_error_retries
-        // times before waiting for the next external trigger.  This prevents an
-        // immediate restart loop while still attempting recovery.
+        // times before waiting for the next external trigger.  The
+        // `dsp_error_retry_interval` sleep is applied on every DspError cycle
+        // (including past the cap) so that even when the fast-retry window is
+        // exhausted the loop cannot tight-spin faster than the retry interval.
         match &action {
             ReconcileAction::DspError { .. } => {
-                dsp_error_count += 1;
-                if dsp_error_count <= cfg.max_dsp_error_retries {
-                    tokio::time::sleep(cfg.dsp_error_retry_interval).await;
-                }
-                // Note: intentionally NOT looping here — the retry fires on the
-                // *next* call to trigger.next_trigger(), keeping the control flow
-                // simple and ensuring a fresh snapshot every attempt.
+                dsp_error_count = dsp_error_count.saturating_add(1);
+                // Always sleep at least dsp_error_retry_interval to avoid spinning.
+                // Within the bounded-retry window the intent is to retry promptly;
+                // beyond it we still wait the same interval (no zero-delay cycles).
+                tokio::time::sleep(cfg.dsp_error_retry_interval).await;
             }
             _ => {
                 dsp_error_count = 0;
