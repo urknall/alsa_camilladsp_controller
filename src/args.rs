@@ -142,7 +142,7 @@ impl Default for Args {
 pub fn usage() {
     println!(
         "picoredsp-controller {VERSION}\n\
-Rust ALSA loopback controller for CamillaDSP\n\n\
+Rust dual-backend ALSA/CamillaDSP controller\n\n\
 Usage:\n\
   picoredsp-controller --adapt PATH [options]\n\
   picoredsp-controller --probe [--device DEVICE]\n\

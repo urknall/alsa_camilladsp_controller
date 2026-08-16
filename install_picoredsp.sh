@@ -1,10 +1,12 @@
 #!/bin/sh -e
 
 ###############################################################################
-# piCoreCDSP - snd-aloop + Rust CamillaDSP controller
+# piCoreCDSP - dual-backend Rust CamillaDSP controller
 #
 # Architecture:
-#   - audio stays on the proven ALSA snd-aloop path;
+#   - audio uses one of two transports selected by INSTALL_BACKEND:
+#       * aloop: the proven ALSA snd-aloop path;
+#       * ioplug: a direct ALSA ioplug PCM -> CamillaDSP stdin path;
 #   - the Python/pyalsa/pyCamillaDSP runtime is replaced by one Rust binary;
 #   - the Rust controller source lives in the GitHub repository and pre-built
 #     aarch64/armv7 binaries are downloaded from GitHub Releases; no Rust
@@ -16,9 +18,9 @@
 #   * adapt the actual initial rate/format/channels before first start;
 #   * re-read the complete wave format after CaptureFormatChange.
 #
-# The controller stays out of the PCM data path: ALSA/snd-aloop carries
-# audio, while this binary only monitors ALSA controls and drives the
-# documented WebSocket control API.
+# The controller stays out of the PCM data path: snd-aloop or the ioplug
+# plugin carries audio, while this binary only monitors the selected backend
+# and drives the documented WebSocket control API.
 #
 # IMPORTANT:
 #   Run this installer as the normal piCorePlayer user "tc":
@@ -1511,6 +1513,26 @@ backend_label() {
     esac
 }
 
+preflight_aloop_backend() {
+    if ! sudo modprobe snd-aloop; then
+        echo "ERROR: snd-aloop could not be loaded; backend selection unchanged." >&2
+        echo "This piCorePlayer kernel/image needs ALSA Loopback support." >&2
+        return 1
+    fi
+
+    for _retry in 1 2 3 4 5 6 7 8 9 10
+    do
+        if grep -q "Loopback" /proc/asound/cards 2>/dev/null; then
+            return 0
+        fi
+
+        sleep 1
+    done
+
+    echo "ERROR: snd-aloop loaded, but the Loopback card did not appear; backend selection unchanged." >&2
+    return 1
+}
+
 target="\${1:-}"
 rebootNow=false
 
@@ -1554,6 +1576,10 @@ case "\${target}" in
         exit 1
         ;;
 esac
+
+if [ "\${target}" = "aloop" ]; then
+    preflight_aloop_backend || exit 1
+fi
 
 sudo mkdir -p "\$(dirname "\${BACKEND_FILE}")"
 printf '%s\n' "\${target}" | sudo tee "\${BACKEND_FILE}" >/dev/null

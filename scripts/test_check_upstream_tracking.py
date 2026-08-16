@@ -12,11 +12,17 @@ manifest but never actually queried).
 
 from __future__ import annotations
 
+import io
 import os
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import urllib.error
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 import check_upstream_tracking as cut
 
@@ -298,6 +304,85 @@ class EmitGithubOutputTests(unittest.TestCase):
             self.assertIn("alsa_lib_release_tag=v1.3.0\n", contents)
         finally:
             os.unlink(path)
+
+
+class MainTests(unittest.TestCase):
+    def test_http_failure_is_reported_as_inconclusive_and_exits_nonzero(self):
+        source = make_source(last_reviewed_tag=None)
+
+        def fake_latest_commit(_source, _token, record_inconclusive=None):
+            if record_inconclusive is not None:
+                record_inconclusive("commit lookup failed for src/tracked.c: HTTP Error 503: err")
+            return None
+
+        with patch.object(cut, "load_manifest", return_value=[source]), \
+             patch.object(cut, "missing_tracked_paths", return_value=[]), \
+             patch.object(cut, "latest_commit_for_source", side_effect=fake_latest_commit), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            exit_code = cut.main(["--manifest", "ignored.yml", "--dry-run"])
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, cut.EXIT_INCONCLUSIVE)
+        self.assertIn("COULD NOT CHECK:", output)
+        self.assertIn("example", output)
+        self.assertNotIn("All tracked upstream sources are up to date.", output)
+
+    def test_all_sources_up_to_date_still_exit_zero(self):
+        source = make_source(last_reviewed_tag="v1.2.16.1")
+        commit = {
+            "sha": source.last_reviewed_commit,
+            "html_url": "http://example/commit/a",
+            "commit": {"message": "noop", "committer": {"date": "2026-01-01"}},
+        }
+
+        with patch.object(cut, "load_manifest", return_value=[source]), \
+             patch.object(cut, "missing_tracked_paths", return_value=[]), \
+             patch.object(cut, "latest_commit_for_source", return_value=commit), \
+             patch.object(cut, "latest_release_tag_for_source", return_value="v1.2.16.1"), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            exit_code = cut.main(["--manifest", "ignored.yml", "--dry-run"])
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, cut.EXIT_OK)
+        self.assertIn("All tracked upstream sources are up to date.", output)
+        self.assertNotIn("COULD NOT CHECK:", output)
+
+    def test_mixed_inconclusive_and_up_to_date_still_exits_nonzero(self):
+        broken = make_source(id="broken", last_reviewed_tag=None)
+        healthy = make_source(
+            id="healthy",
+            tracked_paths=["src/healthy.c"],
+            last_reviewed_commit="b" * 40,
+            last_reviewed_tag="v2.0.0",
+        )
+        healthy_commit = {
+            "sha": healthy.last_reviewed_commit,
+            "html_url": "http://example/commit/b",
+            "commit": {"message": "noop", "committer": {"date": "2026-01-02"}},
+        }
+
+        def fake_latest_commit(source, _token, record_inconclusive=None):
+            if source.id == "broken":
+                if record_inconclusive is not None:
+                    record_inconclusive("commit lookup failed for src/tracked.c: HTTP Error 502: err")
+                return None
+            return healthy_commit
+
+        def fake_latest_tag(source, _token, record_inconclusive=None):
+            return None if source.id == "broken" else "v2.0.0"
+
+        with patch.object(cut, "load_manifest", return_value=[broken, healthy]), \
+             patch.object(cut, "missing_tracked_paths", return_value=[]), \
+             patch.object(cut, "latest_commit_for_source", side_effect=fake_latest_commit), \
+             patch.object(cut, "latest_release_tag_for_source", side_effect=fake_latest_tag), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            exit_code = cut.main(["--manifest", "ignored.yml", "--dry-run"])
+
+        output = stdout.getvalue()
+        self.assertEqual(exit_code, cut.EXIT_INCONCLUSIVE)
+        self.assertIn("COULD NOT CHECK:", output)
+        self.assertIn("broken", output)
+        self.assertNotIn("All tracked upstream sources are up to date.", output)
 
 
 if __name__ == "__main__":

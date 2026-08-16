@@ -78,13 +78,13 @@ CI now also runs a software-visible benchmark harness for both backends:
 Those CI measurements are useful for controller-side regressions and automated
 reports, but they are not a replacement for real Pi / DAC playback latency data.
 
-## Running the full local verification suite
+## Running local verification alongside benchmark work
 
 The benchmark plan is separate from the controller's normal correctness checks.
-To run the local validation suite used by CI for the Rust controller:
+To run the local Rust/controller subset of CI plus the installer syntax gate:
 
 ```sh
-cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cd /path/to/alsa_camilladsp_controller
 
 sudo apt-get install -y libasound2-dev
 cargo fmt --check
@@ -94,10 +94,13 @@ sh -n install_picoredsp.sh
 dash -n install_picoredsp.sh
 ```
 
+Separate CI jobs also cover live CamillaDSP compatibility, native
+`picoredsp-ioplug/` C builds/tests, sanitizers, clang-tidy, and ARM packaging.
+
 Optional MSRV gate:
 
 ```sh
-cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cd /path/to/alsa_camilladsp_controller
 cargo +1.71 check --locked
 ```
 

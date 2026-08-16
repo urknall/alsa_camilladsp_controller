@@ -10,7 +10,7 @@ use crate::core::adaptation::RuntimeBackend;
 use crate::core::config::{DeviceSnapshot, WaveFormat};
 use crate::core::errors::{app_error, AppResult};
 use crate::core::logging::{log, LogLevel};
-use crate::core::recovery::{ConfigFingerprint, RetryState};
+use crate::core::recovery::{ConfigFingerprint, RejectionReason, RetryState};
 pub use crate::core::state_machine::Controller;
 use crate::ipc::protocol::ErrorCode;
 use std::fs;
@@ -126,7 +126,7 @@ fn latch_on_config_error(
     adapt_path: &Path,
 ) {
     *last_fingerprint = ConfigFingerprint::sample(adapt_path);
-    retry.latch();
+    retry.latch_with_reason(RejectionReason::Config);
 }
 
 /// Classify an immediate CamillaDSP exit as a playback-device failure or a
@@ -153,6 +153,36 @@ fn classify_early_exit_error(stderr_tail: &str) -> ErrorCode {
         ErrorCode::PlaybackDevice
     } else {
         ErrorCode::Config
+    }
+}
+
+fn retry_rejection_error_code(retry: &RetryState) -> ErrorCode {
+    match retry.rejection_reason() {
+        RejectionReason::Config => ErrorCode::Config,
+        RejectionReason::PlaybackDevice => ErrorCode::PlaybackDevice,
+        RejectionReason::Internal => ErrorCode::Internal,
+    }
+}
+
+fn reject_waiting_plugin_during_backoff(
+    backend: &mut IoplugBackend,
+    retry: &RetryState,
+    log_level: LogLevel,
+) {
+    match backend.poll_event(100) {
+        Ok(Some(crate::backend::StreamEvent::Started(_))) => {
+            let code = retry_rejection_error_code(retry);
+            log(
+                LogLevel::Warning,
+                log_level,
+                format!("ioplug: plugin connected during backoff — rejecting with {code:?}"),
+            );
+            backend.send_error_to_plugin(code);
+        }
+        Ok(_) | Err(_) => {
+            // No new connection yet (or a transient IPC error); poll_event already
+            // slept for the requested timeout so no extra sleep is needed here.
+        }
     }
 }
 
@@ -244,27 +274,11 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                     log_level,
                     "ioplug: config file changed — clearing retry latch",
                 );
-                retry.reset();
+                retry.reset_backoff();
+                retry.clear_latch();
                 break;
             }
-            // Service incoming connections during backoff: accept and
-            // immediately reject so the plugin gets an error response rather
-            // than sitting blocked until its own connection timeout fires.
-            match backend.poll_event(100) {
-                Ok(Some(crate::backend::StreamEvent::Started(_))) => {
-                    log(
-                        LogLevel::Warning,
-                        log_level,
-                        "ioplug: plugin connected during backoff — rejecting with error",
-                    );
-                    backend.send_error_to_plugin(ErrorCode::Internal);
-                }
-                Ok(_) | Err(_) => {
-                    // No new connection yet (or a transient IPC error); the
-                    // poll_event already slept for the requested timeout so
-                    // no extra sleep is needed here.
-                }
-            }
+            reject_waiting_plugin_during_backoff(&mut backend, &retry, log_level);
         }
 
         // ── Wait for a plugin to connect and send START ────────────────
@@ -290,7 +304,8 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                                 log_level,
                                 "ioplug: config file changed — clearing retry latch",
                             );
-                            retry.reset();
+                            retry.reset_backoff();
+                            retry.clear_latch();
                         }
                     }
                     continue;
@@ -352,7 +367,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                     log_level,
                     format!("ioplug: failed to spawn CamillaDSP: {err}"),
                 );
-                retry.record_attempt();
+                retry.record_attempt_with_reason(RejectionReason::Internal);
                 backend.send_error_to_plugin(ErrorCode::Internal);
                 continue;
             }
@@ -385,7 +400,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                              with backoff); stderr: {stderr_tail}"
                         ),
                     );
-                    retry.record_attempt();
+                    retry.record_attempt_with_reason(RejectionReason::PlaybackDevice);
                 }
                 ErrorCode::Config | ErrorCode::Protocol | ErrorCode::Internal => {
                     log(
@@ -420,7 +435,7 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
                 log_level,
                 format!("ioplug: failed to send READY+fd: {err}"),
             );
-            retry.record_attempt();
+            retry.record_attempt_with_reason(RejectionReason::Internal);
             supervisor.stop_stream();
             continue;
         }
@@ -475,11 +490,11 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
 
         if clean_stop {
             // Normal end-of-stream: clear backoff counters for the next stream.
-            retry.reset();
+            retry.reset_backoff();
         } else {
             // CamillaDSP exited mid-stream: record a transient failure and
             // apply backoff before accepting the next connection.
-            retry.record_attempt();
+            retry.record_attempt_with_reason(RejectionReason::Internal);
             let backoff = retry
                 .scheduled_delay()
                 .unwrap_or_else(|| std::time::Duration::from_secs(0));
@@ -499,9 +514,12 @@ pub fn run_ioplug(args: &Args) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::protocol::PluginMessage;
     use std::env;
+    use std::io::{Read, Write};
     use std::os::unix::fs::symlink;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn test_dir(name: &str) -> PathBuf {
         let stamp = SystemTime::now()
@@ -514,6 +532,17 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn test_socket_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "picoredsp-controller-sock-{name}-{}-{nanos}.sock",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -697,11 +726,76 @@ mod tests {
         // Apply the same reset the controller loop performs on a detected
         // change, and confirm the latch is cleared.
         last_fingerprint = new_fp;
-        retry.reset();
+        retry.reset_backoff();
+        retry.clear_latch();
         assert!(retry.should_attempt(), "latch must clear once cleared");
         assert!(!retry.latch_until_change);
         assert_eq!(last_fingerprint, ConfigFingerprint::sample(&active));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_backoff_rejection_reason(reason: RejectionReason, expected: ErrorCode, name: &str) {
+        let path = test_socket_path(name);
+        let mut backend = IoplugBackend::new(&path, LogLevel::Error).unwrap();
+        let mut retry = RetryState::new();
+        retry.record_attempt_with_reason(reason);
+
+        let client_path = path.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut client = UnixStream::connect(client_path).unwrap();
+            client
+                .write_all(&PluginMessage::Hello { version: 1 }.encode())
+                .unwrap();
+            let mut hello_reply = [0u8; 2];
+            client.read_exact(&mut hello_reply).unwrap();
+            client
+                .write_all(
+                    &PluginMessage::Start {
+                        version: 1,
+                        rate: 48_000,
+                        format: 10,
+                        channels: 2,
+                    }
+                    .encode(),
+                )
+                .unwrap();
+            let mut err_buf = [0u8; 3];
+            client.read_exact(&mut err_buf).unwrap();
+            assert_eq!(
+                PluginMessage::decode(&err_buf).unwrap(),
+                PluginMessage::Error {
+                    version: 1,
+                    code: expected,
+                }
+            );
+        });
+
+        for _ in 0..20 {
+            reject_waiting_plugin_during_backoff(&mut backend, &retry, LogLevel::Error);
+            if handle.is_finished() {
+                break;
+            }
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn backoff_rejects_new_plugin_with_config_error_code() {
+        assert_backoff_rejection_reason(
+            RejectionReason::Config,
+            ErrorCode::Config,
+            "backoff-config",
+        );
+    }
+
+    #[test]
+    fn backoff_rejects_new_plugin_with_playback_device_error_code() {
+        assert_backoff_rejection_reason(
+            RejectionReason::PlaybackDevice,
+            ErrorCode::PlaybackDevice,
+            "backoff-playback-device",
+        );
     }
 }

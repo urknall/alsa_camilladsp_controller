@@ -321,8 +321,21 @@ int pcdsp_ipc_recv_ready(pcdsp_ipc_conn_t   *conn,
     if (n == 0)
         return -ECONNRESET;
 
+    /* Reject a truncated ancillary-data buffer outright: MSG_CTRUNC means
+     * the kernel could not fit (or had to discard) some control data, so
+     * any fd we might otherwise extract could be spurious/incomplete. Do
+     * not attempt to walk cmsgbuf in that case. */
+    if (mh.msg_flags & MSG_CTRUNC)
+        return -EPROTO;
+
     for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
         if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS) {
+            /* Guard against a cmsg claiming to be shorter than one fd's
+             * worth of payload before reading CMSG_DATA(cm); a malformed
+             * or truncated header must not be trusted to contain a valid
+             * int-sized fd. */
+            if (cm->cmsg_len < CMSG_LEN(sizeof(int)))
+                return -EPROTO;
             memcpy(&rfd, CMSG_DATA(cm), sizeof(int)); /* NOLINT(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling) */
             break;
         }

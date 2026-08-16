@@ -1,6 +1,9 @@
-# piCoreCDSP — snd-aloop + Rust CamillaDSP controller for piCorePlayer
+# piCoreCDSP — dual-backend CamillaDSP controller for piCorePlayer
 
 ## Overview
+
+This repository contains the piCoreDSP controller stack for two transport
+backends: the stable `snd-aloop` path and the direct native `ioplug` path.
 
 This repository contains:
 
@@ -72,8 +75,8 @@ libasound_module_pcm_picoredsp.so
 The `picoredsp-controller` binary sits entirely outside the audio path. With
 the default `aloop` backend it monitors the `snd-aloop` ALSA HCTL controls
 (`PCM Slave Active`, `PCM Slave Rate`, `PCM Slave Format`, `PCM Slave Channels`)
-and drives CamillaDSP through its WebSocket API. With the experimental `ioplug`
-backend it manages the plugin handshake and per-stream CamillaDSP lifecycle
+and drives CamillaDSP through its WebSocket API. With the `ioplug` backend it
+manages the plugin handshake, AF_UNIX IPC, and per-stream CamillaDSP lifecycle
 without entering the PCM data path.
 
 ## Installation
@@ -157,10 +160,11 @@ before relying on a config change to survive a playback format switch or reboot.
 
 piCoreDSP stores the selected YAML file as a persistent baseline configuration.
 
-The Rust `picoredsp-controller` monitors `snd-aloop` and adapts the configuration
-in memory when playback starts or the stream format changes. The runtime sample rate,
-capture format and channel count can therefore differ from the values stored in the
-YAML file.
+The Rust `picoredsp-controller` monitors the selected backend (`snd-aloop`
+HCTL for `aloop`, ioplug IPC for `ioplug`) and adapts the configuration in
+memory when playback starts or the stream format changes. The runtime sample
+rate, capture format and channel count can therefore differ from the values
+stored in the YAML file.
 
 For example, a config file may contain:
 
@@ -194,10 +198,10 @@ becomes active.
 ## Migrating legacy custom configs
 
 Older piCorePlayer/CamillaDSP configs often use a different transport model
-(e.g. `capture.type: Stdin`, fixed capture/playback formats, and fixed transport
-parameters in the YAML). The current piCoreDSP setup routes audio through
-`snd-aloop` and treats the YAML as a persistent **DSP baseline** while the Rust
-controller adapts live stream parameters in memory.
+(e.g. fixed capture/playback formats and fixed transport parameters in the
+YAML). The current piCoreDSP setup treats the YAML as a persistent **DSP
+baseline** while the Rust controller injects the active transport details for
+either backend (`snd-aloop` or direct `ioplug`) at runtime.
 
 For the complete old-vs-new flow, config field ownership policy, field-by-field
 migration rules, a recommended `devices:` block, CamillaGUI active-file semantics,
@@ -207,23 +211,38 @@ and the `pcp backup` workflow, see [CONFIG_MIGRATION.md](CONFIG_MIGRATION.md).
 
 | Module | Contents |
 |--------|---------|
-| `src/error.rs` | `AppResult<T>` type alias and `app_error()` helper |
-| `src/logging.rs` | `LogLevel` enum and `log()` function |
-| `src/wave.rs` | `WaveFormat` and `DeviceSnapshot` structs |
-| `src/alsa_listener.rs` | `AlsaLoopbackListener`, ALSA format → CamillaDSP mapping |
-| `src/adapt.rs` | `adapt_config()` — YAML adaptation logic |
-| `src/camilla_ws.rs` | `CamillaWs` client, reply/state/stop-reason parsing |
-| `src/controller.rs` | `Controller` — main control loop |
+| `src/core/state_machine.rs` | Main controller state machine for stream events, config reloads, and recovery |
+| `src/core/adaptation.rs` | Runtime CamillaDSP YAML adaptation plus bypass/statefile helpers |
+| `src/core/config.rs`, `src/core/errors.rs`, `src/core/logging.rs` | Config-path handling plus shared error/logging utilities |
+| `src/backend/aloop.rs` | `snd-aloop` event source and stream snapshot handling |
+| `src/backend/ioplug.rs` | Direct ioplug IPC backend and plugin handshake flow |
+| `src/camilladsp/websocket.rs`, `src/camilladsp/supervisor.rs` | CamillaDSP control protocol and process supervision |
+| `src/camilladsp/alsa_capture.rs`, `src/camilladsp/stdin_capture.rs` | Backend-specific capture-format/runtime helpers |
+| `src/ipc/protocol.rs`, `src/ipc/unix_socket.rs` | AF_UNIX protocol types and socket transport for ioplug |
+| `src/benchmark/` | Benchmark-plan schema, parsing, reporting, and collectors |
 | `src/args.rs` | CLI argument parsing, `Mode` enum |
 | `src/main.rs` | Entry point, mode dispatch |
 
 ## CI/CD
 
-`.github/workflows/build.yml` runs when Rust/controller-related files change (`src/**`, `Cargo.toml`, `Cargo.lock`, `install_picoredsp.sh`, workflow file itself), plus manual dispatch and version tags:
+`.github/workflows/build.yml` runs when controller/build-related files change
+(`src/**`, `Cargo.toml`, `Cargo.lock`, `install_picoredsp.sh`,
+`picoredsp-ioplug/**`, workflow file itself), plus manual dispatch and version
+tags. The current workflow covers:
 
-- Pushes to `main` run tests, cross-build both ARM binaries, and refresh the rolling `installer-latest` GitHub release used by the installer.
-- Pull requests run tests and cross-build both ARM binaries as GitHub Actions artifacts for CI verification.
-- Pushing a `v*.*.*` tag additionally creates an immutable GitHub Release and attaches both binaries. The CI enforces that the tag matches the `version` field in `Cargo.toml`.
+- Rust formatting, Clippy, MSRV, and unit tests
+- live CamillaDSP compatibility checks against the pinned release, plus a non-blocking latest-upstream check
+- installer shell syntax validation
+- informative Rust/ioplug benchmark jobs
+- native C builds/tests, ASAN/UBSAN/TSAN, and clang-tidy for `picoredsp-ioplug/`
+- ARM cross-builds plus the release/`installer-latest` packaging jobs
+
+Pushes to `main` refresh the rolling `installer-latest` GitHub release used by
+the installer, while pull requests keep the same verification/build scope
+without publishing.
+
+Version tags additionally create an immutable GitHub Release and attach both ARM
+binaries. CI enforces that the tag matches the `version` field in `Cargo.toml`.
 
 The installer downloads `picoredsp-controller` from the rolling `installer-latest` GitHub release, not from workflow artifacts.
 Pushes to `main` refresh that release, while version tags still create immutable `v*.*.*` releases for manual versioned downloads.
@@ -234,7 +253,10 @@ Pushes to `main` refresh that release, while version tags still create immutable
 
 Before running any diagnostic command you need the `picoredsp-controller` binary available on `$PATH` (or provide the full path).  The installer places it at `/usr/local/bin/picoredsp-controller`, so after a successful install the binary is already present.
 
-If you have **not yet run the installer** (e.g. you want to diagnose the system first), download the binary manually:
+If you have **not yet run the installer** (e.g. you want to diagnose the system
+first), download the binary manually. The installer normally fetches this
+binary and verifies the published `.sha256` before using it; the manual path
+below is only for diagnostics:
 
 ```sh
 # On piCorePlayer, as user tc:
@@ -276,9 +298,9 @@ picoredsp-controller --adapt-check \
   --rate 48000 --format S32_LE --channels 2
 
 # Generate and validate the A/B benchmark plan used for roadmap milestone M12:
-picoredsp-controller --make-benchmark-plan --output /tmp/benchmark-plan.yml
-picoredsp-controller --validate-benchmark-plan /tmp/benchmark-plan.yml
-picoredsp-controller --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
+picoredsp-controller --make-benchmark-plan --output benchmark-plan.yml
+picoredsp-controller --validate-benchmark-plan benchmark-plan.yml
+picoredsp-controller --make-benchmark-report benchmark-plan.yml --output benchmark-report.md
 ```
 
 See [docs/BENCHMARK_FRAMEWORK.md](docs/BENCHMARK_FRAMEWORK.md) for the benchmark plan schema and validation rules.
@@ -307,11 +329,11 @@ cross-linker back to `aarch64-linux-gnu-gcc`.
 Use it to create a reproducible A/B benchmark record where only the backend changes:
 
 ```sh
-cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cd /path/to/alsa_camilladsp_controller
 
-cargo run -- --make-benchmark-plan --output /tmp/benchmark-plan.yml
-cargo run -- --validate-benchmark-plan /tmp/benchmark-plan.yml
-cargo run -- --make-benchmark-report /tmp/benchmark-plan.yml --output /tmp/benchmark-report.md
+cargo run -- --make-benchmark-plan --output benchmark-plan.yml
+cargo run -- --validate-benchmark-plan benchmark-plan.yml
+cargo run -- --make-benchmark-report benchmark-plan.yml --output benchmark-report.md
 ```
 
 After validation, run the `aloop` and `ioplug` backends under the same Pi /
@@ -319,11 +341,11 @@ piCorePlayer / CamillaDSP / DAC / DSP config / track / chunksize / queuelimit
 conditions, fill in the resulting metrics in the YAML plan, and regenerate the
 report to get Gate 12 coverage, backend comparisons, and latency-tuning hints.
 
-To run the same full local verification suite that CI uses for the Rust
-controller:
+To run a representative local Rust/controller verification subset matching the
+blocking Rust-side CI jobs plus the installer syntax gate:
 
 ```sh
-cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cd /path/to/alsa_camilladsp_controller
 
 sudo apt-get install -y libasound2-dev
 # Only on native 64-bit Raspberry Pi / aarch64-unknown-linux-gnu hosts:
@@ -338,9 +360,12 @@ dash -n install_picoredsp.sh
 Optional MSRV check (matches CI's Rust 1.71 compile gate):
 
 ```sh
-cd /home/runner/work/alsa_camilladsp_controller/alsa_camilladsp_controller
+cd /path/to/alsa_camilladsp_controller
 cargo +1.71 check --locked
 ```
+
+Separate CI jobs also cover pinned/latest CamillaDSP live compatibility, native
+`picoredsp-ioplug/` C builds/tests, sanitizers, clang-tidy, and ARM packaging.
 
 The automated benchmark harness now covers software-visible comparison points in
 CI: the Rust benchmark suite measures `aloop` and `ioplug` control-path

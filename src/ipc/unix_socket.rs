@@ -10,6 +10,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::RawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,23 @@ pub struct IpcServer {
     socket_path: PathBuf,
     listener: UnixListener,
     config: IpcServerConfig,
+    socket_identity: SocketIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SocketIdentity {
+    dev: u64,
+    ino: u64,
+}
+
+impl SocketIdentity {
+    fn from_path(path: &Path) -> io::Result<Self> {
+        let metadata = fs::symlink_metadata(path)?;
+        Ok(Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
 }
 
 impl IpcServer {
@@ -54,10 +72,17 @@ impl IpcServer {
                 socket_path.display()
             ))
         })?;
+        let socket_identity = SocketIdentity::from_path(&socket_path).map_err(|err| {
+            app_error(format!(
+                "unable to stat bound AF_UNIX socket {}: {err}",
+                socket_path.display()
+            ))
+        })?;
         Ok(Self {
             socket_path,
             listener,
             config,
+            socket_identity,
         })
     }
 
@@ -97,10 +122,7 @@ impl IpcServer {
 
 impl Drop for IpcServer {
     fn drop(&mut self) {
-        // The socket path can be replaced while the server is alive.  Never
-        // unlink a regular file or symlink that happens to occupy the path at
-        // shutdown; apply the same socket-only guard used before bind().
-        let _ = remove_stale_socket_file(&self.socket_path);
+        let _ = remove_bound_socket_file(&self.socket_path, self.socket_identity);
     }
 }
 
@@ -238,15 +260,30 @@ impl IpcConnection {
 /// `socket_fd` must be an open, connected `AF_UNIX` socket.  `fd` must be an
 /// open file descriptor owned by the calling process.
 fn send_fd_via_scm_rights(socket_fd: RawFd, fd: RawFd) -> io::Result<()> {
+    send_fd_via_scm_rights_with(socket_fd, fd, |socket_fd, message| unsafe {
+        libc::sendmsg(socket_fd, message, libc::MSG_NOSIGNAL)
+    })
+}
+
+fn send_fd_via_scm_rights_with<F>(socket_fd: RawFd, fd: RawFd, mut sendmsg_fn: F) -> io::Result<()>
+where
+    F: FnMut(RawFd, &libc::msghdr) -> libc::ssize_t,
+{
     // Build the control-message buffer: CMSG_SPACE(sizeof(int)) bytes.
     let cmsg_space =
         unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as usize;
     let mut cmsg_buf: Vec<u8> = vec![0u8; cmsg_space];
 
+    // Exactly one dummy payload byte accompanies the ancillary SCM_RIGHTS
+    // data.  `sendmsg()`'s return value counts only payload bytes (the
+    // control message is delivered atomically alongside it, all-or-nothing),
+    // so a successful transfer must report sending exactly `PAYLOAD_LEN`
+    // bytes; anything else means the fd was not actually handed over.
+    const PAYLOAD_LEN: libc::ssize_t = 1;
     let dummy: u8 = 0;
     let mut iov = libc::iovec {
         iov_base: &dummy as *const u8 as *mut libc::c_void,
-        iov_len: 1,
+        iov_len: PAYLOAD_LEN as usize,
     };
 
     let mh = libc::msghdr {
@@ -277,9 +314,15 @@ fn send_fd_via_scm_rights(socket_fd: RawFd, fd: RawFd) -> io::Result<()> {
 
     loop {
         // SAFETY: mh, iov, and cmsg_buf are valid for the duration of sendmsg.
-        let n = unsafe { libc::sendmsg(socket_fd, &mh, libc::MSG_NOSIGNAL) };
-        if n >= 0 {
+        let n = sendmsg_fn(socket_fd, &mh);
+        if n == PAYLOAD_LEN {
             return Ok(());
+        }
+        if n >= 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!("sendmsg sent {n} payload bytes while transferring fd"),
+            ));
         }
         let err = io::Error::last_os_error();
         if err.kind() != io::ErrorKind::Interrupted {
@@ -296,6 +339,44 @@ fn remove_stale_socket_file(path: &Path) -> AppResult<()> {
                     "refusing to remove non-socket path {}",
                     path.display()
                 )));
+            }
+            fs::remove_file(path).map_err(|err| {
+                app_error(format!(
+                    "unable to remove stale socket {}: {err}",
+                    path.display()
+                ))
+            })
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(app_error(format!(
+            "unable to inspect socket path {}: {err}",
+            path.display()
+        ))),
+    }
+}
+
+fn remove_bound_socket_file(path: &Path, expected: SocketIdentity) -> AppResult<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                eprintln!(
+                    "ipc: not removing '{}' because it is no longer a socket",
+                    path.display()
+                );
+                return Ok(());
+            }
+            let actual = SocketIdentity::from_path(path).map_err(|err| {
+                app_error(format!(
+                    "unable to inspect socket path {}: {err}",
+                    path.display()
+                ))
+            })?;
+            if actual != expected {
+                eprintln!(
+                    "ipc: not removing '{}' because it now refers to a different socket inode",
+                    path.display()
+                );
+                return Ok(());
             }
             fs::remove_file(path).map_err(|err| {
                 app_error(format!(
@@ -657,5 +738,36 @@ mod tests {
         };
         assert_eq!(n, 5);
         assert_eq!(&buf, b"gate8");
+    }
+
+    #[test]
+    fn send_fd_via_scm_rights_treats_zero_byte_send_as_write_zero() {
+        let err = send_fd_via_scm_rights_with(-1, 0, |_socket_fd, _message| 0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    }
+
+    #[test]
+    fn drop_skips_removing_socket_path_replaced_by_new_socket_inode() {
+        let path = test_socket_path("drop-replacement-socket");
+        let server1 = IpcServer::bind(&path, IpcServerConfig::default()).unwrap();
+        let first_identity = SocketIdentity::from_path(&path).unwrap();
+
+        fs::remove_file(&path).unwrap();
+        let server2 = IpcServer::bind(&path, IpcServerConfig::default()).unwrap();
+        let second_identity = SocketIdentity::from_path(&path).unwrap();
+        assert_ne!(first_identity, second_identity);
+
+        drop(server1);
+        assert!(fs::symlink_metadata(&path).unwrap().file_type().is_socket());
+
+        let client_path = path.clone();
+        let handle = thread::spawn(move || {
+            let _client = UnixStream::connect(client_path).unwrap();
+        });
+        let _conn = server2.accept().unwrap();
+        handle.join().unwrap();
+
+        drop(server2);
+        assert!(!path.exists(), "owner should remove its own socket on drop");
     }
 }

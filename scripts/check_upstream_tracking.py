@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import yaml
@@ -49,6 +49,9 @@ except ImportError:  # pragma: no cover - exercised only when dependency missing
 
 GITHUB_API = "https://api.github.com"
 MARKER_PREFIX = "<!-- upstream-tracking:"
+EXIT_OK = 0
+EXIT_MANIFEST_ERROR = 1
+EXIT_INCONCLUSIVE = 2
 
 
 @dataclass
@@ -80,6 +83,14 @@ class Source:
         )
 
 
+@dataclass
+class SourceCheckStatus:
+    source: Source
+    update_available: bool = False
+    inconclusive: bool = False
+    errors: list[str] = field(default_factory=list)
+
+
 def load_manifest(path: str) -> list[Source]:
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
@@ -100,7 +111,11 @@ def _api_request(url: str, token: Optional[str], method: str = "GET",
         return json.loads(resp.read().decode("utf-8"))
 
 
-def missing_tracked_paths(source: Source, token: Optional[str]) -> list[str]:
+def missing_tracked_paths(
+    source: Source,
+    token: Optional[str],
+    record_inconclusive: Optional[Callable[[str], None]] = None,
+) -> list[str]:
     """Return the subset of ``source.tracked_paths`` that no longer exist upstream.
 
     This catches the failure mode that let the BlueALSA tracking doc go
@@ -123,6 +138,8 @@ def missing_tracked_paths(source: Source, token: Optional[str]) -> list[str]:
             else:
                 print(f"warning: could not verify path {path!r} for "
                       f"{source.repository}: {exc}", file=sys.stderr)
+                if record_inconclusive:
+                    record_inconclusive(f"path verification failed for {path!r}: {exc}")
     return missing
 
 
@@ -151,7 +168,11 @@ def build_missing_path_issue_body(source: Source, missing: list[str]) -> str:
     )
 
 
-def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[dict[str, Any]]:
+def latest_commit_for_source(
+    source: Source,
+    token: Optional[str],
+    record_inconclusive: Optional[Callable[[str], None]] = None,
+) -> Optional[dict[str, Any]]:
     """Return the newest commit dict touching any of the source's tracked paths.
 
     When ``tracked_paths`` is empty, returns the latest commit on the
@@ -168,6 +189,8 @@ def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[d
         except urllib.error.HTTPError as exc:
             print(f"warning: could not fetch commits for {source.repository} "
                   f"(path={path!r}): {exc}", file=sys.stderr)
+            if record_inconclusive:
+                record_inconclusive(f"commit lookup failed for {path or '(default branch)'}: {exc}")
             continue
         if not commits:
             continue
@@ -178,7 +201,11 @@ def latest_commit_for_source(source: Source, token: Optional[str]) -> Optional[d
     return newest
 
 
-def latest_release_tag_for_source(source: Source, token: Optional[str]) -> Optional[str]:
+def latest_release_tag_for_source(
+    source: Source,
+    token: Optional[str],
+    record_inconclusive: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
     """Return the newest published release tag for ``source.repository``.
 
     Falls back to the newest git tag when the repository has no published
@@ -195,6 +222,8 @@ def latest_release_tag_for_source(source: Source, token: Optional[str]) -> Optio
         if exc.code != 404:
             print(f"warning: could not fetch latest release for "
                   f"{source.repository}: {exc}", file=sys.stderr)
+            if record_inconclusive:
+                record_inconclusive(f"release lookup failed: {exc}")
             return None
 
     url = f"{GITHUB_API}/repos/{source.repository}/tags?per_page=1"
@@ -202,6 +231,8 @@ def latest_release_tag_for_source(source: Source, token: Optional[str]) -> Optio
         tags = _api_request(url, token)
     except urllib.error.HTTPError as exc:
         print(f"warning: could not fetch tags for {source.repository}: {exc}", file=sys.stderr)
+        if record_inconclusive:
+            record_inconclusive(f"tag lookup failed: {exc}")
         return None
     if not tags:
         return None
@@ -238,7 +269,8 @@ def build_new_release_issue_body(source: Source, tag: str) -> str:
 
 
 def check_release_for_source(source: Source, repo: str, token: Optional[str],
-                              dry_run: bool) -> Optional[str]:
+                              dry_run: bool,
+                              record_inconclusive: Optional[Callable[[str], None]] = None) -> Optional[str]:
     """Check ``source.last_reviewed_tag`` against the newest published release/tag.
 
     This is intentionally independent of the commit-diff check above: a
@@ -251,7 +283,11 @@ def check_release_for_source(source: Source, repo: str, token: Optional[str],
     if not source.last_reviewed_tag:
         return None
 
-    tag = latest_release_tag_for_source(source, token)
+    tag = latest_release_tag_for_source(
+        source,
+        token,
+        record_inconclusive=record_inconclusive,
+    )
     if tag is None:
         print(f"[{source.id}] could not determine latest release/tag, "
               "skipping release check")
@@ -379,16 +415,33 @@ def build_issue_body(source: Source, commit: dict[str, Any]) -> str:
     )
 
 
-def process_source(source: Source, repo: str, token: Optional[str], dry_run: bool) -> bool:
+def process_source(
+    source: Source,
+    repo: str,
+    token: Optional[str],
+    dry_run: bool,
+    record_inconclusive: Optional[Callable[[str], None]] = None,
+) -> bool:
     """Returns True if an update was found (issue created or would be created)."""
     any_finding = False
+    had_errors = False
+
+    def note_inconclusive(reason: str) -> None:
+        nonlocal had_errors
+        had_errors = True
+        if record_inconclusive is not None:
+            record_inconclusive(reason)
 
     # Path-existence check runs first and independently of the commit-diff
     # check below: a renamed/removed tracked path can otherwise go unnoticed
     # forever, since the commit-history query for a path that no longer
     # exists simply returns no results (indistinguishable from "no changes").
     if source.tracked_paths:
-        missing = missing_tracked_paths(source, token)
+        missing = missing_tracked_paths(
+            source,
+            token,
+            record_inconclusive=note_inconclusive,
+        )
         if missing:
             any_finding = True
             print(f"[{source.id}] tracked path(s) no longer exist upstream: "
@@ -401,12 +454,19 @@ def process_source(source: Source, repo: str, token: Optional[str], dry_run: boo
                 title = f"Upstream tracking stale: {source.id} tracked path(s) missing"
                 body = build_missing_path_issue_body(source, missing)
                 open_issue_if_new(repo, source, marker, title, body, token)
-        else:
+        elif not had_errors:
             print(f"[{source.id}] all tracked paths present upstream")
 
-    commit = latest_commit_for_source(source, token)
+    commit = latest_commit_for_source(
+        source,
+        token,
+        record_inconclusive=note_inconclusive,
+    )
     if commit is None:
-        print(f"[{source.id}] could not determine latest commit, skipping")
+        if had_errors:
+            print(f"[{source.id}] commit check inconclusive")
+        else:
+            print(f"[{source.id}] could not determine latest commit, skipping")
         return any_finding
     sha = commit["sha"]
     if sha == source.last_reviewed_commit:
@@ -428,6 +488,38 @@ def process_source(source: Source, repo: str, token: Optional[str], dry_run: boo
     return any_finding
 
 
+def check_source(source: Source, repo: str, token: Optional[str], dry_run: bool) -> SourceCheckStatus:
+    status = SourceCheckStatus(source=source)
+
+    def record_inconclusive(reason: str) -> None:
+        status.inconclusive = True
+        status.errors.append(reason)
+
+    try:
+        if process_source(source, repo, token, dry_run, record_inconclusive=record_inconclusive):
+            status.update_available = True
+
+        new_tag = check_release_for_source(
+            source,
+            repo,
+            token,
+            dry_run,
+            record_inconclusive=record_inconclusive,
+        )
+        if new_tag:
+            status.update_available = True
+            if source.run_tests_on_release:
+                key = output_key(source.id)
+                emit_github_output(f"{key}_release_detected", "true")
+                emit_github_output(f"{key}_release_tag", new_tag)
+    except Exception as exc:  # noqa: BLE001 - keep checking remaining sources
+        status.inconclusive = True
+        status.errors.append(str(exc))
+        print(f"error: failed processing {source.id}: {exc}", file=sys.stderr)
+
+    return status
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default="docs/upstream-tracking.yml")
@@ -441,29 +533,38 @@ def main(argv: Optional[list[str]] = None) -> int:
     sources = load_manifest(args.manifest)
     if not sources:
         print(f"error: no sources found in {args.manifest}", file=sys.stderr)
-        return 1
+        return EXIT_MANIFEST_ERROR
 
-    any_updates = False
-    for source in sources:
-        try:
-            if process_source(source, args.repo, token, args.dry_run):
-                any_updates = True
+    statuses = [check_source(source, args.repo, token, args.dry_run) for source in sources]
+    any_updates = any(status.update_available for status in statuses)
+    inconclusive = [status for status in statuses if status.inconclusive]
 
-            new_tag = check_release_for_source(source, args.repo, token, args.dry_run)
-            if new_tag:
-                any_updates = True
-                if source.run_tests_on_release:
-                    key = output_key(source.id)
-                    emit_github_output(f"{key}_release_detected", "true")
-                    emit_github_output(f"{key}_release_tag", new_tag)
-        except Exception as exc:  # noqa: BLE001 - keep checking remaining sources
-            print(f"error: failed processing {source.id}: {exc}", file=sys.stderr)
+    if any_updates:
+        print("UPDATE AVAILABLE:")
+        for status in statuses:
+            if status.update_available:
+                print(f"  - {status.source.id}")
+
+    if inconclusive:
+        print("COULD NOT CHECK:")
+        for status in inconclusive:
+            if status.errors:
+                print(f"  - {status.source.id}: {'; '.join(status.errors)}")
+            else:
+                print(f"  - {status.source.id}")
+
+    if inconclusive:
+        if any_updates:
+            print("Upstream changes were detected, but one or more checks were inconclusive.")
+        else:
+            print("One or more tracked upstream sources could not be checked completely.")
+        return EXIT_INCONCLUSIVE
 
     if any_updates:
         print("Upstream changes were detected. See issues above (or dry-run output).")
     else:
         print("All tracked upstream sources are up to date.")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

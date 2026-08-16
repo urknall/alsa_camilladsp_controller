@@ -40,6 +40,10 @@
  * sw_params avail_min / delay() pipe accounting:
  *   delay_accounts_for_frames_queued_in_kernel_pipe
  *   poll_revents_respects_avail_min_from_sw_params
+ *
+ * Transport-rebuild regression (stop/drop/drain -> prepare -> start):
+ *   drop_then_prepare_start_rebuilds_transport_and_delivers_audio
+ *   successful_drain_then_prepare_start_rebuilds_transport
  */
 
 #define _GNU_SOURCE
@@ -373,6 +377,107 @@ static pthread_t start_mock_server(server_args_t *args)
     pthread_t tid;
     pthread_create(&tid, NULL, mock_server_thread, args);
     /* Give the server time to bind. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 50000000L }; /* 50 ms */
+    nanosleep(&ts, NULL);
+    return tid;
+}
+
+/*
+ * Two-connection mock IPC server, used to verify that a stop()/drop()/
+ * drain() followed by prepare()/start() *without* an intervening
+ * hw_params() performs a second full START/READY (and pipe fd) handshake,
+ * instead of the plugin silently reusing (or falling back from) a torn-down
+ * transport. Accepts up to two sequential connections; for each one,
+ * completes the HELLO/START/READY handshake, hands over a fresh pipe via
+ * SCM_RIGHTS, and drains that pipe until EOF (the plugin closes its end in
+ * pcdsp_stop()), recording how many bytes were received on each connection.
+ */
+#define TWO_CONN_MAX 2
+
+typedef struct {
+    const char    *sock_path;
+    _Atomic(long)  bytes_read[TWO_CONN_MAX];
+    _Atomic(int)   connections_accepted;
+} two_conn_server_args_t;
+
+static void *mock_server_two_starts_thread(void *arg)
+{
+    two_conn_server_args_t *a = arg;
+
+    unlink(a->sock_path);
+
+    int sfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sfd < 0) return NULL;
+
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    strncpy(addr.sun_path, a->sock_path, sizeof(addr.sun_path) - 1);
+    if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sfd);
+        return NULL;
+    }
+    listen(sfd, TWO_CONN_MAX);
+
+    for (int round = 0; round < TWO_CONN_MAX; round++) {
+        int cfd = accept(sfd, NULL, NULL);
+        if (cfd < 0) break;
+
+        pcdsp_msg_hello_t hello;
+        if (recv(cfd, &hello, sizeof(hello), MSG_WAITALL) != sizeof(hello) ||
+            hello.type != PCDSP_MSG_HELLO) {
+            close(cfd);
+            break;
+        }
+        pcdsp_msg_hello_t reply_hello = {
+            .type    = PCDSP_MSG_HELLO,
+            .version = hello.version,
+        };
+        send(cfd, &reply_hello, sizeof(reply_hello), MSG_NOSIGNAL);
+
+        pcdsp_msg_start_t start;
+        if (recv(cfd, &start, sizeof(start), MSG_WAITALL) != sizeof(start) ||
+            start.type != PCDSP_MSG_START) {
+            close(cfd);
+            break;
+        }
+
+        pcdsp_msg_ready_t ready = {
+            .type    = PCDSP_MSG_READY,
+            .version = hello.version,
+        };
+        send(cfd, &ready, sizeof(ready), MSG_NOSIGNAL);
+
+        int pipefd[2];
+        if (pipe(pipefd) == 0) {
+            (void)send_fd_with_ready(cfd, pipefd[1]);
+            close(pipefd[1]);
+            uint8_t tmp[4096];
+            ssize_t n;
+            while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
+                atomic_fetch_add_explicit(&a->bytes_read[round], (long)n,
+                                          memory_order_relaxed);
+            }
+            close(pipefd[0]);
+        }
+        atomic_fetch_add_explicit(&a->connections_accepted, 1,
+                                  memory_order_relaxed);
+
+        /* Discard the STOP the plugin sends after tearing down its local
+         * data path, so the connection is left clean before the next
+         * accept(). Ignore short reads / disconnects here — a plugin bug
+         * under test might not send it at all. */
+        pcdsp_msg_stop_t stop_msg;
+        (void)recv(cfd, &stop_msg, sizeof(stop_msg), MSG_WAITALL);
+        close(cfd);
+    }
+
+    close(sfd);
+    return NULL;
+}
+
+static pthread_t start_mock_server_two_starts(two_conn_server_args_t *args)
+{
+    pthread_t tid;
+    pthread_create(&tid, NULL, mock_server_two_starts_thread, args);
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 50000000L }; /* 50 ms */
     nanosleep(&ts, NULL);
     return tid;
@@ -1231,6 +1336,196 @@ TEST(prepare_refuses_to_silently_clear_a_fatal_stream_error)
 }
 
 /* -----------------------------------------------------------------------
+ * Transport-rebuild regression (stop/drop/drain -> prepare -> start)
+ * ---------------------------------------------------------------------- */
+
+TEST(drop_then_prepare_start_rebuilds_transport_and_delivers_audio)
+{
+    /*
+     * Regression for the HIGH-severity finding: a completely normal ALSA
+     * reuse path is hw_params() once, then repeated stop()/drop() ->
+     * prepare() -> start() cycles *without* ever calling hw_params() again
+     * (parameters unchanged). pcdsp_stop() tears down the local pipe and
+     * notifies the controller (which drops its side of the connection once
+     * it processes STOP); pcdsp_prepare() only resets local ring-buffer/
+     * counter state. Before the fix, pcdsp_start() never rebuilt the
+     * transport, so the worker thread would silently take its null-sink
+     * fallback path (pipe_fd == -1): the PCM would look healthy to the
+     * application (pointer()/poll() progressing normally) while every frame
+     * written after the restart was discarded rather than reaching
+     * CamillaDSP.
+     *
+     * This test proves both properties for the *second* run: (a) a second
+     * START/READY handshake (and pipe fd transfer) actually happens, and
+     * (b) audio written after the restart is actually received on the new
+     * pipe, not merely "accepted" by writei().
+     */
+    init_sock_path("drop-restart");
+    two_conn_server_args_t args = { .sock_path = g_sock_path };
+    pthread_t srv = start_mock_server_two_starts(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0); /* period=1024, buffer=4096 frames */
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2];
+    memset(frames, 0x11, sizeof(frames));
+
+    /* --- First run: hw_params() already built the transport. --- */
+    snd_pcm_sframes_t written = 0;
+    while (written < 4096) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        written += rc;
+    }
+    CHECK(written > 0);
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    /* Wait for the first connection's pipe to actually receive bytes,
+     * proving the first run's audio path works before we tear it down. */
+    bool first_run_delivered = false;
+    for (int i = 0; i < 200 && !first_run_delivered; i++) {
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (atomic_load_explicit(&args.bytes_read[0], memory_order_relaxed) > 0)
+            first_run_delivered = true;
+    }
+    CHECK(first_run_delivered);
+
+    /* --- stop/drop the stream: no hw_params() call follows. --- */
+    CHECK(snd_pcm_drop(pcm) == 0);
+
+    /* Closing pipe_fd locally (inside pcdsp_stop(), already completed by
+     * the time snd_pcm_drop() returns) causes EOF on the server's drain
+     * loop for the first connection asynchronously; wait for the server to
+     * observe it before asserting on connection count. */
+    bool first_conn_finished = false;
+    for (int i = 0; i < 200 && !first_conn_finished; i++) {
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (atomic_load_explicit(&args.connections_accepted, memory_order_relaxed) >= 1)
+            first_conn_finished = true;
+    }
+    CHECK(first_conn_finished);
+    CHECK(atomic_load_explicit(&args.connections_accepted, memory_order_relaxed) == 1);
+
+    CHECK(snd_pcm_prepare(pcm) == 0);
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED);
+
+    /* --- Second run: start() must rebuild the transport on its own. --- */
+    written = 0;
+    while (written < 4096) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        written += rc;
+    }
+    CHECK(written > 0);
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    /* A second START/READY handshake (and pipe fd) must have happened, and
+     * the second run's pipe must actually have received the audio written
+     * above -- not merely have accepted it into the ring buffer while a
+     * null-sink worker silently discarded it. */
+    bool second_run_delivered = false;
+    for (int i = 0; i < 200 && !second_run_delivered; i++) {
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (atomic_load_explicit(&args.bytes_read[1], memory_order_relaxed) > 0)
+            second_run_delivered = true;
+    }
+    CHECK(second_run_delivered);
+
+    /* The second connection's EOF (and thus its connections_accepted
+     * increment) only happens once the pipe is closed, which occurs when
+     * the plugin is closed below; the final count is checked after
+     * pthread_join() guarantees the server thread has observed it. */
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    CHECK(atomic_load_explicit(&args.connections_accepted, memory_order_relaxed) == 2);
+    unlink(g_sock_path);
+}
+
+TEST(successful_drain_then_prepare_start_rebuilds_transport)
+{
+    /*
+     * Same regression as drop_then_prepare_start_rebuilds_transport_and_
+     * delivers_audio, but exercised via a *successful* drain() (rather than
+     * an explicit drop()). alsa-lib's generic snd_pcm_ioplug_drain() calls
+     * the plugin's stop() callback (auto-drop) once drain() itself returns
+     * 0 -- the same pcdsp_stop() teardown as an explicit drop(), reached
+     * from a different, equally normal, ALSA lifecycle path.
+     */
+    init_sock_path("drain-restart");
+    two_conn_server_args_t args = { .sock_path = g_sock_path };
+    pthread_t srv = start_mock_server_two_starts(&args);
+
+    snd_pcm_t *pcm = NULL;
+    CHECK(open_plugin(&pcm, g_sock_path) == 0);
+    CHECK(set_hw_params(pcm) == 0);
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    int16_t frames[257 * 2];
+    memset(frames, 0x22, sizeof(frames));
+
+    snd_pcm_sframes_t written = 0;
+    while (written < 2048) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        written += rc;
+    }
+    CHECK(written > 0);
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    CHECK(snd_pcm_nonblock(pcm, 0) == 0);
+    CHECK(snd_pcm_drain(pcm) == 0);
+    /* A successful drain() auto-drops via the plugin's stop() callback. */
+    CHECK(snd_pcm_state(pcm) == SND_PCM_STATE_SETUP);
+
+    CHECK(snd_pcm_prepare(pcm) == 0);
+    CHECK(snd_pcm_nonblock(pcm, 1) == 0);
+
+    written = 0;
+    while (written < 2048) {
+        snd_pcm_sframes_t rc = snd_pcm_writei(pcm, frames, 257);
+        if (rc == -EAGAIN)
+            break;
+        CHECK(rc >= 0);
+        written += rc;
+    }
+    CHECK(written > 0);
+    if (snd_pcm_state(pcm) == SND_PCM_STATE_PREPARED)
+        CHECK(snd_pcm_start(pcm) == 0);
+
+    bool second_run_delivered = false;
+    for (int i = 0; i < 200 && !second_run_delivered; i++) {
+        struct timespec step = { .tv_nsec = 10000000L }; /* 10 ms */
+        nanosleep(&step, NULL);
+        if (atomic_load_explicit(&args.bytes_read[1], memory_order_relaxed) > 0)
+            second_run_delivered = true;
+    }
+    CHECK(second_run_delivered);
+
+    /* The second connection's EOF (and its connections_accepted increment)
+     * only happens once the pipe is closed, which occurs when the plugin
+     * is closed below; check the final count only after pthread_join()
+     * guarantees the server thread observed it. */
+    snd_pcm_close(pcm);
+    pthread_join(srv, NULL);
+    CHECK(atomic_load_explicit(&args.connections_accepted, memory_order_relaxed) == 2);
+    unlink(g_sock_path);
+}
+
+/* -----------------------------------------------------------------------
  * main
  * ---------------------------------------------------------------------- */
 
@@ -1274,6 +1569,12 @@ int main(void)
     /* device disconnect (BlueALSA-parity proactive DISCONNECTED state) */
     RUN(pointer_and_poll_report_disconnected_after_camilladsp_exits);
     RUN(prepare_refuses_to_silently_clear_a_fatal_stream_error);
+
+    /* Transport-rebuild regression: stop/drop/drain -> prepare -> start
+     * without an intervening hw_params() must reconnect, not silently fall
+     * back to the null-sink path. */
+    RUN(drop_then_prepare_start_rebuilds_transport_and_delivers_audio);
+    RUN(successful_drain_then_prepare_start_rebuilds_transport);
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
