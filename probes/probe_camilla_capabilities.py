@@ -391,6 +391,7 @@ async def run_all_probes(
     results.append(await probe_aloop_available())
 
     # Write a temporary config file.
+    config_path: str | None = None
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yml", delete=False, prefix="picorecdsp_probe_"
     ) as f:
@@ -436,7 +437,8 @@ async def run_all_probes(
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        os.unlink(config_path)
+        if config_path is not None and os.path.exists(config_path):
+            os.unlink(config_path)
 
     return results
 

@@ -15,6 +15,9 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -54,7 +57,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
-        run: cargo test --all-features -- --include-ignored
+        # Hardware-gated tests (requires real snd-aloop + CamillaDSP binary) are #[ignore]-gated
+        # and excluded here; they run only when PICORECDSP_HW_TESTS=1 is set (Gate 12 hardware gate).
+        run: cargo test --all-features
 
   # ── ARM cross-build (piCorePlayer target) ─────────────────────────────────
   # Cross-compiles for aarch64-unknown-linux-musl, the static target used on
