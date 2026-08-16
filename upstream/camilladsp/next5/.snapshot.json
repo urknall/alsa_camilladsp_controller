@@ -1,0 +1,27 @@
+{
+  "source_id": "camilladsp-next5",
+  "repo": "HEnquist/camilladsp",
+  "ref": "next5",
+  "sha": "8ed2e532f86347697890f6f346b72455324363e3",
+  "fetched_at": "2026-08-16T18:20:21.548346+00:00",
+  "files": [
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "backend_alsa.md",
+    "src/alsa_backend/buffermanager.rs",
+    "src/alsa_backend/device.rs",
+    "src/alsa_backend/mod.rs",
+    "src/alsa_backend/threaded_buffermanager.rs",
+    "src/alsa_backend/threaded_device.rs",
+    "src/alsa_backend/utils.rs",
+    "src/bin.rs",
+    "src/config/mod.rs",
+    "src/config/utils.rs",
+    "src/engine.rs",
+    "src/statefile.rs",
+    "src/websocket_server/datastructures.rs",
+    "src/websocket_server/mod.rs",
+    "src/websocket_server/utils.rs",
+    "websocket.md"
+  ]
+}
