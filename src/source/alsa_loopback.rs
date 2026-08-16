@@ -1,6 +1,6 @@
 //! ALSA ingress contract (roadmap `piCoreCDSP_v2_Roadmap.md` §6).
 //!
-//! Defines the canonical `pcm.picorecdsp` `plug` definition that every producer must
+//! Defines the canonical `pcm.camilladsp` `plug` definition that every producer must
 //! go through on its way to `snd-aloop`, and a validator that checks a parsed
 //! definition against the contract's invariants: `format = S32_LE`,
 //! `channels = 2`, `samplerate = unchanged`.
@@ -9,10 +9,10 @@
 //! `/etc/asound.conf` (or equivalent) is an installer concern (roadmap Gate 11), not a
 //! runtime Rust concern.
 
-/// The canonical `pcm.picorecdsp` ALSA `plug` definition (roadmap §6), targeting the
+/// The canonical `pcm.camilladsp` ALSA `plug` definition (roadmap §6), targeting the
 /// first `snd-aloop` playback subdevice as the shared ingress point for every
 /// producer.
-pub const CANONICAL_ASOUND_CONF: &str = r#"pcm.picorecdsp {
+pub const CANONICAL_ASOUND_CONF: &str = r#"pcm.camilladsp {
     type plug
     slave {
         pcm "hw:Loopback,1,0"
@@ -99,7 +99,7 @@ impl std::error::Error for AlsaContractViolation {}
 const EXPECTED_FORMAT: &str = "S32_LE";
 const EXPECTED_CHANNELS: u32 = 2;
 
-/// Parses the `slave { ... }` block of a `pcm.picorecdsp` `plug` definition.
+/// Parses the `slave { ... }` block of a `pcm.camilladsp` `plug` definition.
 ///
 /// This is intentionally a minimal, purpose-built parser for our own canonical block
 /// shape (roadmap §26's "schema-light" philosophy applied to ALSA config too) — it is
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn s16_producer_format_is_rejected() {
-        let conf = r#"pcm.picorecdsp {
+        let conf = r#"pcm.camilladsp {
             type plug
             slave {
                 pcm "hw:Loopback,1,0"
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn mono_channel_count_is_rejected() {
-        let conf = r#"pcm.picorecdsp {
+        let conf = r#"pcm.camilladsp {
             slave {
                 pcm "hw:Loopback,1,0"
                 format S32_LE
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn fixed_rate_instead_of_unchanged_is_rejected() {
-        let conf = r#"pcm.picorecdsp {
+        let conf = r#"pcm.camilladsp {
             slave {
                 pcm "hw:Loopback,1,0"
                 format S32_LE
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn multiple_violations_are_all_reported() {
-        let conf = r#"pcm.picorecdsp {
+        let conf = r#"pcm.camilladsp {
             slave {
                 pcm "hw:Loopback,1,0"
                 format S16_LE
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn missing_field_is_a_parse_error_not_a_silent_default() {
-        let conf = r#"pcm.picorecdsp {
+        let conf = r#"pcm.camilladsp {
             slave {
                 pcm "hw:Loopback,1,0"
                 channels 2

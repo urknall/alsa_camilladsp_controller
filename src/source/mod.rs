@@ -1,7 +1,7 @@
 //! Producer-independent audio ingress (roadmap `piCoreCDSP_v2_Roadmap.md` §5).
 //!
 //! piCoreCDSP knows no concrete producers (Squeezelite, AirPlay/Shairport Sync, or any
-//! other ALSA application). All producers use the same ingress, `pcm.picorecdsp`, and
+//! other ALSA application). All producers use the same ingress, `pcm.camilladsp`, and
 //! the only thing Rust is allowed to observe about the source is captured by
 //! [`SourceState`]. There is deliberately **no** `enum Producer { ... }` anywhere in
 //! this crate: a new ALSA producer must never require a Rust code change.
@@ -16,7 +16,7 @@ pub use observer::{SourceObserver, SourceSnapshot};
 /// or overrides it.
 ///
 /// No producer-specific variants may be added here: piCoreCDSP does not know or care
-/// which application (if any) is feeding `pcm.picorecdsp`.
+/// which application (if any) is feeding `pcm.camilladsp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceState {
     /// No producer currently holds the source open.

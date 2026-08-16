@@ -75,7 +75,7 @@ CamillaDSP remains permanently a separate process.
 Squeezelite / AirPlay / other ALSA producers
                   │
                   ▼
-            pcm.picorecdsp
+            pcm.camilladsp
                   │
                   ▼
               snd-aloop
@@ -116,7 +116,7 @@ Rationale: clean process isolation, low coupling to CamillaDSP internals, a simp
 The ideal end state is:
 
 ```text
-Producer → pcm.picorecdsp → snd-aloop → CamillaDSP → DAC
+Producer → pcm.camilladsp → snd-aloop → CamillaDSP → DAC
 ```
 
 Long-term, piCoreCDSP should consist of little more than:
@@ -164,7 +164,7 @@ Observation of `snd-aloop`, active/inactive detection, detection of the nominal 
 
 ## 5. Producer-Independent Audio Ingress
 
-piCoreCDSP knows no concrete producers (e.g. Squeezelite, AirPlay/Shairport Sync, other ALSA applications). All producers use the same ingress: `pcm.picorecdsp`.
+piCoreCDSP knows no concrete producers (e.g. Squeezelite, AirPlay/Shairport Sync, other ALSA applications). All producers use the same ingress: `pcm.camilladsp`.
 
 Rust never gets a producer-specific abstraction such as `enum Producer { Squeezelite, AirPlay }`. Instead, exclusively:
 
@@ -189,13 +189,13 @@ enum SourceState {
 ## 6. ALSA Ingress Contract
 
 ```text
-Producer → pcm.picorecdsp → ALSA plug → snd-aloop
+Producer → pcm.camilladsp → ALSA plug → snd-aloop
 ```
 
 Target configuration:
 
 ```text
-pcm.picorecdsp {
+pcm.camilladsp {
     type plug
     slave {
         pcm "hw:Loopback,1,0"
@@ -801,14 +801,14 @@ Fresh and minimal:
 - [ ] Fresh install only.
 - [ ] Check `snd-aloop`.
 - [ ] Detect the physical playback device once.
-- [ ] Install `pcm.picorecdsp`.
+- [ ] Install `pcm.camilladsp`.
 - [ ] Install the pinned CamillaDSP.
 - [ ] Install a compatible, pinned CamillaGUI.
 - [ ] Configure a shared native statefile.
 - [ ] Generate `Bypass.yml` only if absent.
 - [ ] Generate `Null.yml` only if absent.
 - [ ] Install Rust v2 as long as it's still needed.
-- [ ] Route producers to `pcm.picorecdsp`.
+- [ ] Route producers to `pcm.camilladsp`.
 - [ ] No Squeezelite parameters as a core prerequisite.
 - [ ] No backend menu.
 - [ ] No backend switcher.
@@ -922,7 +922,7 @@ No `legacy/`, `deprecated/`, `old_controller/`, or `experimental_ioplug/` direct
 
 ## 51. Definition of Done
 
-piCoreCDSP v2 is done when: the architecture is aligned with CamillaDSP 5; the production stack is exactly pinned; CamillaDSP remains a separate process; `camillalib` is not embedded; exactly one production Camilla WebSocket adapter exists; `pcm.picorecdsp` is producer-agnostic; only `snd-aloop` is used; no ioplug exists; no custom audio data path exists; Rust processes no samples; user YAML stays untouched; no runtime YAML exists; `GetConfig`/`GetPreviousConfig` model runtime continuity; Apply-without-Save survives normal rate changes; Save-without-Apply is never auto-applied; config switches work during playback; source rate follows ALSA; native mode works; resampler mode works; GUI/rate races reliably converge; errors are not masked by config repair; every workaround has a removal criterion; upstream canaries detect future simplifications; and v1/ioplug is completely removed from `main`.
+piCoreCDSP v2 is done when: the architecture is aligned with CamillaDSP 5; the production stack is exactly pinned; CamillaDSP remains a separate process; `camillalib` is not embedded; exactly one production Camilla WebSocket adapter exists; `pcm.camilladsp` is producer-agnostic; only `snd-aloop` is used; no ioplug exists; no custom audio data path exists; Rust processes no samples; user YAML stays untouched; no runtime YAML exists; `GetConfig`/`GetPreviousConfig` model runtime continuity; Apply-without-Save survives normal rate changes; Save-without-Apply is never auto-applied; config switches work during playback; source rate follows ALSA; native mode works; resampler mode works; GUI/rate races reliably converge; errors are not masked by config repair; every workaround has a removal criterion; upstream canaries detect future simplifications; and v1/ioplug is completely removed from `main`.
 
 ---
 
@@ -935,7 +935,7 @@ piCoreCDSP v2 is done when: the architecture is aligned with CamillaDSP 5; the p
 5. Native loopback lifecycle → delete `rate_sync` + large parts of `reconcile`.
 6. Complete upstream solution → delete the Rust daemon.
 
-End state: `Producer → pcm.picorecdsp → snd-aloop → CamillaDSP → DAC`. piCoreCDSP then remains essentially: installer + ALSA setup + initial configs + packaging.
+End state: `Producer → pcm.camilladsp → snd-aloop → CamillaDSP → DAC`. piCoreCDSP then remains essentially: installer + ALSA setup + initial configs + packaging.
 
 ---
 

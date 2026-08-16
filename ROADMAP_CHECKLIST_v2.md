@@ -114,7 +114,7 @@ item off because it is merely planned.
 - [x] Ownership model implemented as documented types/comments: user/GUI-owned fields, ALSA-owned fields,
       CamillaDSP-owned fields, Rust-temporary-owned fields (roadmap §4). See `src/ownership.rs`.
 - [x] `SourceState` enum defined (`Inactive` / `Active { sample_rate }`) with **no** producer-specific variants (roadmap §5). See `src/source/mod.rs`.
-- [x] `pcm.picorecdsp` ALSA `plug` definition implemented: `format S32_LE`, `channels 2`, `rate unchanged` (roadmap §6). See `src/source/alsa_loopback.rs` (contract + parser/validator; installing it on a real target is Gate 11's job).
+- [x] `pcm.camilladsp` ALSA `plug` definition implemented: `format S32_LE`, `channels 2`, `rate unchanged` (roadmap §6). See `src/source/alsa_loopback.rs` (contract + parser/validator; installing it on a real target is Gate 11's job).
 - [x] CamillaDSP transport contract validation implemented: read + validate only, never repair/rewrite (roadmap §7). See `src/camilla/mod.rs`.
 - [x] Managed-mode-suspended behavior implemented for incompatible transport configs. See `ManagedMode` in `src/camilla/mod.rs`.
 - [x] ✅ **Gate 2 passed**: contracts are enforced by types/validation, not by convention alone (17 unit tests covering compliant/incompatible cases in `cargo test`).
@@ -324,8 +324,8 @@ item off because it is merely planned.
       `install_picorecdsp.sh`.
 - [x] Physical playback device auto-detection implemented (one-time). See `detect_playback_device()` in
       `install_picorecdsp.sh` (uses `aplay -l`, excludes the Loopback card, accepts `--playback-device` override).
-- [x] `pcm.picorecdsp` installed by the installer. See `install_alsa_plug()` in `install_picorecdsp.sh` and
-      `configs/pcm.picorecdsp.conf` (matches `CANONICAL_ASOUND_CONF` from `src/source/alsa_loopback.rs`).
+- [x] `pcm.camilladsp` installed by the installer. See `install_alsa_plug()` in `install_picorecdsp.sh` and
+      `configs/pcm.camilladsp.conf` (matches `CANONICAL_ASOUND_CONF` from `src/source/alsa_loopback.rs`).
 - [x] Pinned CamillaDSP + compatible pinned CamillaGUI installed. See `install_camilladsp()` and
       `install_camillagui()` in `install_picorecdsp.sh`. Version pins are `CAMILLA_VERSION` /
       `CAMILLA_GUI_VERSION` env vars (set at Gate 12 hardware validation).
@@ -449,7 +449,7 @@ item off because it is merely planned.
 - [ ] Architecture aligned with CamillaDSP 5; production stack exactly pinned.
 - [ ] CamillaDSP remains a separate process; `camillalib` not embedded.
 - [ ] Exactly one production Camilla WebSocket adapter exists.
-- [ ] `pcm.picorecdsp` is producer-agnostic; only `snd-aloop` is used.
+- [ ] `pcm.camilladsp` is producer-agnostic; only `snd-aloop` is used.
 - [ ] No ioplug, no custom audio data path; Rust processes no samples.
 - [ ] User YAML untouched; no runtime YAML exists.
 - [ ] `GetConfig`/`GetPreviousConfig` model runtime continuity correctly.
