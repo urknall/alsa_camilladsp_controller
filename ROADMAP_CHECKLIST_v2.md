@@ -22,13 +22,14 @@ item off because it is merely planned.
   without it ever being part of `main`'s working tree, matching the "git is the archive" rule (roadmap §50, §53)
   and the Core Philosophy that v2 replaces v1 rather than living beside it.
 
-- [ ] Tag current `main` HEAD as `v1-final`.
+- [x] Tag current `main` HEAD as `v1-final`.
 
-  **Status:** not yet executed. Tagging (and pushing the tag) requires repository push/tag rights that this
-  agent session does not have — this must be done by a maintainer with push access, on the `main` commit that
-  immediately precedes the v1-tree removal below, before that removal is merged.
+  **Status:** done. `v1-final` is an annotated tag pointing at commit `72b556d` (the `main` tip immediately
+  before this Gate 0/1 documentation change), pushed by a maintainer with repository push access.
 
-- [ ] (If desired) cut a `v1-archive` branch from `v1-final`.
+- [x] (If desired) cut a `v1-archive` branch from `v1-final`.
+
+  **Status:** done. `v1-archive` branch created from `v1-final` (same commit, `72b556d`) and pushed to `origin`.
 - [ ] If Option B chosen: move `src/`, `picoredsp-ioplug/`, `benches/`, `scripts/`, `install_picoredsp.sh`,
       `CONFIG_MIGRATION.md` into a clearly named, non-buildable reference folder, excluded from the Cargo
       workspace and CI.
@@ -56,7 +57,9 @@ item off because it is merely planned.
 - [ ] ✅ **Gate 0 passed**: repository state is unambiguous about which code/docs are "live" v2 work vs. archived v1
       reference.
 
-  Not yet — pending the `v1-final` tag and v1-tree removal described above.
+  Partially — the archive markers (`v1-final` tag, `v1-archive` branch) now exist, but the v1 tree is still
+  present on `main`'s working copy, so `main` still mixes "live" v2 planning docs with the full v1
+  implementation. Gate 0 is fully passed only once the v1-tree removal item above is executed.
 
 ---
 
@@ -317,7 +320,10 @@ item off because it is merely planned.
 
 ## Gate 13 — Hard v1 → v2 Cleanup
 
-- [ ] `v1-final` tag exists (from Gate 0) and, if desired, an archive branch.
+- [x] `v1-final` tag exists (from Gate 0) and, if desired, an archive branch.
+
+  Done — `v1-final` (annotated) and `v1-archive` both exist on `origin`, pointing at `72b556d`. The remaining
+  items in this gate (actual v1 code deletion) are still pending; see Gate 0's deferred v1-tree-removal note.
 - [ ] ioplug, C code, IPC, stdin capture, ring buffer, audio worker threads, backend abstraction, backend switcher,
       `adaptation.rs`, RuntimeConfig, runtime YAML, reinstall logic, ioplug benchmarks, ioplug CI deleted from `main`.
 - [ ] Obsolete v1 upstream-monitoring code/docs deleted from `main`.
