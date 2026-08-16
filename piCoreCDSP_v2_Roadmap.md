@@ -1,6 +1,6 @@
 # piCoreCDSP v2 — CamillaDSP-Native Architecture Roadmap
 
-**Status:** Superseded predecessor — see [`piCoreDSP_Dual_Backend_Roadmap.md`](piCoreDSP_Dual_Backend_Roadmap.md) (v1, dual-backend `aloop`/`ioplug` architecture, now frozen/archival).
+**Status:** Active (v2) — this is the current source of truth. It supersedes [`piCoreDSP_Dual_Backend_Roadmap.md`](piCoreDSP_Dual_Backend_Roadmap.md) (v1, dual-backend `aloop`/`ioplug` architecture, now frozen/archival).
 
 **Source plan:** [`docs/new plan/piCoreCDSP_v2_complete_roadmap(1).md`](docs/new%20plan/piCoreCDSP_v2_complete_roadmap%281%29.md) — the uploaded plan this roadmap formalizes. That file is retained verbatim as the original submission; this document is the curated, repository-canonical roadmap derived from it.
 
