@@ -28,7 +28,7 @@ enum CliAction {
 fn usage(program: &str) -> String {
     format!(
         "\
-Usage: {program} [--help] [--version]
+Usage: {program} [-h|--help] [-V|--version]
 
 piCoreCDSP v2 runtime daemon.
 
@@ -45,30 +45,29 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "picorecdsp".to_string());
+    let usage_text = usage(&program);
     let first = args.next();
     let second = args.next();
 
     match (first, second) {
         (None, None) => Ok(CliAction::Run),
-        (Some(flag), None) if flag == "-h" || flag == "--help" => {
-            Ok(CliAction::PrintHelp(program.clone()))
-        }
+        (Some(flag), None) if flag == "-h" || flag == "--help" => Ok(CliAction::PrintHelp(program)),
         (Some(flag), None) if flag == "-V" || flag == "--version" => Ok(CliAction::PrintVersion),
         (Some(flag), None) => Err(format!(
             "ERROR: Unknown option: {flag}\n\n{}",
-            usage(&program)
+            usage_text
         )),
         (Some(flag), Some(_))
             if flag == "-h" || flag == "--help" || flag == "-V" || flag == "--version" =>
         {
             Err(format!(
                 "ERROR: {flag} does not accept additional arguments.\n\n{}",
-                usage(&program)
+                usage_text
             ))
         }
         (Some(flag), Some(_)) => Err(format!(
             "ERROR: Unknown option: {flag}\n\n{}",
-            usage(&program)
+            usage_text
         )),
         (None, Some(_)) => {
             unreachable!("argument iterator cannot yield a second argument without a first")
