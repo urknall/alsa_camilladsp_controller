@@ -133,8 +133,30 @@ fn null_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
 }
 
 #[test]
-fn staged_pcp_config_enables_squeezelite_autostart_when_routing_to_picorecdsp() {
+fn staged_pcp_config_routes_outputs_to_camilladsp_and_enables_squeezelite_autostart() {
     let script = installer_script();
+    assert!(
+        script.contains(
+            "sed 's|^OUTPUT=.*|OUTPUT=\"camilladsp\"|'                -i \"${PCP_STAGED}\""
+        ),
+        "installer should route OUTPUT to camilladsp when staging pcp.cfg"
+    );
+    assert!(
+        script.contains(
+            "sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT=\"camilladsp\"|'  -i \"${PCP_STAGED}\""
+        ),
+        "installer should route SHAIRPORT_OUT to camilladsp when staging pcp.cfg"
+    );
+    assert!(
+        script.contains(
+            "sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE=\"camilladsp\"|'  -i \"${PCP_STAGED}\""
+        ),
+        "installer should route BT_OUT_DEVICE to camilladsp when staging pcp.cfg"
+    );
+    assert!(
+        script.contains("if ! grep -qx 'OUTPUT=\"camilladsp\"' \"${PCP_STAGED}\"; then"),
+        "installer should verify staged OUTPUT is camilladsp"
+    );
     assert!(
         script.contains("sed 's|^SL_AUTOSTART=.*|SL_AUTOSTART=\"yes\"|' -i \"${PCP_STAGED}\""),
         "installer should force SL_AUTOSTART=yes when staging pcp.cfg"
