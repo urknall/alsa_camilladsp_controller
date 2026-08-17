@@ -171,7 +171,8 @@ mod tests {
 
     #[test]
     fn ws_check_argument_runs_probe_instead_of_daemon() {
-        let action = parse_cli_action(["picorecdsp".to_string(), "--ws-check".to_string()]).unwrap();
+        let action =
+            parse_cli_action(["picorecdsp".to_string(), "--ws-check".to_string()]).unwrap();
         assert_eq!(action, CliAction::WsCheck);
     }
 
