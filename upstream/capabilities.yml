@@ -607,18 +607,4 @@ upstream_capabilities:
       - pcp-linux-aloop
     probe_key: native_aloop_rate_following
 
-  # ── pyCamillaDSP ─────────────────────────────────────────────────────────
-
-  - key: pycamilla.protocol.version
-    used_now: false
-    wanted_future: false
-    local_code: []
-    current_fallback: []
-    removal_when: >
-      n/a — piCoreCDSP talks to CamillaDSP directly, not via pycamilladsp.
-      Tracked as a release-readiness signal: a new pycamilladsp next5 branch
-      indicates CamillaDSP 5 ecosystem is maturing.
-    sources:
-      - pycamilladsp-master
-    probe_key: null
 

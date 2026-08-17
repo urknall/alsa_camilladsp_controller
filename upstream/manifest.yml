@@ -200,31 +200,6 @@ sources:
       workflow, runtime-state display.  Do not fully mirror — only metadata and
       specifically relevant UI/API files.
 
-  # §55.4 pyCamillaDSP
-
-  - id: pycamilladsp-master
-    repo: HEnquist/pycamilladsp
-    ref: master
-    priority: high
-    local_dir: upstream/pycamilladsp/master
-    paths:
-      - camilladsp/**
-      - docs/**
-      - tests/test_camillaws.py
-    capabilities:
-      - pycamilla.protocol.version
-      - pycamilla.state.events
-      - pycamilla.config.active
-      - pycamilla.config.previous
-      - pycamilla.config.path
-      - pycamilla.set_config
-      - pycamilla.set_config_value
-      - pycamilla.error_semantics
-    notes: >
-      New WebSocket features often appear in pycamilladsp before or alongside
-      the GUI.  A new next5 branch here is a strong CamillaDSP 5 release-readiness
-      signal.
-
   # ── Priority B — Reference and Future Removal Signals ───────────────────
   # §56.1 CamillaDSP Controller (reference-only, not a production dependency)
 
@@ -319,7 +294,7 @@ sources:
 
   - id: pcp-kernels
     repo: piCorePlayer/pCP-Kernels
-    ref: main
+    ref: master
     priority: critical
     local_dir: upstream/pcp-kernels/current
     paths:
@@ -336,7 +311,7 @@ sources:
 
   - id: pcp-releases
     repo: piCorePlayer/pCP-Releases
-    ref: main
+    ref: Master
     priority: medium
     local_dir: upstream/pcp-releases/current
     paths:

@@ -991,16 +991,6 @@ Directly relevant: native statefile integration, active-config behavior, Apply/S
 
 Watch: `master`, `next4.2.0`, releases, future `next5`/v5 branches. Lower priority than the backend, but important for: Apply workflow, config-switch workflow, runtime-state display, new UI semantics for runtime overrides, breaking UI/API assumptions between GUI and backend. Do not fully mirror — only metadata, release info, and specifically relevant UI/API files.
 
-### 55.4 pyCamillaDSP (`HEnquist/pycamilladsp`)
-
-Watch: `master`, `next4.1.0`, future 4.2/5 branches, releases. Important because CamillaGUI uses the Python client as part of its CamillaDSP stack; new CamillaDSP WebSocket features often appear here as a client API before or while the GUI adopts them.
-
-Relevant paths: `camilladsp/`, `docs/`, `tests/test_camillaws.py`.
-
-Capabilities: `pycamilla.protocol.version`, `pycamilla.state.events`, `pycamilla.config.active`, `pycamilla.config.previous`, `pycamilla.config.path`, `pycamilla.set_config`, `pycamilla.set_config_value`, `pycamilla.error_semantics`.
-
-Monitoring questions: is there a v5-compatible branch? is the new v5 WebSocket protocol supported? is `SubscribeState` supported? do config/error semantics change? which CamillaDSP versions are officially supported?
-
 ---
 
 ## 56. Upstream Sources — Priority B: Reference and Future Removal Signals
@@ -1081,9 +1071,6 @@ upstream/
 ├── camillagui/
 │   ├── master/
 │   └── next4.2.0/
-│
-├── pycamilladsp/
-│   └── master/
 │
 ├── camilladsp-controller/
 │   └── main/
@@ -1281,7 +1268,7 @@ Schedule: daily. Watches releases of CamillaDSP, CamillaGUI backend, CamillaGUI,
 
 ## 65. GitHub Workflow 4 — `upstream-branch-watch.yml`
 
-Especially important during the 4.2/5 transition. Watches newly appearing branches (`next*`, `v5*`, `5.*`), especially on `camillagui-backend`, `camillagui`, `pycamilladsp`. Example: `pycamilladsp` gets `next5` → automatic issue/report: "CamillaDSP 5 ecosystem signal detected". This is a strong release-readiness signal.
+Especially important during the 4.2/5 transition. Watches newly appearing branches (`next*`, `v5*`, `5.*`), especially on `camillagui-backend`, `camillagui`. Example: `camillagui-backend` gets `next5` → automatic issue/report: "CamillaDSP 5 ecosystem signal detected". This is a strong release-readiness signal.
 
 ---
 
