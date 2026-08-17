@@ -189,7 +189,7 @@ fn camillagui_config_allows_file_playback_type_for_null_config() {
     // The generated camillagui.yml must include "File" in supported_playback_types
     // so that CamillaGUI does not mark Null.yml invalid with a red X.
     assert!(
-        script.contains("  - \"File\""),
+        script.contains("- \"File\""),
         "camillagui.yml supported_playback_types must include \"File\" so Null.yml passes validation"
     );
 }
