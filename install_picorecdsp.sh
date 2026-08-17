@@ -920,6 +920,7 @@ supported_capture_types:
 
 supported_playback_types:
   - "Alsa"
+  - "File"
 EOF
 
 ###############################################################################
@@ -1162,9 +1163,10 @@ if [ ! -f "${NULL_CONFIG}" ]; then
     sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
 fi
 
-# Statefile — create a placeholder so CamillaDSP can populate it on first run.
+# Statefile — seed with Bypass.yml so CamillaDSP loads a config on first boot
+# and CamillaGUI shows it as the active (starred) config.
 if [ ! -f "${STATEFILE}" ]; then
-    sudo touch "${STATEFILE}"
+    printf 'config_path: "%s"\n' "${BYPASS_CONFIG}" | sudo tee "${STATEFILE}" >/dev/null
 fi
 
 # Install extension before routing live audio to it.
