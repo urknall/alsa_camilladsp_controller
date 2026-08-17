@@ -76,28 +76,78 @@ jobs:
             --color "0075ca" \
             || true   # label may already exist; ignore the error
 
+      - name: Check for existing sync PR
+        if: steps.diff.outputs.changed == 'true'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Look for any open PR whose head branch starts with chore/upstream-sync-
+          EXISTING=$(gh pr list \
+            --label "upstream" \
+            --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("chore/upstream-sync-"))] | first // empty')
+
+          if [ -n "$EXISTING" ]; then
+            PR_NUMBER=$(printf '%s' "$EXISTING" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['number'])")
+            PR_BRANCH=$(printf '%s' "$EXISTING" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['headRefName'])")
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "branch=$PR_BRANCH"    >> "$GITHUB_OUTPUT"
+            echo "found=true"           >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create sync branch and push snapshot update
         if: steps.diff.outputs.changed == 'true'
         id: push_branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXISTING_BRANCH: ${{ steps.existing_pr.outputs.branch }}
+          EXISTING_FOUND:  ${{ steps.existing_pr.outputs.found }}
         run: |
           DATE="$(date -u +%Y%m%d-%H%M)"
-          BRANCH="chore/upstream-sync-${DATE}"
           PR_TITLE="chore(upstream): sync upstream snapshots ${DATE}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add upstream/
-          git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
-          git push origin "$BRANCH"
 
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          if [ "$EXISTING_FOUND" = "true" ]; then
+            # Reuse the existing sync branch: reset it to current main, then
+            # re-apply the snapshot changes on top so it is always conflict-free.
+            BRANCH="$EXISTING_BRANCH"
+            git checkout -b "$BRANCH"
+            git add upstream/
+            git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
+            git push --force-with-lease origin "$BRANCH"
+            echo "reused_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            BRANCH="chore/upstream-sync-${DATE}"
+            git checkout -b "$BRANCH"
+            git add upstream/
+            git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
+            git push origin "$BRANCH"
+            echo "reused_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "branch=$BRANCH"     >> "$GITHUB_OUTPUT"
           echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
 
+      - name: Update existing sync pull request
+        if: steps.diff.outputs.changed == 'true' && steps.push_branch.outputs.reused_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.existing_pr.outputs.pr_number }}
+          PR_TITLE:  ${{ steps.push_branch.outputs.pr_title }}
+        run: |
+          gh pr edit "$PR_NUMBER" \
+            --title "$PR_TITLE" \
+            --body-file /tmp/pr-body.md
+          echo "Updated existing PR #${PR_NUMBER} with fresh snapshot."
+
       - name: Open sync pull request
-        if: steps.diff.outputs.changed == 'true'
+        if: steps.diff.outputs.changed == 'true' && steps.push_branch.outputs.reused_pr == 'false'
         id: open_pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
