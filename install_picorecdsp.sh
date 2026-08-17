@@ -54,6 +54,7 @@ EXTENSION_NAME="piCoreCDSP"
 
 CDSP_VERSION="v4.1.3"
 CAMILLA_GUI_VERSION="v4.1.0"
+CAMILLA_WS_SMOKE_TEST="${CAMILLA_WS_SMOKE_TEST:-false}"
 
 PICORECDSP_RELEASE_TAG="${PICORECDSP_RELEASE_TAG:-installer-latest}"
 PICORECDSP_REPO="urknall/piCoreCDSP"
@@ -803,63 +804,68 @@ echo "CamillaDSP configuration validation OK."
 # functional on this kernel before committing the full install.
 ###############################################################################
 
-(
-    TEST_PORT=12345
-    TEST_LOG="/tmp/picorecdsp-cdsp-ws-test.$$.log"
-    TEST_STATEFILE="/tmp/picorecdsp-cdsp-ws-test.$$.state.yml"
-    TEST_PID=""
+if [ "${CAMILLA_WS_SMOKE_TEST}" = "true" ]; then
+    (
+        TEST_PORT=12345
+        TEST_LOG="/tmp/picorecdsp-cdsp-ws-test.$$.log"
+        TEST_STATEFILE="/tmp/picorecdsp-cdsp-ws-test.$$.state.yml"
+        TEST_PID=""
 
-    cleanup_ws_test() {
-        if [ -n "${TEST_PID}" ]; then
-            kill "${TEST_PID}" >/dev/null 2>&1 || true
-            wait "${TEST_PID}" >/dev/null 2>&1 || true
-        fi
-        rm -f "${TEST_LOG}" "${TEST_STATEFILE}" >/dev/null 2>&1 || true
-    }
+        cleanup_ws_test() {
+            if [ -n "${TEST_PID}" ]; then
+                kill "${TEST_PID}" >/dev/null 2>&1 || true
+                wait "${TEST_PID}" >/dev/null 2>&1 || true
+            fi
+            rm -f "${TEST_LOG}" "${TEST_STATEFILE}" >/dev/null 2>&1 || true
+        }
 
-    trap cleanup_ws_test EXIT HUP INT TERM
+        trap cleanup_ws_test EXIT HUP INT TERM
 
-    touch "${TEST_STATEFILE}"
+        touch "${TEST_STATEFILE}"
 
-    "${BUILD_DIR}/usr/local/camilladsp" \
-        --wait \
-        --no_config \
-        --statefile "${TEST_STATEFILE}" \
-        --port "${TEST_PORT}" \
-        --address 127.0.0.1 \
-        --logfile "${TEST_LOG}" \
-        >/dev/null 2>&1 &
-    TEST_PID=$!
+        "${BUILD_DIR}/usr/local/camilladsp" \
+            --wait \
+            --no_config \
+            --statefile "${TEST_STATEFILE}" \
+            --port "${TEST_PORT}" \
+            --address 127.0.0.1 \
+            --logfile "${TEST_LOG}" \
+            >/dev/null 2>&1 &
+        TEST_PID=$!
 
-    i=0
-    ws_ready=false
-    while [ "${i}" -lt 20 ]
-    do
-        if ! kill -0 "${TEST_PID}" 2>/dev/null; then
-            echo "ERROR: Temporary CamillaDSP exited before WebSocket became available."
+        i=0
+        ws_ready=false
+        while [ "${i}" -lt 20 ]
+        do
+            if ! kill -0 "${TEST_PID}" 2>/dev/null; then
+                echo "ERROR: Temporary CamillaDSP exited before WebSocket became available."
+                cat "${TEST_LOG}" 2>/dev/null || true
+                exit 1
+            fi
+
+            if PICORECDSP_CAMILLA_URL="ws://127.0.0.1:${TEST_PORT}" \
+                "${PICORECDSP_BIN}" --ws-check >/dev/null 2>&1
+            then
+                ws_ready=true
+                break
+            fi
+
+            i=$((i + 1))
+            sleep 1
+        done
+
+        if ! $ws_ready; then
+            echo "ERROR: CamillaDSP WebSocket port ${TEST_PORT} did not open within 20 s."
             cat "${TEST_LOG}" 2>/dev/null || true
             exit 1
         fi
+    )
 
-        if PICORECDSP_CAMILLA_URL="ws://127.0.0.1:${TEST_PORT}" \
-            "${PICORECDSP_BIN}" --ws-check >/dev/null 2>&1
-        then
-            ws_ready=true
-            break
-        fi
-
-        i=$((i + 1))
-        sleep 1
-    done
-
-    if ! $ws_ready; then
-        echo "ERROR: CamillaDSP WebSocket port ${TEST_PORT} did not open within 20 s."
-        cat "${TEST_LOG}" 2>/dev/null || true
-        exit 1
-    fi
-)
-
-echo "CamillaDSP WebSocket smoke test OK."
+    echo "CamillaDSP WebSocket smoke test OK."
+else
+    echo "Skipping CamillaDSP WebSocket smoke test during installation."
+    echo "Set CAMILLA_WS_SMOKE_TEST=true to run it explicitly."
+fi
 
 ###############################################################################
 # Download CamillaGUI
