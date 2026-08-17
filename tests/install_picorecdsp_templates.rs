@@ -35,6 +35,14 @@ fn parse_template(name: &str) -> Value {
     })
 }
 
+fn boot_hook_script() -> String {
+    extract_heredoc(
+        &installer_script(),
+        "cat > \"${BUILD_DIR}/usr/local/tce.installed/${EXTENSION_NAME}\" <<'TCEEOF'\n",
+        "\nTCEEOF",
+    )
+}
+
 fn devices<'a>(doc: &'a Value, name: &str) -> &'a serde_json::Map<String, Value> {
     doc.get("devices")
         .and_then(Value::as_object)
@@ -121,5 +129,38 @@ fn null_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
         playback.get("format"),
         Some(&Value::String("S32_LE".into())),
         "Null.yml must use S32_LE playback format"
+    );
+}
+
+#[test]
+fn staged_pcp_config_enables_squeezelite_autostart_when_routing_to_picorecdsp() {
+    let script = installer_script();
+    assert!(
+        script.contains("sed 's|^SL_AUTOSTART=.*|SL_AUTOSTART=\"yes\"|' -i \"${PCP_STAGED}\""),
+        "installer should force SL_AUTOSTART=yes when staging pcp.cfg"
+    );
+    assert!(
+        script.contains("printf '%s\\n' 'SL_AUTOSTART=\"yes\"' >> \"${PCP_STAGED}\""),
+        "installer should append SL_AUTOSTART=yes when pcp.cfg does not already define it"
+    );
+}
+
+#[test]
+fn boot_hook_waits_for_websocket_probe_before_starting_picorecdsp_daemon() {
+    let boot_hook = boot_hook_script();
+    let ws_check = "PICORECDSP_CAMILLA_URL=\"ws://127.0.0.1:1234\" \\\n        /usr/local/bin/picorecdsp --ws-check >/dev/null 2>&1";
+    let wait_index = boot_hook
+        .find(ws_check)
+        .expect("boot hook should probe CamillaDSP with picorecdsp --ws-check");
+    let daemon_index = boot_hook
+        .find("# piCoreCDSP daemon supervisor")
+        .expect("boot hook should still start the piCoreCDSP daemon supervisor");
+    assert!(
+        wait_index < daemon_index,
+        "boot hook must wait for a successful WebSocket probe before starting piCoreCDSP"
+    );
+    assert!(
+        boot_hook.contains("else\n    sleep 1\nfi"),
+        "boot hook should leave a short settle delay after the WebSocket probe succeeds"
     );
 }

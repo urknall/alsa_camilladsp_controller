@@ -726,9 +726,19 @@ sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|'                -i "${PCP_STAGED}"
 sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="picorecdsp"|'  -i "${PCP_STAGED}"
 sed 's|^SHAIRPORT_CONTROL=.*|SHAIRPORT_CONTROL=""|'    -i "${PCP_STAGED}"
 sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="picorecdsp"|'  -i "${PCP_STAGED}"
+if grep -q '^SL_AUTOSTART=' "${PCP_STAGED}"; then
+    sed 's|^SL_AUTOSTART=.*|SL_AUTOSTART="yes"|' -i "${PCP_STAGED}"
+else
+    printf '%s\n' 'SL_AUTOSTART="yes"' >> "${PCP_STAGED}"
+fi
 
 if ! grep -qx 'OUTPUT="picorecdsp"' "${PCP_STAGED}"; then
     echo "ERROR: Could not stage piCorePlayer OUTPUT routing."
+    exit 1
+fi
+
+if ! grep -qx 'SL_AUTOSTART="yes"' "${PCP_STAGED}"; then
+    echo "ERROR: Could not enable Squeezelite autostart in staged piCorePlayer config."
     exit 1
 fi
 
@@ -831,8 +841,9 @@ echo "CamillaDSP configuration validation OK."
             exit 1
         fi
 
-        # Probe the WebSocket port using nc (available in busybox on piCorePlayer).
-        if nc -z 127.0.0.1 "${TEST_PORT}" 2>/dev/null; then
+        if PICORECDSP_CAMILLA_URL="ws://127.0.0.1:${TEST_PORT}" \
+            "${PICORECDSP_BIN}" --ws-check >/dev/null 2>&1
+        then
             ws_ready=true
             break
         fi
@@ -1000,7 +1011,9 @@ done
 i=0
 while [ "${i}" -lt 30 ]
 do
-    if nc -z 127.0.0.1 1234 2>/dev/null; then
+    if PICORECDSP_CAMILLA_URL="ws://127.0.0.1:1234" \
+        /usr/local/bin/picorecdsp --ws-check >/dev/null 2>&1
+    then
         break
     fi
     i=$((i + 1))
@@ -1009,6 +1022,8 @@ done
 
 if [ "${i}" -ge 30 ]; then
     echo "$(date): CamillaDSP WebSocket did not become ready" >> "${STARTUP_LOG}"
+else
+    sleep 1
 fi
 
 ###############################################################################
