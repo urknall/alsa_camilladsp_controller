@@ -164,3 +164,20 @@ fn boot_hook_waits_for_websocket_probe_before_starting_picorecdsp_daemon() {
         "boot hook should leave a short settle delay after the WebSocket probe succeeds"
     );
 }
+
+#[test]
+fn installer_defaults_to_skipping_websocket_smoke_test_before_reboot() {
+    let script = installer_script();
+    assert!(
+        script.contains("CAMILLA_WS_SMOKE_TEST=\"${CAMILLA_WS_SMOKE_TEST:-false}\""),
+        "installer should default CAMILLA_WS_SMOKE_TEST to false"
+    );
+    assert!(
+        script.contains("if [ \"${CAMILLA_WS_SMOKE_TEST}\" = \"true\" ]; then"),
+        "installer should only run the WebSocket smoke test when explicitly enabled"
+    );
+    assert!(
+        script.contains("Skipping CamillaDSP WebSocket smoke test during installation."),
+        "installer should make it explicit that startup checks are deferred until reboot"
+    );
+}
