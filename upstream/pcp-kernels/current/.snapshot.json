@@ -1,0 +1,10 @@
+{
+  "source_id": "pcp-kernels",
+  "repo": "piCorePlayer/pCP-Kernels",
+  "ref": "master",
+  "sha": "1849a0a8997303453026e1e2e0a8762819798a34",
+  "fetched_at": "2026-08-17T07:12:06.287711+00:00",
+  "files": [
+    "README.md"
+  ]
+}
