@@ -3,7 +3,7 @@
   "repo": "HEnquist/camilladsp",
   "ref": "next5",
   "sha": "8ed2e532f86347697890f6f346b72455324363e3",
-  "fetched_at": "2026-08-16T19:06:21.095911+00:00",
+  "fetched_at": "2026-08-17T03:21:32.644074+00:00",
   "files": [
     "CHANGELOG.md",
     "Cargo.toml",
