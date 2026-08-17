@@ -44,13 +44,6 @@
       "skipped": false,
       "error": null
     },
-    "pycamilladsp-master": {
-      "sha": "fdc0d163e02dd73206a493402b43c83502ad83d7",
-      "previous_sha": "fdc0d163e02dd73206a493402b43c83502ad83d7",
-      "fetched_at": "2026-08-17T06:48:18.919481+00:00",
-      "skipped": false,
-      "error": null
-    },
     "camilladsp-controller-main": {
       "sha": "e9fde2057d5869e6805a965e9c091bbb9a9e9980",
       "previous_sha": "e9fde2057d5869e6805a965e9c091bbb9a9e9980",

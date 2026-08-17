@@ -3,7 +3,7 @@
 # Watches for newly appearing branches on upstream repositories, especially
 # CamillaDSP 4.2/5 ecosystem branches (next4.2.0, next5, v5*, 5.*).
 #
-# A new branch on pycamilladsp or camillagui-backend matching next5/v5/5.* is
+# A new branch on camillagui-backend or camilladsp matching next5/v5/5.* is
 # a strong CamillaDSP 5 release-readiness signal.  The workflow opens an issue
 # or writes to the step summary.
 #
@@ -65,27 +65,21 @@ jobs:
             echo "$BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Watch pyCamillaDSP branches [critical — v5 signal]
-        id: watch-pycamilla
+      - name: Watch CamillaGUI frontend branches [medium]
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "## pyCamillaDSP Branches [critical — v5 ecosystem signal]" \
-            >> "$GITHUB_STEP_SUMMARY"
-          BRANCHES=$(gh api repos/HEnquist/pycamilladsp/branches \
+          echo "## CamillaGUI Frontend Branches [medium]" >> "$GITHUB_STEP_SUMMARY"
+          BRANCHES=$(gh api repos/HEnquist/camillagui/branches \
             --jq '[.[] | select(.name | test("next|v5|5\\."))] | .[].name' \
             2>/dev/null || true)
           if [ -z "$BRANCHES" ]; then
             echo "- _No next*/v5*/5.* branches found._" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "**⚠️ CamillaDSP 5 ecosystem signal: pyCamillaDSP has canary branches!**" \
-              >> "$GITHUB_STEP_SUMMARY"
+            echo "**Canary branches present:**" >> "$GITHUB_STEP_SUMMARY"
             echo "$BRANCHES" | sed 's/^/- `/' | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "PYCAMILLA_BRANCHES<<EOF" >> "$GITHUB_ENV"
-          echo "$BRANCHES" >> "$GITHUB_ENV"
-          echo "EOF" >> "$GITHUB_ENV"
 
       - name: Watch piCorePlayer kernel/releases branches [critical]
         continue-on-error: true
@@ -101,9 +95,9 @@ jobs:
             echo "- _Unable to list branches (private or unavailable)._" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # Open an issue if a new pycamilladsp v5 branch appears (strong signal).
+      # Open an issue if a new camillagui-backend v5 branch appears (strong signal).
       - name: Open CamillaDSP 5 ecosystem signal issue (if applicable)
-        if: env.PYCAMILLA_BRANCHES != ''
+        if: env.CAMILLA_BRANCHES != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -117,8 +111,8 @@ jobs:
             echo "Issue already open (#${EXISTING}) — skipping."
           else
             gh issue create \
-              --title  "Upstream: CamillaDSP 5 ecosystem signal — pyCamillaDSP has canary branches" \
-              --body   "$(printf "## CamillaDSP 5 Ecosystem Signal\n\npyCamillaDSP now has canary branches matching next*/v5*/5.*:\n\n\`\`\`\n${PYCAMILLA_BRANCHES}\n\`\`\`\n\nThis is a strong indicator that CamillaDSP 5 release preparation is underway.\n\n### Recommended Actions\n- [ ] Run the upstream-capability-canary workflow against the new branches.\n- [ ] Check camilladsp \`next5\` branch for protocol/API changes.\n- [ ] Review the Upstream Capability Matrix (roadmap §38) for affected capabilities.\n- [ ] Assess production eligibility for Gate 12.\n\n---\n_Opened automatically by upstream-branch-watch.yml — roadmap §65._")" \
+              --title  "Upstream: CamillaDSP 5 ecosystem signal — CamillaDSP has canary branches" \
+              --body   "$(printf "## CamillaDSP 5 Ecosystem Signal\n\nCamillaDSP now has canary branches matching next*/v5*/5.*:\n\n\`\`\`\n${CAMILLA_BRANCHES}\n\`\`\`\n\nThis is a strong indicator that CamillaDSP 5 release preparation is underway.\n\n### Recommended Actions\n- [ ] Run the upstream-capability-canary workflow against the new branches.\n- [ ] Review the Upstream Capability Matrix (roadmap §38) for affected capabilities.\n- [ ] Assess production eligibility for Gate 12.\n\n---\n_Opened automatically by upstream-branch-watch.yml — roadmap §65._")" \
               --label  "upstream,upstream:camilladsp,capability" \
               || true
           fi
