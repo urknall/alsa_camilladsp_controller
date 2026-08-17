@@ -54,13 +54,19 @@ where
             "ERROR: Unknown option: {flag}\n\n{}",
             usage(&program)
         )),
-        (Some(flag), Some(_)) if flag == "-h" || flag == "--help" || flag == "-V" || flag == "--version" => {
-            Err(format!("ERROR: {flag} does not accept additional arguments.\n\n{}", usage(&program)))
+        (Some(flag), Some(_))
+            if flag == "-h" || flag == "--help" || flag == "-V" || flag == "--version" =>
+        {
+            Err(format!(
+                "ERROR: {flag} does not accept additional arguments.\n\n{}",
+                usage(&program)
+            ))
         }
         (Some(flag), Some(_)) => Err(format!(
             "ERROR: Unknown option: {flag}\n\n{}",
             usage(&program)
         )),
+        (None, Some(_)) => Ok(CliAction::Run),
     }
 }
 
@@ -150,14 +156,19 @@ mod tests {
 
     #[test]
     fn unknown_argument_is_rejected() {
-        let error = parse_cli_action(["picorecdsp".to_string(), "--bogus".to_string()]).unwrap_err();
+        let error =
+            parse_cli_action(["picorecdsp".to_string(), "--bogus".to_string()]).unwrap_err();
         assert!(error.contains("Unknown option"));
     }
 
     #[test]
     fn help_with_extra_arguments_is_rejected() {
-        let error =
-            parse_cli_action(["picorecdsp".to_string(), "--help".to_string(), "extra".to_string()]).unwrap_err();
+        let error = parse_cli_action([
+            "picorecdsp".to_string(),
+            "--help".to_string(),
+            "extra".to_string(),
+        ])
+        .unwrap_err();
         assert!(error.contains("does not accept additional arguments"));
     }
 }
