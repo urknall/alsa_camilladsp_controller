@@ -53,10 +53,7 @@ where
         (None, None) => Ok(CliAction::Run),
         (Some(flag), None) if flag == "-h" || flag == "--help" => Ok(CliAction::PrintHelp(program)),
         (Some(flag), None) if flag == "-V" || flag == "--version" => Ok(CliAction::PrintVersion),
-        (Some(flag), None) => Err(format!(
-            "ERROR: Unknown option: {flag}\n\n{}",
-            usage_text
-        )),
+        (Some(flag), None) => Err(format!("ERROR: Unknown option: {flag}\n\n{}", usage_text)),
         (Some(flag), Some(_))
             if flag == "-h" || flag == "--help" || flag == "-V" || flag == "--version" =>
         {
@@ -65,10 +62,7 @@ where
                 usage_text
             ))
         }
-        (Some(flag), Some(_)) => Err(format!(
-            "ERROR: Unknown option: {flag}\n\n{}",
-            usage_text
-        )),
+        (Some(flag), Some(_)) => Err(format!("ERROR: Unknown option: {flag}\n\n{}", usage_text)),
         (None, Some(_)) => {
             unreachable!("argument iterator cannot yield a second argument without a first")
         }

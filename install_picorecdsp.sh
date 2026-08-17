@@ -583,9 +583,10 @@ if [ ! -x "${PICORECDSP_BIN}" ]; then
     exit 1
 fi
 
-# Verify the binary can actually execute.
-"${PICORECDSP_BIN}" --help >/dev/null
-
+# Do not start the Rust daemon during install-time validation.  It is only
+# staged into the extension here and first started by the installed boot hook
+# after the explicit reboot at the end of this script.
+#
 # Catch missing runtime libraries before the transactional commit.
 if command -v ldd >/dev/null 2>&1; then
     if ldd "${PICORECDSP_BIN}" 2>&1 | grep -q 'not found'; then
