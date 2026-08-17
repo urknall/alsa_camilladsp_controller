@@ -51,6 +51,9 @@ fn capture<'a>(doc: &'a Value, name: &str) -> &'a serde_json::Map<String, Value>
 #[test]
 fn bypass_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
     let doc = parse_template("Bypass.yml");
+    let root = doc
+        .as_object()
+        .expect("Bypass.yml should parse into a top-level mapping");
     let devices = devices(&doc, "Bypass.yml");
     let capture = capture(&doc, "Bypass.yml");
     let playback = devices
@@ -59,8 +62,12 @@ fn bypass_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
         .expect("Bypass.yml should contain devices.playback mapping");
 
     assert!(
+        !root.contains_key("stop_on_inactive"),
+        "Bypass.yml must not put stop_on_inactive at the document root"
+    );
+    assert!(
         !devices.contains_key("stop_on_inactive"),
-        "Bypass.yml must not put stop_on_inactive at devices.* root"
+        "Bypass.yml must not put stop_on_inactive directly under devices (must be under devices.capture)"
     );
     assert_eq!(
         capture.get("stop_on_inactive"),
@@ -82,6 +89,9 @@ fn bypass_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
 #[test]
 fn null_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
     let doc = parse_template("Null.yml");
+    let root = doc
+        .as_object()
+        .expect("Null.yml should parse into a top-level mapping");
     let devices = devices(&doc, "Null.yml");
     let capture = capture(&doc, "Null.yml");
     let playback = devices
@@ -90,8 +100,12 @@ fn null_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
         .expect("Null.yml should contain devices.playback mapping");
 
     assert!(
+        !root.contains_key("stop_on_inactive"),
+        "Null.yml must not put stop_on_inactive at the document root"
+    );
+    assert!(
         !devices.contains_key("stop_on_inactive"),
-        "Null.yml must not put stop_on_inactive at devices.* root"
+        "Null.yml must not put stop_on_inactive directly under devices (must be under devices.capture)"
     );
     assert_eq!(
         capture.get("stop_on_inactive"),
