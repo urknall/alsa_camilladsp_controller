@@ -768,13 +768,6 @@ then
     exit 1
 fi
 
-if ! "${BUILD_DIR}/usr/local/camilladsp" --help 2>&1 |
-    grep -q -- '--no_config'
-then
-    echo "ERROR: Downloaded CamillaDSP does not support --no_config."
-    exit 1
-fi
-
 _check_out="${BUILD_DIR}/camilladsp-check.$$.log"
 if ! "${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_BYPASS_CONFIG}" \
         >"${_check_out}" 2>&1; then
@@ -799,9 +792,9 @@ echo "CamillaDSP configuration validation OK."
 ###############################################################################
 # CamillaDSP WebSocket smoke test
 #
-# Start a temporary CamillaDSP instance in wait/no-config mode and verify
-# that its WebSocket port becomes available. This confirms the binary is
-# functional on this kernel before committing the full install.
+# Start a temporary CamillaDSP instance with the native shared statefile path
+# and verify that its WebSocket port becomes available. This confirms the
+# binary is functional on this kernel before committing the full install.
 ###############################################################################
 
 if [ "${CAMILLA_WS_SMOKE_TEST}" = "true" ]; then
@@ -825,7 +818,6 @@ if [ "${CAMILLA_WS_SMOKE_TEST}" = "true" ]; then
 
         "${BUILD_DIR}/usr/local/camilladsp" \
             --wait \
-            --no_config \
             --statefile "${TEST_STATEFILE}" \
             --port "${TEST_PORT}" \
             --address 127.0.0.1 \
@@ -996,7 +988,6 @@ do
 
     /usr/local/camilladsp \
         --wait \
-        --no_config \
         --port 1234 \
         --address 127.0.0.1 \
         --logfile /tmp/camilladsp.log \
@@ -1163,8 +1154,9 @@ if [ ! -f "${NULL_CONFIG}" ]; then
     sudo cp -f "${STAGE_NULL_CONFIG}" "${NULL_CONFIG}"
 fi
 
-# Statefile — seed with Bypass.yml so CamillaDSP loads a config on first boot
-# and CamillaGUI shows it as the active (starred) config.
+# Statefile — seed with Bypass.yml only on first install so CamillaDSP loads a
+# safe config on first boot. Thereafter the persistent bootstrap source is
+# user-owned and must not be overwritten by the installer.
 if [ ! -f "${STATEFILE}" ]; then
     printf 'config_path: "%s"\n' "${BYPASS_CONFIG}" | sudo tee "${STATEFILE}" >/dev/null
 fi
