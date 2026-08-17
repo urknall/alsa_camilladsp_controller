@@ -723,17 +723,17 @@ ASOUND_BLOCK
 
 cp "${PCP_CONFIG}" "${PCP_STAGED}"
 
-sed 's|^OUTPUT=.*|OUTPUT="picorecdsp"|'                -i "${PCP_STAGED}"
-sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="picorecdsp"|'  -i "${PCP_STAGED}"
+sed 's|^OUTPUT=.*|OUTPUT="camilladsp"|'                -i "${PCP_STAGED}"
+sed 's|^SHAIRPORT_OUT=.*|SHAIRPORT_OUT="camilladsp"|'  -i "${PCP_STAGED}"
 sed 's|^SHAIRPORT_CONTROL=.*|SHAIRPORT_CONTROL=""|'    -i "${PCP_STAGED}"
-sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="picorecdsp"|'  -i "${PCP_STAGED}"
+sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE="camilladsp"|'  -i "${PCP_STAGED}"
 if grep -q '^SL_AUTOSTART=' "${PCP_STAGED}"; then
     sed 's|^SL_AUTOSTART=.*|SL_AUTOSTART="yes"|' -i "${PCP_STAGED}"
 else
     printf '%s\n' 'SL_AUTOSTART="yes"' >> "${PCP_STAGED}"
 fi
 
-if ! grep -qx 'OUTPUT="picorecdsp"' "${PCP_STAGED}"; then
+if ! grep -qx 'OUTPUT="camilladsp"' "${PCP_STAGED}"; then
     echo "ERROR: Could not stage piCorePlayer OUTPUT routing."
     exit 1
 fi
