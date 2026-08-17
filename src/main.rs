@@ -12,6 +12,7 @@ use std::env;
 
 use picorecdsp::{
     camilla::{control::CamillaControl, protocol_v4::CamillaDspV4},
+    error::PicorecdspError,
     logging,
     rate_sync::{ConfigPatchRateSynchronizer, PollingTrigger},
     reconcile::{run_loop, ReconcileConfig},
@@ -75,9 +76,13 @@ where
     }
 }
 
+async fn probe_websocket(camilla: &dyn CamillaControl) -> Result<(), PicorecdspError> {
+    camilla.version().await.map(|_| ())
+}
+
 #[tokio::main]
 async fn main() {
-    match parse_cli_action(env::args()) {
+    let action = match parse_cli_action(env::args()) {
         Ok(CliAction::PrintHelp(program)) => {
             println!("{}", usage(&program));
             return;
@@ -86,31 +91,28 @@ async fn main() {
             println!("picorecdsp {}", env!("CARGO_PKG_VERSION"));
             return;
         }
-        Ok(CliAction::WsCheck) => {
-            let camilla_url = env::var("PICORECDSP_CAMILLA_URL")
-                .unwrap_or_else(|_| "ws://127.0.0.1:1234".to_string());
-            let camilla = CamillaDspV4::new(&camilla_url);
-            if let Err(err) = camilla.version().await {
-                eprintln!("ERROR: CamillaDSP WebSocket probe failed: {err}");
-                std::process::exit(1);
-            }
-            return;
-        }
-        Ok(CliAction::Run) => {}
+        Ok(action) => action,
         Err(message) => {
             eprintln!("{message}");
             std::process::exit(2);
         }
+    };
+
+    let camilla_url =
+        env::var("PICORECDSP_CAMILLA_URL").unwrap_or_else(|_| "ws://127.0.0.1:1234".to_string());
+    let camilla = CamillaDspV4::new(&camilla_url);
+
+    if action == CliAction::WsCheck {
+        if let Err(err) = probe_websocket(&camilla).await {
+            eprintln!("ERROR: CamillaDSP WebSocket probe failed: {err}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     logging::init_logging();
 
-    let camilla_url =
-        env::var("PICORECDSP_CAMILLA_URL").unwrap_or_else(|_| "ws://127.0.0.1:1234".to_string());
-
     log::info!("piCoreCDSP v2 starting — connecting to CamillaDSP at {camilla_url}");
-
-    let camilla = CamillaDspV4::new(&camilla_url);
     let rate_sync = ConfigPatchRateSynchronizer::new(&camilla);
     let cfg = ReconcileConfig::default();
 
