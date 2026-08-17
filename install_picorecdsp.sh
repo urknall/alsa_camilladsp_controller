@@ -595,17 +595,17 @@ devices:
   queuelimit: 4
   silence_threshold: 0
   silence_timeout: 0.0
-  stop_on_inactive: true
   capture:
     type: Alsa
     channels: 2
     device: "hw:Loopback,0,0"
-    format: S32LE
+    format: S32_LE
+    stop_on_inactive: true
   playback:
     type: Alsa
     channels: 2
     device: "${PLAYBACK_DEVICE}"
-    format: S32LE
+    format: S32_LE
 EOF
 
 # Null.yml — routes audio to /dev/null; diagnostic use only.
@@ -616,17 +616,17 @@ devices:
   queuelimit: 4
   silence_threshold: 0
   silence_timeout: 0.0
-  stop_on_inactive: true
   capture:
     type: Alsa
     channels: 2
     device: "hw:Loopback,0,0"
-    format: S32LE
+    format: S32_LE
+    stop_on_inactive: true
   playback:
     type: File
     channels: 2
     filename: /dev/null
-    format: S32LE
+    format: S32_LE
 EOF
 
 ###############################################################################
