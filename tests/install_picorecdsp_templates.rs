@@ -166,6 +166,23 @@ fn boot_hook_waits_for_websocket_probe_before_starting_picorecdsp_daemon() {
 }
 
 #[test]
+fn boot_hook_starts_camilladsp_with_native_statefile_bootstrap() {
+    let boot_hook = boot_hook_script();
+    assert!(
+        boot_hook.contains("/usr/local/camilladsp \\\n        --wait \\"),
+        "boot hook should start CamillaDSP in wait mode"
+    );
+    assert!(
+        boot_hook.contains("--statefile /mnt/mmcblk0p2/tce/camilladsp/camilladsp_statefile.yml"),
+        "boot hook should point CamillaDSP at the shared native statefile"
+    );
+    assert!(
+        !boot_hook.contains("--no_config"),
+        "boot hook must not ignore the persisted config in the shared statefile"
+    );
+}
+
+#[test]
 fn installer_defaults_to_skipping_websocket_smoke_test_before_reboot() {
     let script = installer_script();
     assert!(
@@ -179,6 +196,19 @@ fn installer_defaults_to_skipping_websocket_smoke_test_before_reboot() {
     assert!(
         script.contains("Skipping CamillaDSP WebSocket smoke test during installation."),
         "installer should make it explicit that startup checks are deferred until reboot"
+    );
+}
+
+#[test]
+fn websocket_smoke_test_uses_statefile_bootstrap_without_no_config() {
+    let script = installer_script();
+    assert!(
+        script.contains("\"${BUILD_DIR}/usr/local/camilladsp\" \\\n            --wait \\\n            --statefile \"${TEST_STATEFILE}\" \\"),
+        "installer smoke test should exercise the native statefile bootstrap path"
+    );
+    assert!(
+        !script.contains("--no_config"),
+        "installer should no longer rely on --no_config for startup validation"
     );
 }
 
@@ -205,5 +235,14 @@ fn installer_seeds_statefile_with_bypass_config_path_on_fresh_install() {
             "printf 'config_path: \"%s\"\\n' \"${BYPASS_CONFIG}\" | sudo tee \"${STATEFILE}\" >/dev/null"
         ),
         "installer should seed the statefile with Bypass.yml on fresh install"
+    );
+}
+
+#[test]
+fn installer_preserves_existing_statefile_instead_of_reseeding_bypass() {
+    let script = installer_script();
+    assert!(
+        script.contains("if [ ! -f \"${STATEFILE}\" ]; then\n    printf 'config_path: \"%s\"\\n' \"${BYPASS_CONFIG}\" | sudo tee \"${STATEFILE}\" >/dev/null\nfi"),
+        "installer must only seed Bypass when the shared statefile does not yet exist"
     );
 }
