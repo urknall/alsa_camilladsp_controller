@@ -12,8 +12,24 @@ name: CI
 on:
   push:
     branches: ["main"]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'install_picorecdsp.sh'
+      - 'probes/**'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: ["main"]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'install_picorecdsp.sh'
+      - 'probes/**'
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read
