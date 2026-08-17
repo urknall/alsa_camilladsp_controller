@@ -21,7 +21,7 @@ use picorecdsp::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliAction {
     Run,
-    PrintHelp,
+    PrintHelp(String),
     PrintVersion,
 }
 
@@ -45,10 +45,14 @@ where
 {
     let mut args = args.into_iter();
     let program = args.next().unwrap_or_else(|| "picorecdsp".to_string());
+    let first = args.next();
+    let second = args.next();
 
-    match (args.next(), args.next()) {
+    match (first, second) {
         (None, None) => Ok(CliAction::Run),
-        (Some(flag), None) if flag == "-h" || flag == "--help" => Ok(CliAction::PrintHelp),
+        (Some(flag), None) if flag == "-h" || flag == "--help" => {
+            Ok(CliAction::PrintHelp(program.clone()))
+        }
         (Some(flag), None) if flag == "-V" || flag == "--version" => Ok(CliAction::PrintVersion),
         (Some(flag), None) => Err(format!(
             "ERROR: Unknown option: {flag}\n\n{}",
@@ -66,15 +70,17 @@ where
             "ERROR: Unknown option: {flag}\n\n{}",
             usage(&program)
         )),
-        (None, Some(_)) => Ok(CliAction::Run),
+        (None, Some(_)) => {
+            unreachable!("argument iterator cannot yield a second argument without a first")
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
     match parse_cli_action(env::args()) {
-        Ok(CliAction::PrintHelp) => {
-            println!("{}", usage("picorecdsp"));
+        Ok(CliAction::PrintHelp(program)) => {
+            println!("{}", usage(&program));
             return;
         }
         Ok(CliAction::PrintVersion) => {
@@ -145,7 +151,7 @@ mod tests {
     #[test]
     fn help_argument_prints_help_instead_of_running() {
         let action = parse_cli_action(["picorecdsp".to_string(), "--help".to_string()]).unwrap();
-        assert_eq!(action, CliAction::PrintHelp);
+        assert_eq!(action, CliAction::PrintHelp("picorecdsp".to_string()));
     }
 
     #[test]
