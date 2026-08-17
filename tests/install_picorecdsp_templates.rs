@@ -23,16 +23,10 @@ fn extract_heredoc(script: &str, start_marker: &str, end_marker: &str) -> String
 fn parse_template(name: &str) -> Value {
     let script = installer_script();
     let yaml = match name {
-        "Bypass.yml" => extract_heredoc(
-            &script,
-            "cat > \"${STAGE_BYPASS_CONFIG}\" <<EOF\n",
-            "\nEOF",
-        ),
-        "Null.yml" => extract_heredoc(
-            &script,
-            "cat > \"${STAGE_NULL_CONFIG}\" <<'EOF'\n",
-            "\nEOF",
-        ),
+        "Bypass.yml" => {
+            extract_heredoc(&script, "cat > \"${STAGE_BYPASS_CONFIG}\" <<EOF\n", "\nEOF")
+        }
+        "Null.yml" => extract_heredoc(&script, "cat > \"${STAGE_NULL_CONFIG}\" <<'EOF'\n", "\nEOF"),
         other => panic!("unknown template: {other}"),
     };
 
