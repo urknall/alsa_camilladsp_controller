@@ -3,7 +3,7 @@
   "repo": "HEnquist/camilladsp-controller",
   "ref": "main",
   "sha": "e9fde2057d5869e6805a965e9c091bbb9a9e9980",
-  "fetched_at": "2026-08-16T19:06:40.686960+00:00",
+  "fetched_at": "2026-08-17T06:48:24.107938+00:00",
   "files": [
     "alsa_listener.py",
     "controller.py"
