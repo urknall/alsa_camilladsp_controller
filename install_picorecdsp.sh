@@ -775,10 +775,13 @@ fi
 rm -f "${_check_out}"
 
 if ! "${BUILD_DIR}/usr/local/camilladsp" --check "${STAGE_NULL_CONFIG}" \
-        >/dev/null 2>&1; then
-    echo "ERROR: CamillaDSP config check failed for Null.yml."
+        >"${_check_out}" 2>&1; then
+    echo "ERROR: CamillaDSP config check failed for Null.yml:"
+    cat "${_check_out}" 2>/dev/null || true
+    rm -f "${_check_out}"
     exit 1
 fi
+rm -f "${_check_out}"
 
 echo "CamillaDSP configuration validation OK."
 
