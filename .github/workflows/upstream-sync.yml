@@ -114,13 +114,15 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           if [ "$EXISTING_FOUND" = "true" ]; then
-            # Reuse the existing sync branch: reset it to current main, then
-            # re-apply the snapshot changes on top so it is always conflict-free.
+            # Reuse the existing sync branch: create a fresh local branch rooted
+            # at the current main HEAD, commit the snapshot changes on top, and
+            # force-push so the remote branch is always conflict-free against main.
             BRANCH="$EXISTING_BRANCH"
-            git checkout -b "$BRANCH"
+            git fetch origin "$BRANCH" || true   # bring remote tracking ref up to date
+            git checkout -B "$BRANCH" HEAD        # reset local branch to current main HEAD
             git add upstream/
             git commit -m "chore(upstream): sync upstream snapshots ${DATE}"
-            git push --force-with-lease origin "$BRANCH"
+            git push --force origin "$BRANCH"     # safe: we intentionally reset to main
             echo "reused_pr=true" >> "$GITHUB_OUTPUT"
           else
             BRANCH="chore/upstream-sync-${DATE}"
