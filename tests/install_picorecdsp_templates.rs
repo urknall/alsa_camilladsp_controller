@@ -181,3 +181,29 @@ fn installer_defaults_to_skipping_websocket_smoke_test_before_reboot() {
         "installer should make it explicit that startup checks are deferred until reboot"
     );
 }
+
+#[test]
+fn camillagui_config_allows_file_playback_type_for_null_config() {
+    let script = installer_script();
+    // Null.yml uses `type: File` for its playback device (routes to /dev/null).
+    // The generated camillagui.yml must include "File" in supported_playback_types
+    // so that CamillaGUI does not mark Null.yml invalid with a red X.
+    assert!(
+        script.contains("  - \"File\""),
+        "camillagui.yml supported_playback_types must include \"File\" so Null.yml passes validation"
+    );
+}
+
+#[test]
+fn installer_seeds_statefile_with_bypass_config_path_on_fresh_install() {
+    let script = installer_script();
+    // On a fresh install the statefile must be seeded with Bypass.yml as the
+    // initial config_path so that CamillaDSP loads a config on first boot and
+    // CamillaGUI shows it as the active (starred) config.
+    assert!(
+        script.contains(
+            "printf 'config_path: \"%s\"\\n' \"${BYPASS_CONFIG}\" | sudo tee \"${STATEFILE}\" >/dev/null"
+        ),
+        "installer should seed the statefile with Bypass.yml on fresh install"
+    );
+}
