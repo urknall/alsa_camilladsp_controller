@@ -136,7 +136,9 @@ fn null_template_uses_capture_scoped_stop_on_inactive_and_s32_le() {
 fn staged_pcp_config_routes_outputs_to_camilladsp_and_enables_squeezelite_autostart() {
     let script = installer_script();
     assert!(
-        script.contains("sed 's|^OUTPUT=.*|OUTPUT=\"camilladsp\"|'                -i \"${PCP_STAGED}\""),
+        script.contains(
+            "sed 's|^OUTPUT=.*|OUTPUT=\"camilladsp\"|'                -i \"${PCP_STAGED}\""
+        ),
         "installer should route OUTPUT to camilladsp when staging pcp.cfg"
     );
     assert!(
@@ -146,8 +148,9 @@ fn staged_pcp_config_routes_outputs_to_camilladsp_and_enables_squeezelite_autost
         "installer should route SHAIRPORT_OUT to camilladsp when staging pcp.cfg"
     );
     assert!(
-        script
-            .contains("sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE=\"camilladsp\"|'  -i \"${PCP_STAGED}\""),
+        script.contains(
+            "sed 's|^BT_OUT_DEVICE=.*|BT_OUT_DEVICE=\"camilladsp\"|'  -i \"${PCP_STAGED}\""
+        ),
         "installer should route BT_OUT_DEVICE to camilladsp when staging pcp.cfg"
     );
     assert!(
